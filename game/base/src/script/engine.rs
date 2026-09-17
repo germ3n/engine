@@ -20,16 +20,11 @@ pub enum Realm {
     Menu,
 }
 
-pub struct DynWindowPtr(pub Option<*mut dyn Window>);
-unsafe impl Send for DynWindowPtr {}
-unsafe impl Sync for DynWindowPtr {}
-
 pub struct ScriptEngine {
     pub lua: Lua,
     pub realm: Realm,
     pub hook_caller: RegistryKey,
     pub net_caller: RegistryKey,
-    //pub window_ptr: Arc<Mutex<DynWindowPtr>>,
     pub tick_interval: f64,
     pub cur_time: Arc<AtomicU64>,
     pub frame_time: Arc<AtomicU64>,
@@ -63,7 +58,6 @@ impl ScriptEngine {
             }
         }
 
-        //let window_ptr = Arc::new(Mutex::new(DynWindowPtr(None)));
         let render_queue = Arc::new(Mutex::new(Vec::new()));
         if !matches!(realm, Realm::Server) {
             register_surface_lib(&lua, render_queue.clone());

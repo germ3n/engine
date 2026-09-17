@@ -1,7 +1,5 @@
 use mlua::{Lua};
-use std::sync::Arc;
-use std::sync::Mutex;
-use crate::script::engine::{DynWindowPtr, RenderQueue, DrawCommand};
+use crate::script::engine::{RenderQueue, DrawCommand};
 use crate::ui::Color;
 //todo: stop using locks
 

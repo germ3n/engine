@@ -1,5 +1,5 @@
 use std::sync::mpsc::{Receiver, Sender};
-use crate::{GameState, client};
+use crate::{GameState};
 use crate::network::{NetworkEvent, NetworkClient};
 use crate::ui::{opengl::OpenGLWindow, window::Window};
 use winit::event::{WindowEvent, Event};
