@@ -1,0 +1,27 @@
+[package]
+name = "base"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.216", features = ["derive"] }
+bincode = "1.3.3"
+log = "0.4.22"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+macro = { path = "../macro" }
+clap = { version = "4.6.6", features = ["derive"] }
+winit = "=0.29.15"
+glutin = "=0.31.3"
+glutin-winit = "=0.4.2"
+raw-window-handle = "=0.5.2"
+glow = "=0.12.3"
+glow_glyph = "0.6.0"
+mlua = { version = "0.12.1", features = ["luajit52", "send"] }
+wincode = { version = "0.6.1", features = ["derive"] }
+
+[features]
+default = ["client", "server"]
+client = []
+server = []
