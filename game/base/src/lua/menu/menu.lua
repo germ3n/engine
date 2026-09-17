@@ -11,7 +11,7 @@ end);
 net.add_callback("Test", function(reader)
     local writer = net.writer();
     print(tostring(writer))
-    writer:write_u32(0);
+    writer:write_f32(0);
 
     net.send("Test", writer);
 end);

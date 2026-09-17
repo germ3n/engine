@@ -3,6 +3,8 @@ use crate::ui::window::Window;
 use mlua::{Lua, RegistryKey};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicU32, Ordering}};
 use crate::network::usermessage::UserMsgWriter;
+use crate::script::libs::{register_engine_lib, register_surface_lib};
+use crate::script::libs::register_net_lib;
 //todo: move functions to seperate libs.rs
 
 #[derive(Clone, Copy)]
@@ -37,129 +39,33 @@ impl ScriptEngine {
         tick_count: Arc<AtomicU64>
     ) -> Self {
         let lua = Lua::new();
-        let globals = lua.globals();
+        lua.globals().set("CLIENT", matches!(realm, Realm::Client)).expect("Failed to set CLIENT global");
+        lua.globals().set("SERVER", matches!(realm, Realm::Server)).expect("Failed to set SERVER global");
+        lua.globals().set("MENU", matches!(realm, Realm::Menu)).expect("Failed to set MENU global");
 
-        globals.set("CLIENT", matches!(realm, Realm::Client)).unwrap();
-        globals.set("SERVER", matches!(realm, Realm::Server)).unwrap();
-        globals.set("MENU", matches!(realm, Realm::Menu)).unwrap();
-
-        //let tick_interval = Arc::new(Mutex::new(tick_interval));
-
-        // globally shared libs
         {
-            let hook_lib_data = include_bytes!("../lua/hook.lua");
-            lua.load(&hook_lib_data[..])
-                .exec()
-                .expect("Failed to execute hook.lua");
+            let hook_lib_data = include_bytes!("libs/hook.lua");
+            lua.load(&hook_lib_data[..]).exec().expect("Failed to execute hook.lua");
 
-            let net_lib_data = include_bytes!("../lua/net.lua");
-                lua.load(&net_lib_data[..])
-                    .exec()
-                    .expect("Failed to execute net.lua");
+            register_engine_lib(&lua, tick_interval, cur_time.clone(), frame_time.clone(), tick_count.clone());
+            if !matches!(realm, Realm::Menu) {
+                let net_lib_data = include_bytes!("libs/net.lua");
+                lua.load(&net_lib_data[..]).exec().expect("Failed to execute net.lua");
 
-            {
-                let engine_table = lua.create_table().expect("Failed to create engine table");
-                
-                engine_table.set("tick_interval", lua.create_function(move |_, (): ()| {
-                    Ok(tick_interval)
-                }).unwrap()).unwrap();
-
-                let ct_clone = cur_time.clone();
-                engine_table.set("curtime", lua.create_function(move |_, (): ()| {
-                    Ok(f64::from_bits(ct_clone.load(Ordering::Relaxed)))
-                }).unwrap()).unwrap();
-
-                let ft_clone = frame_time.clone();
-                engine_table.set("frametime", lua.create_function(move |_, (): ()| {
-                    Ok(f64::from_bits(ft_clone.load(Ordering::Relaxed)))
-                }).unwrap()).unwrap();
-
-                let tc_clone = tick_count.clone();
-                engine_table.set("tick_count", lua.create_function(move |_, (): ()| {
-                    Ok(tc_clone.load(Ordering::Relaxed))
-                }).unwrap()).unwrap();
-
-                globals.set("engine", engine_table).unwrap()
+                register_net_lib(&lua);
             }
-
-            {
-                let net_table: mlua::Table = lua.globals().get("net").expect("Couldn't get net table");
-                
-                let writer_func = lua.create_function(move |_, capacity: Option<u32>| {
-                    let writer = if let Some(cap) = capacity {
-                        UserMsgWriter::with_capacity(cap as usize)
-                    } else {
-                        UserMsgWriter::new()
-                    };
-                    Ok(writer)
-                }).expect("Failed to create writer function");
-            
-                net_table.set("writer", writer_func).expect("Failed to set writer");
-            
-                let send_func = lua.create_function(move |_, (msg_name, writer_data): (String, mlua::AnyUserData)| {
-                    let msg_hash = hash_usermessage_name(msg_name.as_str());
-                    let writer = writer_data.borrow::<UserMsgWriter>()?;
-
-                    println!("{}", msg_hash);
-
-                    Ok(())
-                }).expect("Failed to create send function");
-            
-                net_table.set("send", send_func).expect("Failed to set send function");
-            }
-        }
-
-        match realm { // per-realm logic
-            Realm::Client => {},
-            Realm::Server => {},
-            Realm::Menu => {},
         }
 
         let window_ptr = Arc::new(Mutex::new(DynWindowPtr(None)));
-        match realm { // mixed realm logic
-            Realm::Client | Realm::Menu => {
-                {   
-                    { // surface lib
-                        let surface_table = lua.create_table().unwrap();
-                        let wp_clone = window_ptr.clone();
-                        surface_table.set("draw_rect", lua.create_function(move |_, (x, y, w, h, r, g, b, a): (f32, f32, f32, f32, u8, u8, u8, u8)| {
-                            let guard = wp_clone.lock().unwrap();
-                            if let Some(ptr) = guard.0 {
-                                unsafe { (*ptr).draw_rectangle(x, y, w, h, Color::ColorRGBA { r, g, b, a }); }
-                            }
-                            Ok(())
-                        }).unwrap()).unwrap();
-
-                        let wp_clone = window_ptr.clone();
-                        surface_table.set("draw_outlined_rect", lua.create_function(move |_, (x, y, w, h, thickness, r, g, b, a): (f32, f32, f32, f32, f32, u8, u8, u8, u8)| {
-                            let guard = wp_clone.lock().unwrap();
-                            if let Some(ptr) = guard.0 {
-                                unsafe { (*ptr).draw_outlined_rectangle(x, y, w, h, thickness, Color::ColorRGBA { r, g, b, a }); }
-                            }
-                            Ok(())
-                        }).unwrap()).unwrap();
-
-                        let wp_clone = window_ptr.clone();
-                        surface_table.set("draw_text", lua.create_function(move |_, (font, text, x, y, scale, r, g, b, a): (String, String, f32, f32, f32, u8, u8, u8, u8)| {
-                            let guard = wp_clone.lock().unwrap();
-                            if let Some(ptr) = guard.0 {
-                                unsafe { (*ptr).draw_text(&font, &text, x, y, scale, Color::ColorRGBA { r, g, b, a }); }
-                            }
-                            Ok(())
-                        }).unwrap()).unwrap();
-
-                        globals.set("surface", surface_table).unwrap();
-                    }
-                }
-            },
-            _ => {}
-        };
-
-        let hook_table: mlua::Table = globals.get("hook").unwrap();
+        if !matches!(realm, Realm::Server) {
+            register_surface_lib(&lua, window_ptr.clone());
+        }
+        
+        let hook_table: mlua::Table = lua.globals().get("hook").unwrap();
         let hook_call_fn: mlua::Function = hook_table.get("call").unwrap();
         let hook_caller = lua.create_registry_value(hook_call_fn).unwrap();
 
-        let net_table: mlua::Table = globals.get("net").unwrap();
+        let net_table: mlua::Table = lua.globals().get("net").unwrap();
         let net_call_fn: mlua::Function = net_table.get("call").unwrap();
         let net_caller = lua.create_registry_value(net_call_fn).unwrap();
 
