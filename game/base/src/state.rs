@@ -9,7 +9,7 @@ use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 pub struct GameState {
     pub realm: Realm,
     pub entities: EntityList,
-    pub cvars: HashMap<String, ConVar>,
+    pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub tick_interval: f64,
     pub network_receiver: Receiver<NetworkEvent>,
     pub network_sender: Sender<NetSend>,
@@ -29,19 +29,21 @@ impl GameState {
         let mut cvars = HashMap::new();
         cvars.insert(
             "sv_gravity".to_string(),
-            ConVar::new("sv_gravity", ConVarValue::Float(800.0), "World gravity", Some(false), Some(true)),
+            Arc::new(ConVar::new("sv_gravity", ConVarValue::Float(800.0), "World gravity", Some(false), Some(true))),
         );
 
+        let cvars = Arc::new(cvars);
         let cur_time = Arc::new(AtomicU64::new(0.0f64.to_bits()));
         let frame_time = Arc::new(AtomicU64::new(0.0f64.to_bits()));
         let tick_count = Arc::new(AtomicU64::new(0));
 
         let script_engine = ScriptEngine::new(
-            realm, 
+            realm,
             tick_interval, 
             cur_time.clone(), 
             frame_time.clone(), 
-            tick_count.clone()
+            tick_count.clone(),
+            cvars.clone()
         );
 
         Self {

@@ -52,10 +52,4 @@ impl EntityList {
     pub fn get_entity(&self, id: i32) -> Option<&Box<dyn BaseEntity + Send>> {
         self.entities.get(&id)
     }
-
-    pub fn tick_all(&mut self) {
-        for entity in self.entities.values_mut() {
-            entity.tick();
-        }
-    }
 }

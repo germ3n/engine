@@ -1,9 +1,10 @@
 use crate::ui::window::Window;
 use mlua::{Lua, RegistryKey};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64}};
-use crate::script::libs::{register_engine_lib, register_surface_lib};
-use crate::script::libs::register_net_lib;
+use crate::script::libs::{register_engine_lib, register_surface_lib, register_net_lib, register_convar_lib};
 use crate::ui::Color;
+use std::collections::HashMap;
+use crate::console::ConVar;
 
 pub enum DrawCommand {
     Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
@@ -38,7 +39,8 @@ impl ScriptEngine {
         tick_interval: f64,
         cur_time: Arc<AtomicU64>,
         frame_time: Arc<AtomicU64>,
-        tick_count: Arc<AtomicU64>
+        tick_count: Arc<AtomicU64>,
+        cvars: Arc<HashMap<String, Arc<ConVar>>>
     ) -> Self {
         let lua = Lua::new();
         lua.globals().set("CLIENT", matches!(realm, Realm::Client)).expect("Failed to set CLIENT global");
@@ -56,6 +58,8 @@ impl ScriptEngine {
 
                 register_net_lib(&lua);
             }
+
+            register_convar_lib(&lua, cvars);
         }
 
         let render_queue = Arc::new(Mutex::new(Vec::new()));

@@ -14,4 +14,5 @@ net.add_callback("Test", function(reader)
     writer:write_f32(0);
 
     net.send("Test", writer);
+    print(tostring(cvar.get("sv_gravity")), tostring(cvar.get("sv_gravity"):get_value_float()));
 end);

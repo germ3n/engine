@@ -24,7 +24,7 @@ pub fn server_loop(mut game: GameState) {
         while accumulated_time >= game.tick_interval {
             accumulated_time -= game.tick_interval;
 
-            game.entities.tick_all();
+            //game.entities.tick_all();
 
             let tc = game.tick_count.load(Ordering::Relaxed);
             game.tick_count.store(tc + 1, Ordering::Relaxed);
