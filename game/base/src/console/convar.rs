@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 #[derive(Debug, Clone)]
 pub enum ConVarValue {
     Integer(i64),

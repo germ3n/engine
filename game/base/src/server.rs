@@ -1,15 +1,14 @@
 use std::sync::mpsc::{Sender, Receiver};
 use crate::network::NetworkEvent;
 use crate::GameState;
-use crate::console::CliArgs;
 use std::time::{Instant, Duration};
 use std::sync::atomic::Ordering;
 use crate::network::server::NetworkServer;
 use crate::network::{PacketType, NetSend};
+use crate::network::usermessage::hash_usermessage_name;
 
 #[cfg(feature = "server")]
-pub fn server_loop(mut game: GameState, args: CliArgs) {
-    let tick_duration = Duration::from_secs_f64(game.tick_interval);
+pub fn server_loop(mut game: GameState) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
     let mut tick_idx = 0; 
@@ -31,7 +30,7 @@ pub fn server_loop(mut game: GameState, args: CliArgs) {
             game.tick_count.store(tc + 1, Ordering::Relaxed);
             
             if tick_idx % 100 == 0 {
-                let hash = crate::network::usermessage::hash_usermessage_name("Test");
+                let hash = hash_usermessage_name("Test");
                 let _ = game.network_sender.send(NetSend::Reliable(NetworkEvent::UserMessage {
                     hash,
                     data: [128; 256].to_vec(),
@@ -45,7 +44,7 @@ pub fn server_loop(mut game: GameState, args: CliArgs) {
         while let Ok(net_event) = game.network_receiver.try_recv() {
             match net_event {
                 NetworkEvent::UserMessage { hash, data } => {
-                    game.script_engine.run_usermessage(hash, (data));
+                    game.script_engine.run_usermessage(hash, data);
                 }
                 _ => {}
             }

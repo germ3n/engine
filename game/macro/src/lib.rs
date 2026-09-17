@@ -3,6 +3,7 @@ use quote::quote;
 use syn::{parse_macro_input, ItemStruct, Fields};
 
 #[proc_macro_attribute]
+#[allow(non_snake_case)]
 pub fn Networkable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut ast = parse_macro_input!(item as ItemStruct);
     let name = ast.ident.clone();

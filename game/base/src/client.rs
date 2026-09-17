@@ -1,14 +1,13 @@
 use std::sync::mpsc::{Receiver, Sender};
-use crate::GameState;
+use crate::{GameState, client};
 use crate::network::{NetworkEvent, NetworkClient};
-use crate::console::CliArgs;
 use crate::ui::{opengl::OpenGLWindow, window::Window};
 use winit::event::{WindowEvent, Event};
 use glutin::prelude::GlSurface;
 use winit::event_loop::ControlFlow;
 use glow::HasContext;
 use crate::ui::menu::draw_menu;
-use crate::script::engine::DynWindowPtr;
+use crate::script::engine::DrawCommand;
 use std::time::Duration;
 use std::sync::atomic::Ordering;
 use core::net::SocketAddr;
@@ -17,7 +16,7 @@ use crate::network::{PacketType, ReliableChannel, NetSend};
 use crate::network::packet::FragmentAssembler;
 use crate::network::usermessage::UserMsgReader;
 
-pub fn client_loop(mut game: GameState, mut args: CliArgs) {
+pub fn client_loop(mut game: GameState) {
     let mut client_window = OpenGLWindow::create_window();
     client_window.set_window_title("Rust Engine - Rendering");
     client_window.set_size(800, 600);
@@ -53,13 +52,37 @@ pub fn client_loop(mut game: GameState, mut args: CliArgs) {
                         client_window.gl.clear(glow::COLOR_BUFFER_BIT);
                     }
 
-                    let window_trait_obj = &mut client_window as *mut dyn Window;
-                    *game.script_engine.window_ptr.lock().unwrap() = DynWindowPtr(Some(window_trait_obj));
-
                     draw_menu(&mut client_window, &mut game);
 
-                    *game.script_engine.window_ptr.lock().unwrap() = DynWindowPtr(None);
-        
+                    let draw_commands = {
+                        let mut q = game.script_engine.render_queue.lock().unwrap();
+                        std::mem::take(&mut *q)
+                    };
+                    
+                    //todo: optimize
+                    for cmd in draw_commands {
+                        match cmd {
+                            DrawCommand::Rect { x, y, w, h, color } => {
+                                client_window.draw_rectangle(x, y, w, h, color);
+                            },
+                            DrawCommand::OutlinedRect { x, y, w, h, thickness, color } => {
+                                client_window.draw_outlined_rectangle(x, y, w, h, thickness, color);
+                            },
+                            DrawCommand::Text { font, text, x, y, scale, color } => {
+                                client_window.draw_text(
+                                    &font.to_str().unwrap().to_owned(), 
+                                    &text.to_str().unwrap().to_owned(), 
+                                    x,
+                                    y, 
+                                    scale, 
+                                    color
+                                );
+                            },
+                        }
+                    }
+
+                    client_window.render_text();
+    
                     client_window.surface.swap_buffers(&client_window.context).unwrap();
                 }
                 _ => (),

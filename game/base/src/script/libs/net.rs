@@ -1,4 +1,4 @@
-use mlua::{Lua, Table};
+use mlua::{Lua};
 use crate::network::usermessage::{UserMsgWriter, hash_usermessage_name};
 
 pub fn register_net_lib(
@@ -18,8 +18,8 @@ pub fn register_net_lib(
     net_table.set("writer", writer_func).expect("[net] Failed to set writer");
 
     let send_func = lua.create_function(move |_, (msg_name, writer_data): (String, mlua::AnyUserData)| {
-        let msg_hash = hash_usermessage_name(msg_name.as_str());
-        let writer = writer_data.borrow::<UserMsgWriter>()?;
+        let _msg_hash = hash_usermessage_name(msg_name.as_str());
+        let _writer = writer_data.borrow::<UserMsgWriter>()?;
 
         Ok(())
     }).expect("[net] Failed to create send function");

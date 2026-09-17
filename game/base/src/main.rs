@@ -20,8 +20,6 @@ fn main() {
     
     #[cfg(feature = "server")]
     {
-        let server_args = cmdargs.clone();
-
         println!("Starting server network loop");
         let (server_tx, server_rx) = std::sync::mpsc::channel();
         let (server_out_tx, server_out_rx) = std::sync::mpsc::channel();
@@ -29,7 +27,7 @@ fn main() {
             server::server_network_loop(server_tx, server_out_rx);
         });
 
-        let mut server_game = GameState::new(
+        let server_game = GameState::new(
             Realm::Server,
             server_rx,
             server_out_tx,
@@ -39,7 +37,7 @@ fn main() {
         #[cfg(feature = "client")]
         std::thread::spawn(move || {
             println!("Starting Server loop");
-            server::server_loop(server_game, server_args);
+            server::server_loop(server_game);
         });
 
         #[cfg(not(feature = "client"))]
@@ -51,8 +49,6 @@ fn main() {
 
     #[cfg(feature = "client")]
     {
-        let client_args = cmdargs.clone();
-
         let (client_tx, client_rx) = std::sync::mpsc::channel();
         let (client_out_tx, client_out_rx) = std::sync::mpsc::channel();
         println!("Starting Client network loop");
@@ -60,13 +56,13 @@ fn main() {
             client::client_network_loop(client_tx, client_out_rx);
         });
 
-        let mut client_game = GameState::new(
+        let client_game = GameState::new(
             Realm::Client,
             client_rx,
             client_out_tx,
             tick_interval
         );
         println!("Entering Client loop");
-        client::client_loop(client_game, client_args);
+        client::client_loop(client_game);
     }
 }

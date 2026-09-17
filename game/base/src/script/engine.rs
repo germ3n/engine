@@ -1,11 +1,17 @@
-use crate::{network::usermessage::hash_usermessage_name, ui::Color};
 use crate::ui::window::Window;
 use mlua::{Lua, RegistryKey};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicU32, Ordering}};
-use crate::network::usermessage::UserMsgWriter;
+use std::sync::{Arc, Mutex, atomic::{AtomicU64}};
 use crate::script::libs::{register_engine_lib, register_surface_lib};
 use crate::script::libs::register_net_lib;
-//todo: move functions to seperate libs.rs
+use crate::ui::Color;
+
+pub enum DrawCommand {
+    Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
+    OutlinedRect { x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color },
+    Text { font: mlua::LuaString, text: mlua::LuaString, x: f32, y: f32, scale: f32, color: Color },
+}
+
+pub type RenderQueue = Arc<Mutex<Vec<DrawCommand>>>;
 
 #[derive(Clone, Copy)]
 pub enum Realm {
@@ -23,11 +29,12 @@ pub struct ScriptEngine {
     pub realm: Realm,
     pub hook_caller: RegistryKey,
     pub net_caller: RegistryKey,
-    pub window_ptr: Arc<Mutex<DynWindowPtr>>,
+    //pub window_ptr: Arc<Mutex<DynWindowPtr>>,
     pub tick_interval: f64,
     pub cur_time: Arc<AtomicU64>,
     pub frame_time: Arc<AtomicU64>,
     pub tick_count: Arc<AtomicU64>,
+    pub render_queue: RenderQueue,
 }
 
 impl ScriptEngine {
@@ -56,9 +63,10 @@ impl ScriptEngine {
             }
         }
 
-        let window_ptr = Arc::new(Mutex::new(DynWindowPtr(None)));
+        //let window_ptr = Arc::new(Mutex::new(DynWindowPtr(None)));
+        let render_queue = Arc::new(Mutex::new(Vec::new()));
         if !matches!(realm, Realm::Server) {
-            register_surface_lib(&lua, window_ptr.clone());
+            register_surface_lib(&lua, render_queue.clone());
         }
         
         let hook_table: mlua::Table = lua.globals().get("hook").unwrap();
@@ -74,11 +82,12 @@ impl ScriptEngine {
             realm,
             hook_caller,
             net_caller,
-            window_ptr,
+            //window_ptr,
             tick_interval,
             cur_time,
             frame_time,
             tick_count,
+            render_queue: render_queue.clone(),
         }
     }
 

@@ -239,7 +239,7 @@ impl Window for OpenGLWindow {
             self.gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
         }
 
-        for (font, glyph_brush) in self.glyph_brushes.iter_mut() {
+        for (_, glyph_brush) in self.glyph_brushes.iter_mut() {
             glyph_brush.draw_queued(&self.gl, size.width, size.height).expect("Failed to draw text");
         }
     }

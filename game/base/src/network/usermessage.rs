@@ -1,6 +1,3 @@
-use wincode::SchemaWrite;
-use wincode::config::DefaultConfig;
-use wincode::SchemaRead;
 use mlua::{UserData, UserDataMethods};
 
 pub fn hash_usermessage_name(name: &str) -> u32 {
@@ -71,52 +68,52 @@ impl UserMsgWriter {
 
 impl UserData for UserMsgWriter {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("write_u8", |_, this, (value): (u8)| {
+        methods.add_method_mut("write_u8", |_, this, value: u8| {
             this.data.push(value);
             Ok(())
         });
 
-        methods.add_method_mut("write_i8", |_, this, (value): (i8)| {
+        methods.add_method_mut("write_i8", |_, this, value: i8| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_u16", |_, this, (value): (u16)| {
+        methods.add_method_mut("write_u16", |_, this, value: u16| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_i16", |_, this, (value): (i16)| {
+        methods.add_method_mut("write_i16", |_, this, value: i16| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_u32", |_, this, (value): (u32)| {
+        methods.add_method_mut("write_u32", |_, this, value: u32| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_i32", |_, this, (value): (i32)| {
+        methods.add_method_mut("write_i32", |_, this, value: i32| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_u64", |_, this, (value): (u64)| {
+        methods.add_method_mut("write_u64", |_, this, value: u64| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_i64", |_, this, (value): (i64)| {
+        methods.add_method_mut("write_i64", |_, this, value: i64| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_f32", |_, this, (value): (f32)| {
+        methods.add_method_mut("write_f32", |_, this, value: f32| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
 
-        methods.add_method_mut("write_f64", |_, this, (value): (f64)| {
+        methods.add_method_mut("write_f64", |_, this, value: f64| {
             this.data.extend_from_slice(&value.to_le_bytes());
             Ok(())
         });
@@ -245,7 +242,7 @@ impl UserData for UserMsgReader {
             Ok(Some(val))
         });
 
-        methods.add_method_mut("read_i8", |_, this, ()| {
+        methods.add_method_mut("read_i8", |_, _this, ()| {
             /*if this.idx >= this.data.len() { return Ok(None); }
             let val = this.data[this.idx];
             this.idx += size_of::<i8>();

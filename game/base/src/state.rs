@@ -4,7 +4,7 @@ use crate::console::{ConVar, ConVarValue};
 use std::sync::mpsc::{Receiver, Sender};
 use std::collections::HashMap;
 use crate::script::{ScriptEngine, Realm};
-use std::sync::{Arc, Mutex, atomic::{AtomicU64, AtomicU32, Ordering}};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 pub struct GameState {
     pub realm: Realm,
