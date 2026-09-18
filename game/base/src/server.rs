@@ -8,7 +8,7 @@ use crate::network::{PacketType, NetSend};
 use crate::network::usermessage::hash_usermessage_name;
 
 #[cfg(feature = "server")]
-pub fn server_loop(mut game: GameState) {
+pub fn server_loop(game: GameState) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
     let mut tick_idx = 0; 

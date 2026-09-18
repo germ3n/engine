@@ -138,9 +138,14 @@ pub fn client_loop(mut game: GameState) {
 }
 
 #[cfg(feature = "client")]
-pub fn client_network_loop(tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
-    let mut client = NetworkClient::new(SocketAddr::from_str("0.0.0.0:0").unwrap());
-    client.connect(SocketAddr::from_str("127.0.0.1:25400").unwrap()).unwrap();
+pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
+    let local_addr = if server_addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
+    let mut client = NetworkClient::new(SocketAddr::from_str(local_addr).unwrap());
+    client.connect(server_addr).expect("Failed to connect to server");
     let mut reliable_chan = ReliableChannel::new();
     let mut connected = false;
     let mut assembler = FragmentAssembler::new(); 

@@ -1,4 +1,3 @@
-use crate::ui::window::Window;
 use mlua::{Lua, RegistryKey};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64}};
 use crate::script::libs::{register_engine_lib, register_surface_lib, register_net_lib, register_convar_lib};

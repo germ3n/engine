@@ -20,12 +20,22 @@ impl UserData for LuaConVar {
             }
         });
 
+        /*methods.add_method_mut("set_value_int", |_, this, value: i64| {
+            this.cvar.set_value(ConVarValue::Integer(value));
+            Ok(())
+        });*/
+
         methods.add_method_mut("get_value_float", |_, this, ()| {
             match this.cvar.value {
                 ConVarValue::Float(val) => Ok(val),
                 _ => Err(Error::RuntimeError("ConVar is not a float".to_string())),
             }
         });
+
+        /*methods.add_method_mut("set_value_float", |_, this, value: f64| {
+            this.cvar.set_value(ConVarValue::Float(value));
+            Ok(())
+        });*/
     }
 }
 

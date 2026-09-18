@@ -9,6 +9,8 @@ pub mod script;
 
 use crate::state::GameState;
 use crate::script::Realm;
+use std::net::SocketAddr;
+use std::str::FromStr;
 
 fn main() {
     let cmdargs = console::get_cmdline_args();
@@ -53,7 +55,11 @@ fn main() {
         let (client_out_tx, client_out_rx) = std::sync::mpsc::channel();
         println!("Starting Client network loop");
         std::thread::spawn(move || {
-            client::client_network_loop(client_tx, client_out_rx);
+            client::client_network_loop(
+                SocketAddr::from_str("127.0.0.1:25400").expect("Failed to create SocketAddr"), 
+                client_tx, 
+                client_out_rx
+            );
         });
 
         let client_game = GameState::new(

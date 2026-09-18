@@ -20,7 +20,8 @@ pub struct NetworkServer {
 
 impl NetworkServer {
     pub fn new(port: u16, max_clients: u32) -> Self {
-        let socket = UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap();
+        //let socket = UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap();
+        let socket = UdpSocket::bind(format!("[::]:{}", port)).unwrap();
         socket.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
         Self {
             port,
