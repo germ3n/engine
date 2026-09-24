@@ -1,8 +1,8 @@
 use mlua::{Lua, RegistryKey, StdLib, LuaOptions};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64}};
 use crate::script::libs::{
-    register_convar_lib, register_engine_lib, register_net_lib, 
-    register_surface_lib, register_vector3_lib
+    register_angle3_lib, register_convar_lib, register_engine_lib, 
+    register_net_lib, register_surface_lib, register_vector3_lib
 };
 use crate::ui::Color;
 use std::collections::HashMap;
@@ -63,6 +63,7 @@ impl ScriptEngine {
 
             register_convar_lib(&lua, cvars);
             register_vector3_lib(&lua);
+            register_angle3_lib(&lua);
         }
 
         let render_queue = Arc::new(Mutex::new(Vec::new()));

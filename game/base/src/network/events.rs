@@ -1,5 +1,6 @@
 use wincode::{SchemaWrite, SchemaRead};
 use crate::script::libs::vector3::Vector3;
+use crate::script::libs::angle3::Angle3;
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum NetworkEvent {
@@ -19,7 +20,7 @@ pub enum NetworkEvent {
 
     ModelChanged { id: u32, model: String },
     PositionUpdated { id: u32, position: Vector3 },
-    TransformUpdated { id: u32, position: Vector3, velocity: Vector3 },
+    TransformUpdated { id: u32, position: Vector3, angles: Angle3, velocity: Vector3 },
     PlaySound { sound_hash: u32, entity_id: Option<u32>, position: Vector3, volume: f32, pitch: f32 },
     PlayEffect { effect_hash: u32, position: Vector3, normal: Vector3 },
     AnimationTriggered { entity_id: u32, sequence_id: u16, playback_rate: f32 },
@@ -37,7 +38,7 @@ pub enum NetworkEvent {
     WeaponReloaded { entity_id: u32 },
     ItemEquipped { entity_id: u32, slot: u8, item_id: u32 },
     // CLIENT->SERVER Events
-    PlayerInput { tick: u64, buttons: u64, movement: Vector3 },
+    PlayerInput { tick: u64, buttons: u64, movement: Vector3, viewangles: Angle3 },
 }
 
 #[derive(Clone, Debug)]

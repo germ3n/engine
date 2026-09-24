@@ -1,0 +1,81 @@
+name: Compile & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Commit SHA, branch, or tag to build (leave blank for latest default branch commit)'
+        required: false
+        type: string
+      release_tag:
+        description: 'Custom release tag (e.g. v1.0.0). Defaults to build-<short-sha>'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary_name: base
+            asset_name: base-linux-x86_64
+          - os: windows-latest
+            binary_name: base.exe
+            asset_name: base-windows-x86_64.exe
+          - os: macos-latest
+            binary_name: base
+            asset_name: base-macos-arm64
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.ref }}
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Release Binary
+        run: cargo build --release --bin base
+
+      - name: Determine Release Tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            TAG="${{ inputs.release_tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            TAG="build-${SHORT_SHA}"
+          fi
+          echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Prepare Asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
+
+      - name: Upload Asset to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          files: dist/${{ matrix.asset_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
