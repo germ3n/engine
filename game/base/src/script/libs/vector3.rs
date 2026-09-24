@@ -1,31 +1,32 @@
 use mlua::{Error, FromLua, IntoLua, Lua, Function, Result, Table, Value};
+use wincode::{SchemaWrite, SchemaRead};
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(SchemaWrite, SchemaRead, Copy, Clone, Debug, Default, PartialEq)]
 pub struct Vector3 {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
 impl Vector3 {
     #[inline]
-    pub const fn new(x: f32, y: f32, z: f32) -> Self {
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
         Self { x, y, z }
     }
 
     #[inline]
-    pub fn len_sq(self) -> f32 {
+    pub fn len_sq(self) -> f64 {
         self.x * self.x + self.y * self.y + self.z * self.z
     }
 
     #[inline]
-    pub fn len(self) -> f32 {
+    pub fn len(self) -> f64 {
         self.len_sq().sqrt()
     }
 
     #[inline]
-    pub fn dot(self, other: Self) -> f32 {
+    pub fn dot(self, other: Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
 

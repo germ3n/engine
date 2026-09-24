@@ -120,19 +120,32 @@ pub fn client_loop(mut game: GameState) {
                     match net_event {
                         NetworkEvent::PlayerConnected { id, name } => {
                             game.script_engine.run_hook("PlayerConnected", (id, name));
-                        }
+                        },
                         NetworkEvent::PlayerDisconnected { id } => {
                             game.script_engine.run_hook("PlayerDisconnected", id);
-                        }
+                        },
                         NetworkEvent::PlayerSpawned { id } => {
                             game.script_engine.run_hook("PlayerSpawned", id);
-                        }
+                        },
+                        NetworkEvent::PlayerDamaged { id, attacker, inflictor, damage, new_health } => {
+                            game.script_engine.run_hook("PlayerDamaged", (id, attacker, inflictor, damage, new_health));
+                        },
                         NetworkEvent::PlayerDied { id, killer, inflictor } => {
                             game.script_engine.run_hook("PlayerDied", (id, killer, inflictor));
-                        }
+                        },
+
+                        NetworkEvent::ModelChanged { id, model } => {
+                            game.script_engine.run_hook("ModelChanged", (id, model));
+                        },
+                        NetworkEvent::PositionUpdated { id, position } => {
+                            game.script_engine.run_hook("PositionUpdated", (id, position));
+                        },
+
                         NetworkEvent::UserMessage { hash, data } => {
                             game.script_engine.run_usermessage(hash, UserMsgReader::new(data));
-                        }
+                        },
+
+                        _ => { panic!() },
                     }
                 }
 
@@ -186,7 +199,6 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx
                         }
                         PacketType::Reliable { sequence, payload } => {
                             connected = true;
-                            // Send ACK back to server
                             let ack_packet = PacketType::Ack { sequence };
                             let ack_bytes = wincode::serialize(&ack_packet).unwrap();
                             let _ = client.send_message(&ack_bytes);
@@ -224,7 +236,6 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx
                 }
             }
             Err(_) => {
-                // Timeout hit, allows resends to execute cleanly without spamming logs
                 if !connected {
                     let _ = client.send_message(&connect_bytes);
                 }
