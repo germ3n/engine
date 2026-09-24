@@ -118,11 +118,17 @@ pub fn client_loop(mut game: GameState) {
 
                 while let Ok(net_event) = game.network_receiver.try_recv() {
                     match net_event {
-                        NetworkEvent::PlayerSpawned { id, position } => {
-                            game.script_engine.run_hook("PlayerSpawned", (id, position));
+                        NetworkEvent::PlayerConnected { id, name } => {
+                            game.script_engine.run_hook("PlayerConnected", (id, name));
                         }
                         NetworkEvent::PlayerDisconnected { id } => {
                             game.script_engine.run_hook("PlayerDisconnected", id);
+                        }
+                        NetworkEvent::PlayerSpawned { id } => {
+                            game.script_engine.run_hook("PlayerSpawned", id);
+                        }
+                        NetworkEvent::PlayerDied { id, killer, inflictor } => {
+                            game.script_engine.run_hook("PlayerDied", (id, killer, inflictor));
                         }
                         NetworkEvent::UserMessage { hash, data } => {
                             game.script_engine.run_usermessage(hash, UserMsgReader::new(data));

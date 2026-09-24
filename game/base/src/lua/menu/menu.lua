@@ -8,11 +8,17 @@ hook.add("PlayerSpawned", "test", function(id, pos)
     print("test plyspawned");
 end);
 
+cvar.get("sv_gravity"):add_change_callback(function(new_value)
+    print("callback", new_value)
+end);
+
 net.add_callback("Test", function(reader)
-    local writer = net.writer();
+    local writer = net.writer(4); -- with 4 capacity, todo: maybe error when exceeding capacity
     print(tostring(writer))
     writer:write_f32(0);
 
     net.send("Test", writer);
     print(tostring(cvar.get("sv_gravity")), tostring(cvar.get("sv_gravity"):get_value_float()));
+
+    cvar.get("sv_gravity"):set_value_float(600.0)
 end);

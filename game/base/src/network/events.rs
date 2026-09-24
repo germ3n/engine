@@ -3,8 +3,10 @@ use wincode::{SchemaWrite, SchemaRead};
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum NetworkEvent {
     // SERVER->CLIENT Events
-    PlayerSpawned { id: u32, position: [f32; 3] },
+    PlayerConnected { id: u32, name: String },
     PlayerDisconnected { id: u32 },
+    PlayerSpawned { id: u32 },
+    PlayerDied { id: u32, killer: u32, inflictor: u32 },
     // SERVER<->CLIENT Events
     UserMessage { hash: u32, data: Vec<u8>  }
 }

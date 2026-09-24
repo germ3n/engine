@@ -1,6 +1,9 @@
-use mlua::{Lua, RegistryKey};
+use mlua::{Lua, RegistryKey, StdLib, LuaOptions};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64}};
-use crate::script::libs::{register_engine_lib, register_surface_lib, register_net_lib, register_convar_lib};
+use crate::script::libs::{
+    register_convar_lib, register_engine_lib, register_net_lib, 
+    register_surface_lib, register_vector3_lib
+};
 use crate::ui::Color;
 use std::collections::HashMap;
 use crate::console::ConVar;
@@ -41,7 +44,7 @@ impl ScriptEngine {
         tick_count: Arc<AtomicU64>,
         cvars: Arc<HashMap<String, Arc<ConVar>>>
     ) -> Self {
-        let lua = Lua::new();
+        let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
         lua.globals().set("CLIENT", matches!(realm, Realm::Client)).expect("Failed to set CLIENT global");
         lua.globals().set("SERVER", matches!(realm, Realm::Server)).expect("Failed to set SERVER global");
         lua.globals().set("MENU", matches!(realm, Realm::Menu)).expect("Failed to set MENU global");
@@ -59,6 +62,7 @@ impl ScriptEngine {
             }
 
             register_convar_lib(&lua, cvars);
+            register_vector3_lib(&lua);
         }
 
         let render_queue = Arc::new(Mutex::new(Vec::new()));
