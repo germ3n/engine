@@ -1,25 +1,36 @@
+use crate::script::libs::vector3::Vector3;
+use crate::script::libs::angle3::Angle3;
+use crate::entities::handle::EntityHandle;
+use crate::entities::list::EntityList;
+
 pub trait Networkable {
-    fn entity_id(&self) -> i32;
+    fn handle(&self) -> EntityHandle;
     fn sync_network_vars(&self);
 }
 
 pub struct BaseEntityData {
-    pub entity_id: i32,
-    pub position: [f64; 3]
+    pub handle: EntityHandle,
+    pub position: Vector3,
+    pub angles: Angle3,
+    pub velocity: Vector3,
 }
 
 impl Default for BaseEntityData {
     fn default() -> Self {
         Self {
-            entity_id: 0,
-            position: [0.0; 3]
+            handle: EntityHandle::NULL,
+            position: Vector3 { x: 0.0, y: 0.0, z: 0.0 },
+            angles: Angle3 { p: 0.0, y: 0.0, r: 0.0 },
+            velocity: Vector3 { x: 0.0, y: 0.0, z: 0.0 },
         }
-    }   
+    }
 }
+
+pub type DynEntity = dyn BaseEntity + Send;
 
 pub trait BaseEntity: Networkable {
     fn base(&self) -> &BaseEntityData;
     fn base_mut(&mut self) -> &mut BaseEntityData;
-    fn on_spawn(&mut self);
-    fn tick(&mut self);
+    fn on_spawn(&mut self, list: &mut EntityList);
+    fn tick(&mut self, list: &mut EntityList);
 }

@@ -39,8 +39,8 @@ pub fn Networkable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #ast
 
         impl Networkable for #name {
-            fn entity_id(&self) -> i32 {
-                self.base.entity_id
+            fn handle(&self) -> EntityHandle { 
+                self.base.handle 
             }
 
             fn sync_network_vars(&self) {

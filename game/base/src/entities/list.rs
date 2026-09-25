@@ -1,21 +1,18 @@
-use std::collections::{HashMap, BinaryHeap};
-use std::cmp::Reverse;
-use crate::entities::BaseEntity;
+use std::collections::VecDeque;
+use crate::entities::{EntityHandle, DynEntity};
 
-pub struct EntityList {
-    entities: HashMap<i32, Box<dyn BaseEntity + Send>>,
-    next_id: i32,
-    free_ids: BinaryHeap<Reverse<i32>>,
+const MIN_FREE_SLOTS: usize = 64;
+
+struct Slot {
+    generation: u16,
+    entity: Option<Box<DynEntity>>,
 }
 
-impl Default for EntityList {
-    fn default() -> Self {
-        Self {
-            entities: HashMap::new(),
-            next_id: 1,
-            free_ids: BinaryHeap::new(),
-        }
-    }
+#[derive(Default)]
+pub struct EntityList {
+    slots: Vec<Slot>,
+    free: VecDeque<u32>,
+    count: usize,
 }
 
 impl EntityList {
@@ -23,33 +20,171 @@ impl EntityList {
         Self::default()
     }
 
-    pub fn spawn_entity(&mut self, mut entity: Box<dyn BaseEntity + Send>) -> i32 {
-        let id = if let Some(Reverse(reused_id)) = self.free_ids.pop() {
-            reused_id
-        } else {
-            let new_id = self.next_id;
-            self.next_id += 1;
-            new_id
-        };
-
-        entity.base_mut().entity_id = id;
-        entity.on_spawn(); 
-        self.entities.insert(id, entity);
-
-        id
+    pub fn len(&self) -> usize {
+        self.count
     }
 
-    pub fn remove_entity(&mut self, id: i32) -> Option<Box<dyn BaseEntity + Send>> {
-        let entity = self.entities.remove(&id);
-        
-        if entity.is_some() {
-            self.free_ids.push(Reverse(id));
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub fn is_valid(&self, handle: EntityHandle) -> bool {
+        match self.slots.get(handle.index() as usize) {
+            Some(slot) => slot.generation == handle.generation() && !handle.is_null(),
+            None => false,
         }
-        
-        entity
     }
 
-    pub fn get_entity(&self, id: i32) -> Option<&Box<dyn BaseEntity + Send>> {
-        self.entities.get(&id)
+    fn allocate_index(&mut self) -> Option<u32> {
+        let at_capacity = self.slots.len() >= EntityHandle::MAX_ENTITIES;
+
+        if at_capacity || self.free.len() > MIN_FREE_SLOTS {
+            while let Some(idx) = self.free.pop_front() {
+                if self.slots[idx as usize].entity.is_none() {
+                    return Some(idx);
+                }
+            }
+        }
+
+        if at_capacity {
+            return None;
+        }
+
+        let idx = self.slots.len() as u32;
+        self.slots.push(Slot { generation: 0, entity: None });
+
+        Some(idx)
+    }
+
+    pub fn spawn(&mut self, mut entity: Box<DynEntity>) -> Option<EntityHandle> {
+        let idx = self.allocate_index()?;
+
+        let slot = &mut self.slots[idx as usize];
+        slot.generation = EntityHandle::next_generation(slot.generation);
+
+        let handle = EntityHandle::new(idx, slot.generation);
+        entity.base_mut().handle = handle;
+        slot.entity = Some(entity);
+        self.count += 1;
+
+        self.with_entity(handle, |entity, list| entity.on_spawn(list));
+
+        Some(handle)
+    }
+
+    pub fn insert_at(&mut self, handle: EntityHandle, mut entity: Box<DynEntity>) -> bool {
+        if handle.is_null() {
+            return false;
+        }
+
+        let idx = handle.index() as usize;
+        if idx >= self.slots.len() {
+            self.slots.resize_with(idx + 1, || Slot { generation: 0, entity: None });
+        }
+
+        let slot = &mut self.slots[idx];
+        if slot.entity.is_some() {
+            return false;
+        }
+
+        slot.generation = handle.generation();
+        entity.base_mut().handle = handle;
+        slot.entity = Some(entity);
+        self.count += 1;
+
+        self.with_entity(handle, |entity, list| entity.on_spawn(list));
+
+        true
+    }
+
+    pub fn remove(&mut self, handle: EntityHandle) -> bool {
+        let idx = handle.index() as usize;
+        let Some(slot) = self.slots.get_mut(idx) else { return false; };
+
+        if slot.generation != handle.generation() || handle.is_null() {
+            return false;
+        }
+
+        slot.entity = None;
+        slot.generation = EntityHandle::next_generation(slot.generation);
+        self.free.push_back(handle.index());
+        self.count -= 1;
+
+        true
+    }
+
+    pub fn get(&self, handle: EntityHandle) -> Option<&DynEntity> {
+        let slot = self.slots.get(handle.index() as usize)?;
+        if slot.generation != handle.generation() {
+            return None;
+        }
+
+        slot.entity.as_deref()
+    }
+
+    pub fn get_mut(&mut self, handle: EntityHandle) -> Option<&mut DynEntity> {
+        let slot = self.slots.get_mut(handle.index() as usize)?;
+        if slot.generation != handle.generation() {
+            return None;
+        }
+
+        slot.entity.as_deref_mut()
+    }
+
+    pub fn with_entity<R>(
+        &mut self,
+        handle: EntityHandle,
+        func: impl FnOnce(&mut DynEntity, &mut Self) -> R,
+    ) -> Option<R> {
+        let idx = handle.index() as usize;
+        let slot = self.slots.get_mut(idx)?;
+
+        if slot.generation != handle.generation() {
+            return None;
+        }
+
+        let mut entity = slot.entity.take()?;
+        let result = func(entity.as_mut(), self);
+
+        let slot = &mut self.slots[idx];
+        if slot.generation == handle.generation() {
+            slot.entity = Some(entity);
+        }
+
+        Some(result)
+    }
+
+    pub fn tick_all(&mut self) {
+        let len = self.slots.len();
+
+        for idx in 0..len {
+            let slot = &self.slots[idx];
+            if slot.entity.is_none() {
+                continue;
+            }
+
+            let handle = EntityHandle::new(idx as u32, slot.generation);
+            self.with_entity(handle, |entity, list| entity.tick(list));
+        }
+    }
+
+    pub fn handles(&self) -> Vec<EntityHandle> {
+        let mut out = Vec::with_capacity(self.count);
+
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if slot.entity.is_some() {
+                out.push(EntityHandle::new(idx as u32, slot.generation));
+            }
+        }
+
+        out
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (EntityHandle, &DynEntity)> {
+        self.slots.iter().enumerate().filter_map(|(idx, slot)| {
+            let entity = slot.entity.as_deref()?;
+
+            Some((EntityHandle::new(idx as u32, slot.generation), entity))
+        })
     }
 }

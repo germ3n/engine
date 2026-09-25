@@ -18,8 +18,9 @@ glutin-winit = "=0.4.2"
 raw-window-handle = "=0.5.2"
 glow = "=0.12.3"
 glow_glyph = "0.6.0"
-mlua = { version = "0.12.1", features = ["luajit52", "send", "vendored"] }
+mlua = { version = "0.12.1", features = ["luajit52", "send"] }
 wincode = { version = "0.6.1", features = ["derive"] }
+bitflags = "2.13.2"
 
 [features]
 default = ["client", "server"]

@@ -118,27 +118,31 @@ pub fn client_loop(mut game: GameState) {
 
                 while let Ok(net_event) = game.network_receiver.try_recv() {
                     match net_event {
-                        NetworkEvent::PlayerConnected { id, name } => {
-                            game.script_engine.run_hook("PlayerConnected", (id, name));
+                        NetworkEvent::PlayerConnected { handle, name } => {
+                            game.script_engine.run_hook("PlayerConnected", (handle, name));
                         },
-                        NetworkEvent::PlayerDisconnected { id } => {
-                            game.script_engine.run_hook("PlayerDisconnected", id);
+                        NetworkEvent::PlayerDisconnected { handle } => {
+                            game.script_engine.run_hook("PlayerDisconnected", handle);
                         },
-                        NetworkEvent::PlayerSpawned { id } => {
-                            game.script_engine.run_hook("PlayerSpawned", id);
+                        NetworkEvent::PlayerSpawned { handle } => {
+                            game.script_engine.run_hook("PlayerSpawned", handle);
                         },
-                        NetworkEvent::PlayerDamaged { id, attacker, inflictor, damage, new_health } => {
-                            game.script_engine.run_hook("PlayerDamaged", (id, attacker, inflictor, damage, new_health));
+                        NetworkEvent::PlayerDamaged { handle, attacker, inflictor, damage, new_health } => {
+                            game.script_engine.run_hook("PlayerDamaged", (handle, attacker, inflictor, damage, new_health));
                         },
-                        NetworkEvent::PlayerDied { id, killer, inflictor } => {
-                            game.script_engine.run_hook("PlayerDied", (id, killer, inflictor));
+                        NetworkEvent::PlayerDied { handle, killer, inflictor } => {
+                            game.script_engine.run_hook("PlayerDied", (handle, killer, inflictor));
                         },
+                        NetworkEvent::ModelChanged { handle, model } => {
+                            game.script_engine.run_hook("ModelChanged", (handle, model));
+                        },
+                        NetworkEvent::TransformUpdated { handle, position, angles, velocity } => {
+                            let entity = game.entities.get_mut(handle).expect("Failed to get entity");
+                            if let Some(pos) = position { entity.base_mut().position = pos; }
+                            if let Some(ang) = angles { entity.base_mut().angles = ang; }
+                            if let Some(vel) = velocity { entity.base_mut().velocity = vel; }
 
-                        NetworkEvent::ModelChanged { id, model } => {
-                            game.script_engine.run_hook("ModelChanged", (id, model));
-                        },
-                        NetworkEvent::PositionUpdated { id, position } => {
-                            game.script_engine.run_hook("PositionUpdated", (id, position));
+                            game.script_engine.run_hook("TransformUpdated", (handle, position, angles, velocity));
                         },
 
                         NetworkEvent::UserMessage { hash, data } => {

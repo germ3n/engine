@@ -6,6 +6,7 @@ pub mod server;
 pub mod console;
 pub mod ui;
 pub mod script;
+pub mod r#enum;
 
 use crate::state::GameState;
 use crate::script::Realm;
