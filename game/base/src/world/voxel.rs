@@ -147,6 +147,7 @@ pub struct VoxelWorld {
     dirty: HashSet<ChunkPos>,
     scale: f64,
     scale_dirty: bool,
+    revision: u64,
 }
 
 impl VoxelWorld {
@@ -160,7 +161,16 @@ impl VoxelWorld {
             dirty: HashSet::new(),
             scale: finite_scale(scale).unwrap_or(1.0),
             scale_dirty: false,
+            revision: 0,
         }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn scale(&self) -> f64 {
@@ -178,6 +188,7 @@ impl VoxelWorld {
 
         self.scale = scale;
         self.scale_dirty = true;
+        self.touch();
 
         true
     }
@@ -187,8 +198,13 @@ impl VoxelWorld {
             return false;
         };
 
+        if scale == self.scale {
+            return true;
+        }
+
         self.scale = scale;
         self.scale_dirty = false;
+        self.touch();
 
         true
     }
@@ -217,6 +233,8 @@ impl VoxelWorld {
             self.scale = 1.0;
             self.scale_dirty = true;
         }
+
+        self.touch();
     }
 
     pub fn chunk_count(&self) -> usize {
@@ -263,12 +281,15 @@ impl VoxelWorld {
                 self.chunks.remove(&chunk_pos);
             }
 
+            self.touch();
+
             return;
         }
 
         let chunk = self.chunks.entry(chunk_pos).or_insert_with(Chunk::empty);
         chunk.blocks[slot] = block.0;
         self.dirty.insert(chunk_pos);
+        self.touch();
     }
 
     pub fn fill(&mut self, min: BlockPos, max: BlockPos, block: Block) {
@@ -296,7 +317,9 @@ impl VoxelWorld {
         let pos = ChunkPos { x: update.x, y: update.y, z: update.z };
 
         if update.runs.is_empty() {
-            self.chunks.remove(&pos);
+            if self.chunks.remove(&pos).is_some() {
+                self.touch();
+            }
 
             return true;
         }
@@ -321,14 +344,45 @@ impl VoxelWorld {
         }
 
         if blocks.iter().all(|block| *block == 0) {
-            self.chunks.remove(&pos);
+            if self.chunks.remove(&pos).is_some() {
+                self.touch();
+            }
 
             return true;
         }
 
         self.chunks.insert(pos, Chunk { blocks: blocks.into_boxed_slice() });
+        self.touch();
 
         true
+    }
+
+    pub fn mesh(&self) -> Vec<f32> {
+        let mut vertices = Vec::new();
+        let scale = self.scale as f32;
+
+        for (chunk_pos, chunk) in &self.chunks {
+            for idx in 0..chunk.blocks.len() {
+                let id = chunk.blocks[idx];
+
+                if id == 0 {
+                    continue;
+                }
+
+                let edge = CHUNK_EDGE as usize;
+                let local_x = (idx % edge) as i32;
+                let local_y = ((idx / edge) % edge) as i32;
+                let local_z = (idx / (edge * edge)) as i32;
+                let pos = BlockPos::new(
+                    chunk_pos.x * CHUNK_EDGE + local_x,
+                    chunk_pos.y * CHUNK_EDGE + local_y,
+                    chunk_pos.z * CHUNK_EDGE + local_z,
+                );
+                push_block(&mut vertices, self, pos, id, scale);
+            }
+        }
+
+        vertices
     }
 
     pub fn baseline(&self) -> Vec<ChunkUpdate> {
@@ -475,6 +529,85 @@ impl Default for VoxelWorld {
     fn default() -> Self {
         Self::new()
     }
+}
+
+const NEIGHBORS: [(i32, i32, i32); 6] = [
+    (1, 0, 0),
+    (-1, 0, 0),
+    (0, 1, 0),
+    (0, -1, 0),
+    (0, 0, 1),
+    (0, 0, -1),
+];
+
+const QUADS: [[(i32, i32, i32); 4]; 6] = [
+    [(1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)],
+    [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)],
+    [(0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)],
+    [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)],
+    [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)],
+    [(0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)],
+];
+
+const SHADES: [f32; 6] = [0.72, 0.62, 0.58, 0.5, 1.0, 0.4];
+
+fn push_block(vertices: &mut Vec<f32>, world: &VoxelWorld, pos: BlockPos, id: u16, scale: f32) {
+    let x0 = pos.x as f32 * scale;
+    let y0 = pos.y as f32 * scale;
+    let z0 = pos.z as f32 * scale;
+    let [red, green, blue] = block_rgb(id);
+
+    for face in 0..6 {
+        let (nx, ny, nz) = NEIGHBORS[face];
+
+        if world.is_solid(BlockPos::new(pos.x + nx, pos.y + ny, pos.z + nz)) {
+            continue;
+        }
+
+        let shade = SHADES[face];
+        let cr = red * shade;
+        let cg = green * shade;
+        let cb = blue * shade;
+        let quad = QUADS[face];
+        let mut corners = [[0.0f32; 3]; 4];
+
+        for corner in 0..4 {
+            corners[corner] = [
+                x0 + quad[corner].0 as f32 * scale,
+                y0 + quad[corner].1 as f32 * scale,
+                z0 + quad[corner].2 as f32 * scale,
+            ];
+        }
+
+        push_tri(vertices, corners[0], corners[1], corners[2], cr, cg, cb);
+        push_tri(vertices, corners[0], corners[2], corners[3], cr, cg, cb);
+    }
+}
+
+fn push_tri(vertices: &mut Vec<f32>, a: [f32; 3], b: [f32; 3], c: [f32; 3], red: f32, green: f32, blue: f32) {
+    push_vert(vertices, a, red, green, blue);
+    push_vert(vertices, b, red, green, blue);
+    push_vert(vertices, c, red, green, blue);
+}
+
+fn push_vert(vertices: &mut Vec<f32>, position: [f32; 3], red: f32, green: f32, blue: f32) {
+    vertices.push(position[0]);
+    vertices.push(position[1]);
+    vertices.push(position[2]);
+    vertices.push(red);
+    vertices.push(green);
+    vertices.push(blue);
+}
+
+fn block_rgb(id: u16) -> [f32; 3] {
+    let mut n = (id as u32).wrapping_mul(1664525).wrapping_add(1013904223);
+    let red = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
+    n = n.wrapping_mul(1664525).wrapping_add(1013904223);
+    let green = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
+    n = n.wrapping_mul(1664525).wrapping_add(1013904223);
+    let blue = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
+
+    [red, green, blue]
 }
 
 fn floor_i32(value: f64) -> i32 {
@@ -702,5 +835,54 @@ mod tests {
 
         assert_eq!(world.scale(), 1.0);
         assert_eq!(world.take_scale(), Some(1.0));
+    }
+
+    #[test]
+    fn mesh_hides_shared_faces_and_faces_outward() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block(1));
+        let mesh = world.mesh();
+
+        assert_eq!(mesh.len(), 36 * 6);
+        assert!(faces_point_outward(&mesh, 0.5));
+
+        world.set(BlockPos::new(1, 0, 0), Block(1));
+
+        assert_eq!(world.mesh().len(), 60 * 6);
+
+        let mut solid = VoxelWorld::new();
+        solid.fill(BlockPos::new(0, 0, 0), BlockPos::new(3, 3, 3), Block(1));
+
+        assert_eq!(solid.mesh().len(), 54 * 6 * 6);
+    }
+
+    fn faces_point_outward(mesh: &[f32], center: f32) -> bool {
+        let mut idx = 0;
+
+        while idx + 18 <= mesh.len() {
+            let ax = mesh[idx];
+            let ay = mesh[idx + 1];
+            let az = mesh[idx + 2];
+            let bx = mesh[idx + 6];
+            let by = mesh[idx + 7];
+            let bz = mesh[idx + 8];
+            let cx = mesh[idx + 12];
+            let cy = mesh[idx + 13];
+            let cz = mesh[idx + 14];
+            let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
+            let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+            let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            let toward_x = (ax + bx + cx) / 3.0 - center;
+            let toward_y = (ay + by + cy) / 3.0 - center;
+            let toward_z = (az + bz + cz) / 3.0 - center;
+
+            if nx * toward_x + ny * toward_y + nz * toward_z <= 0.0 {
+                return false;
+            }
+
+            idx += 18;
+        }
+
+        true
     }
 }

@@ -4,7 +4,10 @@ use crate::network::wait_socket;
 use crate::state::GameState;
 use crate::network::{ServerToClient, ClientToServer, NetworkClient};
 use crate::ui::{opengl::OpenGLWindow, window::Window};
-use winit::event::{WindowEvent, Event};
+use crate::ui::voxel::FlyCamera;
+use winit::event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::window::CursorGrabMode;
 use glutin::prelude::GlSurface;
 use winit::event_loop::ControlFlow;
 use glow::HasContext;
@@ -14,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use core::net::SocketAddr;
 use std::str::FromStr;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP, RECV_BUDGET};
 use crate::network::packet::{bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
@@ -173,6 +176,11 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut held: VecDeque<ServerToClient> = VecDeque::new();
     let mut snapshot_ingress = SnapshotIngress::new();
     let mut tick_ingress = TickIngress::new();
+    let mut voxel_mesh = Vec::new();
+    let mut voxel_revision = u64::MAX;
+    let mut camera = FlyCamera::new();
+    let mut captured = false;
+    let mut keys = HashSet::new();
 
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
@@ -190,12 +198,38 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         client_window.gl.viewport(0, 0, physical_size.width as i32, physical_size.height as i32);
                     }
                 }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        if code == KeyCode::Escape && event.state == ElementState::Pressed {
+                            captured = false;
+                            set_capture(&client_window.window, false);
+                        } else if event.state == ElementState::Pressed {
+                            keys.insert(code);
+                        } else {
+                            keys.remove(&code);
+                        }
+                    }
+                }
+                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                    captured = true;
+                    set_capture(&client_window.window, true);
+                }
                 WindowEvent::RedrawRequested => {
-                    unsafe {
-                        client_window.gl.clear_color(0.0, 0.0, 0.0, 1.0);
-                        client_window.gl.clear(glow::COLOR_BUFFER_BIT);
+                    let size = client_window.window.inner_size();
+                    let aspect = size.width as f32 / size.height.max(1) as f32;
+                    let revision = game.world.revision();
+
+                    if voxel_revision != revision {
+                        voxel_mesh = game.world.mesh();
+                        voxel_revision = revision;
                     }
 
+                    client_window.begin_frame(0.53, 0.71, 0.85);
+                    client_window.draw_colored_mesh(
+                        &voxel_mesh,
+                        voxel_revision,
+                        &camera.scene(aspect, game.world.scale() as f32),
+                    );
                     draw_menu(&mut client_window, &mut game);
 
                     let draw_commands = {
@@ -231,10 +265,21 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
                 _ => (),
             },
+            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
+                if captured {
+                    camera.look(delta.0 as f32, delta.1 as f32);
+                }
+            }
             Event::AboutToWait => {
                 let now = std::time::Instant::now();
                 let dt = now.duration_since(last_frame).as_secs_f64();
                 last_frame = now;
+                let frame_dt = (dt as f32).min(0.1);
+                let speed = game.world.scale() as f32 * 14.0;
+                let forward = held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS);
+                let right = held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA);
+                let up = held_key(&keys, KeyCode::Space) - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
+                camera.fly(forward, right, up, frame_dt, speed);
 
                 {
                     accumulated_time += dt;
@@ -332,6 +377,29 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
             _ => (),
         }
     }).unwrap();
+}
+
+fn held_key(keys: &HashSet<KeyCode>, code: KeyCode) -> f32 {
+    if keys.contains(&code) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn set_capture(window: &winit::window::Window, captured: bool) {
+    if captured {
+        if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
+            let _ = window.set_cursor_grab(CursorGrabMode::Confined);
+        }
+
+        window.set_cursor_visible(false);
+
+        return;
+    }
+
+    let _ = window.set_cursor_grab(CursorGrabMode::None);
+    window.set_cursor_visible(true);
 }
 
 fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ingress: &mut TickIngress, message: ServerToClient) {

@@ -37,12 +37,22 @@ fn main() {
             server::server_network_loop(server_tx, server_out_rx, server_wake_read);
         });
 
-        let server_game = GameState::new(
+        let mut server_game = GameState::new(
             Realm::Server,
             server_rx,
             server_out_tx,
             tick_interval,
             NetWake::new(server_wake_write),
+        );
+        server_game.world.fill(
+            crate::world::BlockPos::new(-12, -12, 0),
+            crate::world::BlockPos::new(12, 12, 1),
+            crate::world::Block(1),
+        );
+        server_game.world.fill(
+            crate::world::BlockPos::new(-2, -2, 1),
+            crate::world::BlockPos::new(3, 3, 4),
+            crate::world::Block(2),
         );
 
         #[cfg(feature = "client")]
