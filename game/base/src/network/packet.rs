@@ -11,21 +11,21 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum BundlePart {
-    Reliable { stream: u8, sequence: u32, payload: Vec<u8> },
+    Reliable { stream: u8, sequence: u32, payload: Arc<Vec<u8>> },
     Fragment {
         stream: u8,
         sequence: u32,
         packet_id: u16,
         fragment_idx: u16,
         total_fragments: u16,
-        data: Vec<u8>,
+        data: Arc<Vec<u8>>,
     },
-    Unreliable { sequence: u32, payload: Vec<u8> },
+    Unreliable { sequence: u32, payload: Arc<Vec<u8>> },
     UnreliableFragment {
         sequence: u32,
         fragment_idx: u16,
         total_fragments: u16,
-        data: Vec<u8>,
+        data: Arc<Vec<u8>>,
     },
 }
 
@@ -78,7 +78,7 @@ pub fn reliable_payload_limit() -> usize {
         payload_limit(|len| bundled_one(BundlePart::Reliable {
             stream: STREAM_EVENT,
             sequence: 0,
-            payload: vec![0u8; len],
+            payload: Arc::new(vec![0u8; len]),
         }))
     })
 }
@@ -92,7 +92,7 @@ pub fn fragment_payload_limit() -> usize {
             packet_id: 0,
             fragment_idx: 0,
             total_fragments: 1,
-            data: vec![0u8; len],
+            data: Arc::new(vec![0u8; len]),
         }))
     })
 }
@@ -120,7 +120,7 @@ pub fn unreliable_payload_limit() -> usize {
     *LIMIT.get_or_init(|| {
         payload_limit(|len| bundled_one(BundlePart::Unreliable {
             sequence: 0,
-            payload: vec![0u8; len],
+            payload: Arc::new(vec![0u8; len]),
         }))
     })
 }
@@ -132,7 +132,7 @@ pub fn unreliable_fragment_limit() -> usize {
             sequence: 0,
             fragment_idx: 0,
             total_fragments: 1,
-            data: vec![0u8; len],
+            data: Arc::new(vec![0u8; len]),
         }))
     })
 }
@@ -143,7 +143,7 @@ pub fn unreliable_message_limit() -> usize {
 
 pub fn split_unreliable(sequence: u32, payload: Vec<u8>) -> Vec<BundlePart> {
     if payload.len() <= unreliable_payload_limit() {
-        return vec![BundlePart::Unreliable { sequence, payload }];
+        return vec![BundlePart::Unreliable { sequence, payload: Arc::new(payload) }];
     }
 
     let chunk_len = unreliable_fragment_limit();
@@ -169,7 +169,7 @@ pub fn split_unreliable(sequence: u32, payload: Vec<u8>) -> Vec<BundlePart> {
             sequence,
             fragment_idx,
             total_fragments: count as u16,
-            data: payload[offset..end].to_vec(),
+            data: Arc::new(payload[offset..end].to_vec()),
         });
         offset = end;
         fragment_idx += 1;
@@ -199,7 +199,7 @@ pub fn bundle_part(packet: &PacketType) -> Option<BundlePart> {
         PacketType::Reliable { stream, sequence, payload, .. } => Some(BundlePart::Reliable {
             stream: *stream,
             sequence: *sequence,
-            payload: payload.to_vec(),
+            payload: Arc::clone(payload),
         }),
         PacketType::Fragment { stream, sequence, packet_id, fragment_idx, total_fragments, data, .. } => Some(BundlePart::Fragment {
             stream: *stream,
@@ -207,13 +207,20 @@ pub fn bundle_part(packet: &PacketType) -> Option<BundlePart> {
             packet_id: *packet_id,
             fragment_idx: *fragment_idx,
             total_fragments: *total_fragments,
-            data: data.to_vec(),
+            data: Arc::clone(data),
         }),
         PacketType::Unreliable { sequence, payload, .. } => Some(BundlePart::Unreliable {
             sequence: *sequence,
-            payload: payload.to_vec(),
+            payload: Arc::clone(payload),
         }),
         _ => None,
+    }
+}
+
+pub fn owned_payload(payload: Arc<Vec<u8>>) -> Vec<u8> {
+    match Arc::try_unwrap(payload) {
+        Ok(bytes) => bytes,
+        Err(payload) => payload.as_ref().clone(),
     }
 }
 
@@ -237,14 +244,7 @@ pub fn pack_bundles(
     let mut datagrams = Vec::new();
     let mut start = 0;
     while start < parts.len() {
-        let mut count = 1;
-        while start + count <= parts.len()
-            && encode_bundle(session, cumulative, selective, state_cumulative, state_selective, ack, &parts[start..start + count]).len() <= MAX_DATAGRAM
-        {
-            count += 1;
-        }
-
-        let fitted = count - 1;
+        let fitted = fit_count(session, cumulative, selective, state_cumulative, state_selective, ack, &parts[start..]);
         if fitted == 0 {
             println!("[net] bundle part too large");
             start += 1;
@@ -259,16 +259,69 @@ pub fn pack_bundles(
     datagrams
 }
 
-fn bundled_one(part: BundlePart) -> PacketType {
-    PacketType::Bundle {
-        session: 0,
-        ack: true,
-        cumulative: 0,
-        selective: 0,
-        state_cumulative: 0,
-        state_selective: 0,
-        parts: vec![part],
+fn fit_count(
+    session: u64,
+    cumulative: u32,
+    selective: u32,
+    state_cumulative: u32,
+    state_selective: u32,
+    ack: bool,
+    parts: &[BundlePart],
+) -> usize {
+    let mut low = 1;
+    let mut high = parts.len();
+    let mut fitted = 0;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let len = bundle_len(session, cumulative, selective, state_cumulative, state_selective, ack, &parts[..mid]);
+        if len <= MAX_DATAGRAM {
+            fitted = mid;
+            low = mid + 1;
+        } else if mid == 1 {
+            break;
+        } else {
+            high = mid - 1;
+        }
     }
+
+    fitted
+}
+
+fn bundled_one(part: BundlePart) -> PacketType {
+    bundle_packet(0, 0, 0, 0, 0, true, &[part])
+}
+
+fn bundle_packet(
+    session: u64,
+    cumulative: u32,
+    selective: u32,
+    state_cumulative: u32,
+    state_selective: u32,
+    ack: bool,
+    parts: &[BundlePart],
+) -> PacketType {
+    PacketType::Bundle {
+        session,
+        ack,
+        cumulative,
+        selective,
+        state_cumulative,
+        state_selective,
+        parts: parts.to_vec(),
+    }
+}
+
+fn bundle_len(
+    session: u64,
+    cumulative: u32,
+    selective: u32,
+    state_cumulative: u32,
+    state_selective: u32,
+    ack: bool,
+    parts: &[BundlePart],
+) -> usize {
+    wincode::serialized_size(&bundle_packet(session, cumulative, selective, state_cumulative, state_selective, ack, parts)).unwrap() as usize
 }
 
 fn payload_limit(make: impl Fn(usize) -> PacketType) -> usize {
@@ -296,17 +349,7 @@ fn encode_bundle(
     ack: bool,
     parts: &[BundlePart],
 ) -> Vec<u8> {
-    let packet = PacketType::Bundle {
-        session,
-        ack,
-        cumulative,
-        selective,
-        state_cumulative,
-        state_selective,
-        parts: parts.to_vec(),
-    };
-
-    wincode::serialize(&packet).unwrap()
+    wincode::serialize(&bundle_packet(session, cumulative, selective, state_cumulative, state_selective, ack, parts)).unwrap()
 }
 
 #[cfg(test)]
@@ -318,7 +361,7 @@ mod tests {
         let parts: Vec<BundlePart> = (0..4).map(|idx| BundlePart::Reliable {
             stream: STREAM_EVENT,
             sequence: idx,
-            payload: vec![idx as u8; 8],
+            payload: Arc::new(vec![idx as u8; 8]),
         }).collect();
         let datagrams = pack_bundles(7, 3, 1, 4, 2, true, parts);
         assert_eq!(datagrams.len(), 1);
@@ -343,8 +386,8 @@ mod tests {
     fn pack_splits_full_reliable_parts() {
         let limit = reliable_payload_limit();
         let parts = vec![
-            BundlePart::Reliable { stream: STREAM_EVENT, sequence: 0, payload: vec![1u8; limit] },
-            BundlePart::Reliable { stream: STREAM_EVENT, sequence: 1, payload: vec![2u8; limit] },
+            BundlePart::Reliable { stream: STREAM_EVENT, sequence: 0, payload: Arc::new(vec![1u8; limit]) },
+            BundlePart::Reliable { stream: STREAM_EVENT, sequence: 1, payload: Arc::new(vec![2u8; limit]) },
         ];
         let datagrams = pack_bundles(1, 0, 0, 0, 0, true, parts);
         assert_eq!(datagrams.len(), 2);
@@ -370,7 +413,7 @@ mod tests {
         let fitted = pack_bundles(1, 1, 0, 0, 0, true, vec![BundlePart::Reliable {
             stream: STREAM_EVENT,
             sequence: 1,
-            payload: vec![9u8; limit],
+            payload: Arc::new(vec![9u8; limit]),
         }]);
         assert_eq!(fitted.len(), 1);
         assert!(fitted[0].len() <= MAX_DATAGRAM);
@@ -378,7 +421,7 @@ mod tests {
         let over = pack_bundles(1, 1, 0, 0, 0, true, vec![BundlePart::Reliable {
             stream: STREAM_EVENT,
             sequence: 1,
-            payload: vec![9u8; limit + 1],
+            payload: Arc::new(vec![9u8; limit + 1]),
         }]);
         assert!(over.is_empty());
     }

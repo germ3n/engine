@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP, RECV_BUDGET};
-use crate::network::packet::{bundle_part, pack_bundles, stamp, unstamp, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
+use crate::network::packet::{bundle_part, owned_payload, pack_bundles, stamp, unstamp, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
 use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::entities::Player;
 use crate::network::usermessage::UserMsgReader;
@@ -896,7 +896,7 @@ fn apply_client_part(
                 generation,
                 incoming,
                 sequence,
-                ReliableBody::Complete(payload),
+                ReliableBody::Complete(owned_payload(payload)),
                 last_server_seen,
             )
         }
@@ -919,14 +919,14 @@ fn apply_client_part(
                     packet_id,
                     fragment_idx,
                     total_fragments,
-                    data,
+                    data: owned_payload(data),
                 },
                 last_server_seen,
             )
         }
         BundlePart::Unreliable { sequence, payload } => {
             if connected && session == Some(incoming) {
-                if let Some(payload) = take_unreliable(unreliable_in, unreliable_assembly, sequence, payload) {
+                if let Some(payload) = take_unreliable(unreliable_in, unreliable_assembly, sequence, owned_payload(payload)) {
                     *last_server_seen = Instant::now();
                     if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                         let _ = tx.send(FromServer::Message(event));
@@ -939,7 +939,7 @@ fn apply_client_part(
         }
         BundlePart::UnreliableFragment { sequence, fragment_idx, total_fragments, data } => {
             if connected && session == Some(incoming) {
-                if let Some(payload) = unreliable_assembly.push(unreliable_in, sequence, fragment_idx, total_fragments, data) {
+                if let Some(payload) = unreliable_assembly.push(unreliable_in, sequence, fragment_idx, total_fragments, owned_payload(data)) {
                     *last_server_seen = Instant::now();
                     if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                         let _ = tx.send(FromServer::Message(event));

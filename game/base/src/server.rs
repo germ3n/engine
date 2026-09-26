@@ -9,7 +9,7 @@ use crate::network::usermessage::hash_usermessage_name;
 use crate::network::usermessage::UserMsgReader;
 use crate::network::server::ReliableSendError;
 use crate::network::events::{EntitySnapshot, NetTransform};
-use crate::network::packet::{encoded_packet_count, stamp, unreliable_message_limit, BundlePart};
+use crate::network::packet::{encoded_packet_count, owned_payload, stamp, unreliable_message_limit, BundlePart};
 use crate::entities::context::FrameInfo;
 use std::net::SocketAddr;
 
@@ -377,7 +377,7 @@ fn apply_server_part(
                 stream,
                 session,
                 sequence,
-                ReliableBody::Complete(payload),
+                ReliableBody::Complete(owned_payload(payload)),
                 tx,
             )
         }
@@ -392,13 +392,13 @@ fn apply_server_part(
                     packet_id,
                     fragment_idx,
                     total_fragments,
-                    data,
+                    data: owned_payload(data),
                 },
                 tx,
             )
         }
         BundlePart::Unreliable { sequence, payload } => {
-            deliver_client_unreliable(server, from, session, sequence, payload, tx)
+            deliver_client_unreliable(server, from, session, sequence, owned_payload(payload), tx)
         }
         BundlePart::UnreliableFragment { sequence, fragment_idx, total_fragments, data } => {
             if !server.session_matches(from, session) {
@@ -410,7 +410,7 @@ fn apply_server_part(
                     return false;
                 };
 
-                client.unreliable_assembly.push(&mut client.unreliable_in, sequence, fragment_idx, total_fragments, data)
+                client.unreliable_assembly.push(&mut client.unreliable_in, sequence, fragment_idx, total_fragments, owned_payload(data))
             };
 
             if let Some(payload) = payload {

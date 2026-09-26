@@ -765,7 +765,7 @@ fn unreliable_sequence_open(inbox: &UnreliableInbox, sequence: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::packet::{bundle_part, pack_bundles, BundlePart, MAX_DATAGRAM, MAX_FRAGMENTS, fragment_payload_limit};
+    use crate::network::packet::{bundle_part, owned_payload, pack_bundles, BundlePart, MAX_DATAGRAM, MAX_FRAGMENTS, fragment_payload_limit};
 
     fn push_fragment(recv: &mut ReliableChannel, packet: &PacketType) -> RecvResult {
         let PacketType::Fragment { sequence, packet_id, fragment_idx, total_fragments, data, .. } = packet else {
@@ -1076,7 +1076,7 @@ mod tests {
             let BundlePart::Reliable { sequence, payload, .. } = part else {
                 panic!("expected reliable");
             };
-            let result = recv.receive(sequence, ReliableBody::Complete(payload));
+            let result = recv.receive(sequence, ReliableBody::Complete(owned_payload(payload)));
             messages.extend(result.messages);
         }
 
@@ -1224,7 +1224,7 @@ mod tests {
                 panic!("expected fragment");
             };
 
-            let result = assembly.push(&mut inbox, sequence, fragment_idx, total_fragments, data);
+            let result = assembly.push(&mut inbox, sequence, fragment_idx, total_fragments, owned_payload(data));
             if idx == last {
                 built = result;
             } else {
