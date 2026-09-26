@@ -21,6 +21,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
 
     strategy:
       matrix:
@@ -28,15 +30,19 @@ jobs:
           - os: ubuntu-latest
             binary_name: base
             asset_name: base-linux-x86_64
+            rustflags: -C target-cpu=x86-64-v3
           - os: ubuntu-24.04-arm
             binary_name: base
             asset_name: base-linux-arm64
+            rustflags: -C target-cpu=generic
           - os: windows-latest
             binary_name: base.exe
             asset_name: base-windows-x86_64.exe
+            rustflags: -C target-cpu=x86-64-v3
           - os: macos-latest
             binary_name: base
             asset_name: base-macos-arm64
+            rustflags: -C target-cpu=apple-m1
 
     steps:
       - name: Checkout Code
@@ -49,6 +55,8 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: ${{ matrix.asset_name }}
 
       - name: Build Release Binary
         run: cargo build --release --bin base
