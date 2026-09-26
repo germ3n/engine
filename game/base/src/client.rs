@@ -242,19 +242,16 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     while accumulated_time >= game.tick_interval {
                         accumulated_time -= game.tick_interval;
 
-                        let ct = game.cur_time() + game.tick_interval; //game.cur_time.lock().unwrap();
-                        game.cur_time.store(ct.to_bits(), Ordering::Relaxed);
-                        game.frame_time.store(game.tick_interval.to_bits(), Ordering::Relaxed);
+                        game.cur_time += game.tick_interval; //game.cur_time.lock().unwrap();
+                        game.frame_time = game.tick_interval;
+                        game.tick_count += 1;
 
                         game.entities.set_frame(FrameInfo {
                             dt: game.tick_interval,
-                            cur_time: game.cur_time(),
-                            tick_count: game.tick_count(),
+                            cur_time: game.cur_time,
+                            tick_count: game.tick_count,
                         });
                         game.entities.tick_all();
-
-                        let tc = game.tick_count.load(Ordering::Relaxed);
-                        game.tick_count.store(tc + 1, Ordering::Relaxed);
                         //ticked = true;
                     }
 
@@ -337,22 +334,22 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ingress: &mut TickIngress, message: ServerToClient) {
     match message {
                         ServerToClient::PlayerConnected { handle, name } => {
-                            game.script_engine.run_hook("PlayerConnected", (handle, name));
+                            game.run_hook("PlayerConnected", (handle, name));
                         },
                         ServerToClient::PlayerDisconnected { handle } => {
-                            game.script_engine.run_hook("PlayerDisconnected", handle);
+                            game.run_hook("PlayerDisconnected", handle);
                         },
                         ServerToClient::PlayerSpawned { handle } => {
-                            game.script_engine.run_hook("PlayerSpawned", handle);
+                            game.run_hook("PlayerSpawned", handle);
                         },
                         ServerToClient::PlayerDamaged { handle, attacker, inflictor, damage, new_health } => {
-                            game.script_engine.run_hook("PlayerDamaged", (handle, attacker, inflictor, damage, new_health));
+                            game.run_hook("PlayerDamaged", (handle, attacker, inflictor, damage, new_health));
                         },
                         ServerToClient::PlayerDied { handle, killer, inflictor } => {
-                            game.script_engine.run_hook("PlayerDied", (handle, killer, inflictor));
+                            game.run_hook("PlayerDied", (handle, killer, inflictor));
                         },
                         ServerToClient::ModelChanged { handle, model } => {
-                            game.script_engine.run_hook("ModelChanged", (handle, model));
+                            game.run_hook("ModelChanged", (handle, model));
                         },
                         ServerToClient::TransformUpdated { handle, position, angles, velocity } => {
                             if let Some(entity) = game.entities.get_mut(handle) {
@@ -361,11 +358,11 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                                 if let Some(vel) = velocity { entity.base_mut().velocity = vel; }
                             }
 
-                            game.script_engine.run_hook("TransformUpdated", (handle, position, angles, velocity));
+                            game.run_hook("TransformUpdated", (handle, position, angles, velocity));
                         },
 
                         ServerToClient::UserMessage { hash, data } => {
-                            game.script_engine.run_usermessage(hash, UserMsgReader::new(data));
+                            game.run_usermessage(hash, UserMsgReader::new(data));
                         },
                         ServerToClient::WorldSnapshot { .. } => {
                         },
@@ -379,7 +376,7 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                                         base.velocity = transform.velocity;
                                     }
 
-                                    game.script_engine.run_hook(
+                                    game.run_hook(
                                         "TransformUpdated",
                                         (transform.handle, Some(transform.position), Some(transform.angles), Some(transform.velocity)),
                                     );

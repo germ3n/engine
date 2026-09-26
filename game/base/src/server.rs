@@ -2,7 +2,6 @@ use std::sync::mpsc::{Sender, Receiver};
 use crate::network::{ClientToServer, ServerToClient};
 use crate::state::GameState;
 use std::time::{Instant, Duration};
-use std::sync::atomic::Ordering;
 use crate::network::server::NetworkServer;
 use crate::network::{PacketType, NetSend, FromClient, ReliableBody, RECV_BUDGET};
 use crate::network::packet::STREAM_STATE;
@@ -31,19 +30,16 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         while accumulated_time >= game.tick_interval {
             accumulated_time -= game.tick_interval;
 
-            let ct = game.cur_time() + game.tick_interval;
-            game.cur_time.store(ct.to_bits(), Ordering::Relaxed);
-            game.frame_time.store(game.tick_interval.to_bits(), Ordering::Relaxed);
+            game.cur_time += game.tick_interval;
+            game.frame_time = game.tick_interval;
+            game.tick_count += 1;
 
             game.entities.set_frame(FrameInfo {
                 dt: game.tick_interval,
-                cur_time: game.cur_time(),
-                tick_count: game.tick_count(),
+                cur_time: game.cur_time,
+                tick_count: game.tick_count,
             });
             game.entities.tick_all();
-
-            let tc = game.tick_count.load(Ordering::Relaxed);
-            game.tick_count.store(tc + 1, Ordering::Relaxed);
             
             if tick_idx % 100 == 0 {
                 let hash = hash_usermessage_name("Test");
@@ -74,7 +70,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     match event {
                         ClientToServer::UserMessage { hash, data } => {
                             println!("[sv] usermessage {hash} from {addr}");
-                            game.script_engine.run_usermessage(hash, UserMsgReader::new(data));
+                            game.run_usermessage(hash, UserMsgReader::new(data));
                         }
                         _ => {}
                     }
@@ -529,7 +525,7 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
 
 #[cfg(feature = "server")]
 fn emit_tick_state(game: &GameState<FromClient, ServerToClient>) {
-    let tick = game.tick_count();
+    let tick = game.tick_count;
     let mut pending = Vec::new();
     for (handle, entity) in game.entities.iter() {
         let base = entity.base();

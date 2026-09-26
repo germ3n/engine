@@ -5,7 +5,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use crate::script::{ScriptEngine, Realm};
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::Arc;
 
 pub struct GameState<In, Out> {
     pub realm: Realm,
@@ -15,9 +15,9 @@ pub struct GameState<In, Out> {
     pub network_receiver: Receiver<In>,
     pub network_sender: SyncSender<NetSend<Out>>,
     pub script_engine: ScriptEngine,
-    pub cur_time: Arc<AtomicU64>,
-    pub frame_time: Arc<AtomicU64>,
-    pub tick_count: Arc<AtomicU64>,
+    pub cur_time: f64,
+    pub frame_time: f64,
+    pub tick_count: u64,
 }
 
 impl<In, Out> GameState<In, Out> {
@@ -34,16 +34,9 @@ impl<In, Out> GameState<In, Out> {
         );
 
         let cvars = Arc::new(cvars);
-        let cur_time = Arc::new(AtomicU64::new(0.0f64.to_bits()));
-        let frame_time = Arc::new(AtomicU64::new(0.0f64.to_bits()));
-        let tick_count = Arc::new(AtomicU64::new(0));
-
         let script_engine = ScriptEngine::new(
             realm,
-            tick_interval, 
-            cur_time.clone(), 
-            frame_time.clone(), 
-            tick_count.clone(),
+            tick_interval,
             cvars.clone()
         );
 
@@ -55,22 +48,18 @@ impl<In, Out> GameState<In, Out> {
             network_receiver,
             network_sender,
             script_engine,
-            cur_time,
-            frame_time,
-            tick_count,
+            cur_time: 0.0,
+            frame_time: 0.0,
+            tick_count: 0,
         }
     }
 
-    pub fn cur_time(&self) -> f64 {
-        f64::from_bits(self.cur_time.load(Ordering::Relaxed))
+    pub fn run_hook<A: mlua::IntoLuaMulti>(&self, hook_name: &str, args: A) {
+        self.script_engine.run_hook(hook_name, self.cur_time, self.frame_time, self.tick_count, args);
     }
 
-    pub fn frame_time(&self) -> f64 {
-        f64::from_bits(self.frame_time.load(Ordering::Relaxed))
-    }
-
-    pub fn tick_count(&self) -> u64 {
-        self.tick_count.load(Ordering::Relaxed)
+    pub fn run_usermessage<A: mlua::IntoLuaMulti>(&self, hash: u32, args: A) {
+        self.script_engine.run_usermessage(hash, self.cur_time, self.frame_time, self.tick_count, args);
     }
 
     pub fn send_reliable(&self, event: Out) {
@@ -94,15 +83,6 @@ impl<In, Out> GameState<In, Out> {
     }
 
     fn enqueue(&self, message: NetSend<Out>) {
-        let reliable = matches!(message, NetSend::Reliable(_) | NetSend::ReliableTo(_, _) | NetSend::StateTo(_, _));
-        if reliable {
-            if self.network_sender.send(message).is_err() {
-                println!("[net] outbound disconnected");
-            }
-
-            return;
-        }
-
         match self.network_sender.try_send(message) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
