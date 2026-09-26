@@ -4,7 +4,9 @@ use crate::network::PacketType;
 use crate::network::packet::{FragmentAssembler, encoded_packet_count, fragment_payload_limit, reliable_payload_limit};
 
 const RECV_WINDOW: u32 = 1024;
+const UNRELIABLE_JUMP: u32 = 1024;
 const SEND_WINDOW: usize = 32;
+const SELECTIVE_BITS: u32 = 32;
 pub(crate) const MAX_UNSENT: usize = 128;
 const MIN_RTO: Duration = Duration::from_millis(20);
 const MAX_RTO: Duration = Duration::from_millis(1000);
@@ -29,6 +31,34 @@ enum OutKind {
         total_fragments: u16,
         data: Vec<u8>,
     },
+}
+
+struct InflightMessage {
+    payload: Vec<u8>,
+    first_seq: u32,
+    count: u16,
+    acked: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SelectiveAck {
+    pub cumulative: u32,
+    pub selective: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct UnreliableInbox {
+    highest: Option<u32>,
+    jump: Option<u32>,
+}
+
+impl UnreliableInbox {
+    pub fn new() -> Self {
+        Self {
+            highest: None,
+            jump: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +88,7 @@ pub struct ReliableChannel {
     outgoing_seq: u32,
     next_fragment_id: u16,
     unsent: VecDeque<Vec<u8>>,
+    inflight: VecDeque<InflightMessage>,
     encoded: VecDeque<OutPacket>,
     pending_acknowledgements: HashMap<u32, PendingPacket>,
     next_recv: u32,
@@ -75,6 +106,7 @@ impl ReliableChannel {
             outgoing_seq: 0,
             next_fragment_id: 0,
             unsent: VecDeque::new(),
+            inflight: VecDeque::new(),
             encoded: VecDeque::new(),
             pending_acknowledgements: HashMap::new(),
             next_recv: 0,
@@ -104,38 +136,58 @@ impl ReliableChannel {
         EnqueueStatus::Queued
     }
 
-    pub fn take_unsent(&mut self) -> Vec<Vec<u8>> {
-        self.encoded.clear();
+    pub fn take_unacked(&mut self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        for msg in self.inflight.drain(..) {
+            if msg.acked < msg.count {
+                out.push(msg.payload);
+            }
+        }
 
-        self.unsent.drain(..).collect()
+        out.extend(self.unsent.drain(..));
+        self.encoded.clear();
+        self.pending_acknowledgements.clear();
+
+        out
     }
 
-    pub fn handle_ack(&mut self, seq: u32) {
-        let Some(pending) = self.pending_acknowledgements.remove(&seq) else {
-            return;
-        };
+    pub fn queued_messages(&self) -> usize {
+        self.inflight.len() + self.unsent.len()
+    }
 
-        if pending.retransmitted {
-            return;
+    pub fn selective_ack(&self) -> SelectiveAck {
+        let cumulative = self.next_recv;
+        let mut selective = 0u32;
+
+        for bit in 0..SELECTIVE_BITS {
+            let seq = cumulative.wrapping_add(1 + bit);
+            if self.recv_buffer.contains_key(&seq) {
+                selective |= 1u32 << bit;
+            }
         }
 
-        let rtt = pending.first_sent.elapsed();
-        let diff = if rtt > self.smoothed_rtt {
-            rtt - self.smoothed_rtt
-        } else {
-            self.smoothed_rtt - rtt
-        };
+        SelectiveAck { cumulative, selective }
+    }
 
-        self.rtt_var = (self.rtt_var * 3 + diff) / 4;
-        self.smoothed_rtt = (self.smoothed_rtt * 7 + rtt) / 8;
-        self.current_rto = self.smoothed_rtt + self.rtt_var * 4;
+    pub fn handle_ack(&mut self, cumulative: u32, selective: u32) {
+        let seqs: Vec<u32> = self.pending_acknowledgements.keys().copied().collect();
 
-        if self.current_rto < MIN_RTO {
-            self.current_rto = MIN_RTO;
-        }
+        for seq in seqs {
+            if !ack_covers(cumulative, selective, seq) {
+                continue;
+            }
 
-        if self.current_rto > MAX_RTO {
-            self.current_rto = MAX_RTO;
+            let Some(pending) = self.pending_acknowledgements.remove(&seq) else {
+                continue;
+            };
+
+            self.note_acked(seq);
+
+            if pending.retransmitted {
+                continue;
+            }
+
+            self.sample_rtt(pending.first_sent.elapsed());
         }
     }
 
@@ -216,6 +268,39 @@ impl ReliableChannel {
         }
     }
 
+    fn sample_rtt(&mut self, rtt: Duration) {
+        let diff = if rtt > self.smoothed_rtt {
+            rtt - self.smoothed_rtt
+        } else {
+            self.smoothed_rtt - rtt
+        };
+
+        self.rtt_var = (self.rtt_var * 3 + diff) / 4;
+        self.smoothed_rtt = (self.smoothed_rtt * 7 + rtt) / 8;
+        self.current_rto = self.smoothed_rtt + self.rtt_var * 4;
+
+        if self.current_rto < MIN_RTO {
+            self.current_rto = MIN_RTO;
+        }
+
+        if self.current_rto > MAX_RTO {
+            self.current_rto = MAX_RTO;
+        }
+    }
+
+    fn note_acked(&mut self, seq: u32) {
+        for msg in &mut self.inflight {
+            let offset = seq.wrapping_sub(msg.first_seq);
+            if offset < msg.count as u32 {
+                msg.acked = msg.acked.saturating_add(1);
+
+                break;
+            }
+        }
+
+        self.inflight.retain(|msg| msg.acked < msg.count);
+    }
+
     fn queued_packets(&self) -> usize {
         let mut total = self.encoded.len();
         for payload in &self.unsent {
@@ -239,6 +324,7 @@ impl ReliableChannel {
                 seq,
                 kind: OutKind::Complete(payload.to_vec()),
             });
+            self.track_inflight(payload, seq, 1);
 
             return;
         }
@@ -247,6 +333,7 @@ impl ReliableChannel {
         let total_fragments = payload.len().div_ceil(chunk_len) as u16;
         let packet_id = self.next_fragment_id;
         self.next_fragment_id = self.next_fragment_id.wrapping_add(1);
+        let first_seq = self.outgoing_seq;
 
         let mut offset = 0;
         let mut fragment_idx = 0u16;
@@ -265,6 +352,17 @@ impl ReliableChannel {
             offset = end;
             fragment_idx += 1;
         }
+
+        self.track_inflight(payload, first_seq, total_fragments);
+    }
+
+    fn track_inflight(&mut self, payload: &[u8], first_seq: u32, count: u16) {
+        self.inflight.push_back(InflightMessage {
+            payload: payload.to_vec(),
+            first_seq,
+            count,
+            acked: 0,
+        });
     }
 
     fn serialize(&self, packet: &OutPacket) -> Vec<u8> {
@@ -310,24 +408,57 @@ impl ReliableChannel {
     }
 }
 
-pub fn accept_unreliable(highest: &mut Option<u32>, sequence: u32) -> bool {
-    match *highest {
-        Some(prev) => {
-            let ahead = sequence.wrapping_sub(prev);
-            if ahead == 0 || ahead >= 0x8000_0000 {
-                return false;
-            }
-
-            *highest = Some(sequence);
-
-            true
-        }
-        None => {
-            *highest = Some(sequence);
-
-            true
-        }
+fn ack_covers(cumulative: u32, selective: u32, seq: u32) -> bool {
+    let before = cumulative.wrapping_sub(seq);
+    if before > 0 && before <= RECV_WINDOW {
+        return true;
     }
+
+    let ahead = seq.wrapping_sub(cumulative);
+    if ahead >= 1 && ahead <= SELECTIVE_BITS {
+        let bit = ahead - 1;
+
+        return (selective & (1u32 << bit)) != 0;
+    }
+
+    false
+}
+
+pub fn accept_unreliable(inbox: &mut UnreliableInbox, sequence: u32) -> bool {
+    let Some(prev) = inbox.highest else {
+        inbox.highest = Some(sequence);
+        inbox.jump = None;
+
+        return true;
+    };
+
+    let ahead = sequence.wrapping_sub(prev);
+    if ahead == 0 || ahead >= 0x8000_0000 {
+        inbox.jump = None;
+
+        return false;
+    }
+
+    if ahead > UNRELIABLE_JUMP {
+        if let Some(candidate) = inbox.jump {
+            let step = sequence.wrapping_sub(candidate);
+            if step > 0 && step <= UNRELIABLE_JUMP {
+                inbox.highest = Some(sequence);
+                inbox.jump = None;
+
+                return true;
+            }
+        }
+
+        inbox.jump = Some(sequence);
+
+        return false;
+    }
+
+    inbox.highest = Some(sequence);
+    inbox.jump = None;
+
+    true
 }
 
 #[cfg(test)]
@@ -428,7 +559,7 @@ mod tests {
         assert_eq!(resent, 0);
         assert_eq!(channel.pending_acknowledgements.len(), SEND_WINDOW);
 
-        channel.handle_ack(0);
+        channel.handle_ack(1, 0);
         let mut released = 0;
         channel.pump(|_| released += 1);
         assert_eq!(released, 1);
@@ -506,17 +637,114 @@ mod tests {
         assert!(channel.pending_acknowledgements.get(&0).unwrap().retransmitted);
 
         let before = channel.smoothed_rtt;
-        channel.handle_ack(0);
+        channel.handle_ack(1, 0);
         assert_eq!(channel.smoothed_rtt, before);
     }
 
     #[test]
+    fn cumulative_ack_retires_prefix() {
+        let mut sender = ReliableChannel::new();
+        sender.set_session(1);
+        assert_eq!(sender.enqueue(b"a"), EnqueueStatus::Queued);
+        assert_eq!(sender.enqueue(b"b"), EnqueueStatus::Queued);
+        assert_eq!(sender.enqueue(b"c"), EnqueueStatus::Queued);
+        sender.pump(|_| {});
+
+        sender.handle_ack(2, 0);
+        assert!(!sender.pending_acknowledgements.contains_key(&0));
+        assert!(!sender.pending_acknowledgements.contains_key(&1));
+        assert!(sender.pending_acknowledgements.contains_key(&2));
+        assert_eq!(sender.take_unacked(), vec![b"c".to_vec()]);
+    }
+
+    #[test]
+    fn selective_ack_retires_received_holes() {
+        let mut sender = ReliableChannel::new();
+        sender.set_session(1);
+        assert_eq!(sender.enqueue(b"a"), EnqueueStatus::Queued);
+        assert_eq!(sender.enqueue(b"b"), EnqueueStatus::Queued);
+        assert_eq!(sender.enqueue(b"c"), EnqueueStatus::Queued);
+
+        let mut sent = Vec::new();
+        sender.pump(|bytes| sent.push(bytes.to_vec()));
+        assert_eq!(sent.len(), 3);
+
+        let mut recv = ReliableChannel::new();
+        let packets: Vec<PacketType> = sent.iter().map(|bytes| wincode::deserialize(bytes).unwrap()).collect();
+        let PacketType::Reliable { sequence: seq0, payload: body0, .. } = &packets[0] else {
+            panic!("expected reliable");
+        };
+        let PacketType::Reliable { sequence: seq2, payload: body2, .. } = &packets[2] else {
+            panic!("expected reliable");
+        };
+
+        let first = recv.receive(*seq0, ReliableBody::Complete(body0.to_vec()));
+        assert!(first.ack);
+        let third = recv.receive(*seq2, ReliableBody::Complete(body2.to_vec()));
+        assert!(third.ack);
+        assert!(third.messages.is_empty());
+
+        let ack = recv.selective_ack();
+        assert_eq!(ack.cumulative, seq0.wrapping_add(1));
+        assert_ne!(ack.selective & 1, 0);
+
+        sender.handle_ack(ack.cumulative, ack.selective);
+        assert!(!sender.pending_acknowledgements.contains_key(&seq0));
+        assert!(sender.pending_acknowledgements.contains_key(&seq0.wrapping_add(1)));
+        assert!(!sender.pending_acknowledgements.contains_key(&seq2));
+        assert_eq!(sender.take_unacked(), vec![b"b".to_vec()]);
+    }
+
+    #[test]
+    fn take_unacked_keeps_inflight_and_unsent_payloads() {
+        let mut channel = ReliableChannel::new();
+        channel.set_session(1);
+        let mut count = 0u8;
+        while channel.enqueue(&[count]) == EnqueueStatus::Queued {
+            count += 1;
+        }
+
+        let mut sent = 0;
+        channel.pump(|_| sent += 1);
+        assert_eq!(sent, SEND_WINDOW);
+
+        let recovered = channel.take_unacked();
+        assert_eq!(recovered.len(), count as usize);
+        for (idx, payload) in recovered.iter().enumerate() {
+            assert_eq!(payload.as_slice(), &[idx as u8]);
+        }
+    }
+
+    #[test]
+    fn take_unacked_rebuilds_a_fragmented_payload() {
+        let mut channel = ReliableChannel::new();
+        channel.set_session(1);
+        let payload = vec![4u8; MAX_DATAGRAM * 2];
+        assert_eq!(channel.enqueue(&payload), EnqueueStatus::Queued);
+        channel.pump(|_| {});
+
+        assert_eq!(channel.take_unacked(), vec![payload]);
+    }
+
+    #[test]
     fn unreliable_sequence_drops_old_packets() {
-        let mut highest = None;
-        assert!(accept_unreliable(&mut highest, 0));
-        assert!(accept_unreliable(&mut highest, 2));
-        assert!(!accept_unreliable(&mut highest, 1));
-        assert!(!accept_unreliable(&mut highest, 2));
-        assert!(accept_unreliable(&mut highest, 3));
+        let mut inbox = UnreliableInbox::new();
+        assert!(accept_unreliable(&mut inbox, 0));
+        assert!(accept_unreliable(&mut inbox, 2));
+        assert!(!accept_unreliable(&mut inbox, 1));
+        assert!(!accept_unreliable(&mut inbox, 2));
+        assert!(accept_unreliable(&mut inbox, 3));
+    }
+
+    #[test]
+    fn unreliable_far_jump_does_not_stick() {
+        let mut inbox = UnreliableInbox::new();
+        assert!(accept_unreliable(&mut inbox, 0));
+        assert!(!accept_unreliable(&mut inbox, 50_000));
+        assert!(accept_unreliable(&mut inbox, 1));
+        assert!(!accept_unreliable(&mut inbox, 50_000));
+        assert!(accept_unreliable(&mut inbox, 50_001));
+        assert!(!accept_unreliable(&mut inbox, 50_000));
+        assert!(accept_unreliable(&mut inbox, 50_002));
     }
 }

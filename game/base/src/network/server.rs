@@ -1,10 +1,10 @@
 use crate::network::reliable::{EnqueueStatus, ReliableChannel};
-use crate::network::PacketType;
+use crate::network::{PacketType, UnreliableInbox};
 use std::net::{SocketAddr, UdpSocket};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::network::packet::{CONNECTION_TIMEOUT, MAX_DATAGRAM, encoded_packet_count, unreliable_payload_limit};
 use std::sync::Arc;
 
@@ -15,7 +15,13 @@ pub struct ConnectedClient {
     pub last_seen: Instant,
     pub session: u64,
     pub unreliable_out: u32,
-    pub unreliable_in: Option<u32>,
+    pub unreliable_in: UnreliableInbox,
+    pub replay: VecDeque<Vec<u8>>,
+}
+
+struct RetainedSend {
+    at: Instant,
+    payloads: Vec<Vec<u8>>,
 }
 
 pub enum ReliableSendError {
@@ -31,13 +37,14 @@ pub struct NetworkServer {
     pub socket: UdpSocket,
     challenge_secret: u64,
     session_counter: u64,
+    retained: HashMap<SocketAddr, RetainedSend>,
 }
 
 impl NetworkServer {
     pub fn new(port: u16, max_clients: u32) -> Self {
         //let socket = UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap();
         let socket = UdpSocket::bind(format!("[::]:{}", port)).unwrap();
-        socket.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        socket.set_nonblocking(true).unwrap();
         Self {
             port,
             max_clients,
@@ -45,6 +52,7 @@ impl NetworkServer {
             socket,
             challenge_secret: random_secret(),
             session_counter: 0,
+            retained: HashMap::new(),
         }
     }
 
@@ -77,6 +85,8 @@ impl NetworkServer {
     }
 
     pub fn drop_idle_clients(&mut self) -> Vec<SocketAddr> {
+        self.retained.retain(|_, held| held.at.elapsed() < CONNECTION_TIMEOUT);
+
         let timeout = CONNECTION_TIMEOUT;
         let idle: Vec<SocketAddr> = self.clients.iter()
             .filter(|(_, client)| client.last_seen.elapsed() >= timeout)
@@ -101,10 +111,12 @@ impl NetworkServer {
         dropped
     }
 
-    pub fn receive_message(&self) -> Result<(Vec<u8>, SocketAddr), String> {
+    pub fn poll_message(&self) -> Option<(Vec<u8>, SocketAddr)> {
         let mut buffer = [0; MAX_DATAGRAM];
-        let (amt, src) = self.socket.recv_from(&mut buffer).map_err(|e| e.to_string())?;
-        Ok((buffer[..amt].to_vec(), src))
+        match self.socket.recv_from(&mut buffer) {
+            Ok((amt, src)) => Some((buffer[..amt].to_vec(), src)),
+            Err(_) => None,
+        }
     }
 
     pub fn add_client(&mut self, addr: SocketAddr) -> Option<u64> {
@@ -119,12 +131,16 @@ impl NetworkServer {
         let session = self.issue_session(addr);
         let mut reliable = ReliableChannel::new();
         reliable.set_session(session);
+        let replay = self.retained.remove(&addr)
+            .map(|held| VecDeque::from(held.payloads))
+            .unwrap_or_default();
         self.clients.insert(addr, ConnectedClient {
             reliable,
             last_seen: Instant::now(),
             session,
             unreliable_out: 0,
-            unreliable_in: None,
+            unreliable_in: UnreliableInbox::new(),
+            replay,
         });
 
         Some(session)
@@ -175,6 +191,7 @@ impl NetworkServer {
             return false;
         };
 
+        self.keep_unacked(addr);
         let bytes = wincode::serialize(&PacketType::Disconnect { session }).unwrap();
         let _ = self.send_to(addr, &bytes);
         self.clients.remove(&addr);
@@ -182,8 +199,34 @@ impl NetworkServer {
         true
     }
 
-    pub fn remove_client(&mut self, addr: SocketAddr) {
+    pub fn retire_client(&mut self, addr: SocketAddr, session: u64) -> bool {
+        if !self.session_matches(addr, session) {
+            return false;
+        }
+
+        self.keep_unacked(addr);
         self.clients.remove(&addr);
+
+        true
+    }
+
+    pub fn remove_client(&mut self, addr: SocketAddr) {
+        self.retained.remove(&addr);
+        self.clients.remove(&addr);
+    }
+
+    pub fn send_selective_ack(&self, addr: SocketAddr) {
+        let Some(client) = self.clients.get(&addr) else {
+            return;
+        };
+
+        let ack = client.reliable.selective_ack();
+        let bytes = wincode::serialize(&PacketType::Ack {
+            session: client.session,
+            cumulative: ack.cumulative,
+            selective: ack.selective,
+        }).unwrap();
+        let _ = self.send_to(addr, &bytes);
     }
 
     pub fn send_to(&self, addr: SocketAddr, message: &[u8]) -> Result<(), String> {
@@ -228,6 +271,9 @@ impl NetworkServer {
 
         for addr in stalled.iter().copied() {
             println!("[sv] reliable window full {}", addr);
+            if let Some(client) = self.clients.get_mut(&addr) {
+                client.replay.push_back(payload.clone());
+            }
             self.disconnect_client(addr);
         }
 
@@ -274,6 +320,7 @@ impl NetworkServer {
     pub fn pump_reliable(&mut self) {
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         for addr in addrs {
+            self.flush_replay(addr);
             let packets: Vec<Vec<u8>> = {
                 let client = self.clients.get_mut(&addr).unwrap();
                 let mut packets = Vec::new();
@@ -284,6 +331,52 @@ impl NetworkServer {
             };
             for packet in packets {
                 let _ = self.socket.send_to(&packet, addr);
+            }
+        }
+    }
+
+    fn keep_unacked(&mut self, addr: SocketAddr) {
+        let payloads = {
+            let Some(client) = self.clients.get_mut(&addr) else {
+                return;
+            };
+
+            let mut payloads = client.reliable.take_unacked();
+            payloads.extend(client.replay.drain(..));
+            payloads
+        };
+
+        if payloads.is_empty() {
+            return;
+        }
+
+        self.retained.insert(addr, RetainedSend {
+            at: Instant::now(),
+            payloads,
+        });
+    }
+
+    fn flush_replay(&mut self, addr: SocketAddr) {
+        loop {
+            let Some(payload) = self.clients.get_mut(&addr).and_then(|client| client.replay.pop_front()) else {
+                break;
+            };
+
+            match self.enqueue_reliable(addr, &payload) {
+                Ok(()) => {}
+                Err(ReliableSendError::Full) => {
+                    if let Some(client) = self.clients.get_mut(&addr) {
+                        client.replay.push_front(payload);
+                    }
+
+                    break;
+                }
+                Err(ReliableSendError::TooLarge) => {
+                    println!("[sv] reliable payload too large");
+                }
+                Err(ReliableSendError::Missing) => {
+                    break;
+                }
             }
         }
     }

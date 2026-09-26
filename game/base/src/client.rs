@@ -8,18 +8,19 @@ use winit::event_loop::ControlFlow;
 use glow::HasContext;
 use crate::ui::menu::draw_menu;
 use crate::script::engine::DrawCommand;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use core::net::SocketAddr;
 use std::str::FromStr;
 use std::collections::VecDeque;
-use std::time::Instant;
-use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, accept_unreliable};
+use std::time::{Duration, Instant};
+use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, accept_unreliable, OUTBOUND_CAP};
 use crate::network::packet::{CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, unreliable_payload_limit};
 use crate::network::reliable::MAX_UNSENT;
 use crate::network::usermessage::UserMsgReader;
 use crate::entities::context::FrameInfo;
 
-pub fn client_loop(mut game: GameState<FromServer, ClientToServer>) {
+pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
     let mut client_window = OpenGLWindow::create_window();
     client_window.set_window_title("Rust Engine - Rendering");
     client_window.set_size(800, 600);
@@ -40,6 +41,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>) {
         match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
+                    shutdown.store(true, Ordering::Relaxed);
                     window_target.exit();
                 }
                 WindowEvent::Resized(physical_size) => {
@@ -194,7 +196,15 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>) {
 }
 
 #[cfg(feature = "client")]
-pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<FromServer>, rx: Receiver<NetSend<ClientToServer>>) {
+const HANDSHAKE_INTERVAL: Duration = Duration::from_millis(200);
+
+#[cfg(feature = "client")]
+pub fn client_network_loop(
+    server_addr: SocketAddr,
+    tx: Sender<FromServer>,
+    rx: Receiver<NetSend<ClientToServer>>,
+    shutdown: Arc<AtomicBool>,
+) {
     let local_addr = if server_addr.is_ipv6() {
         "[::]:0"
     } else {
@@ -206,23 +216,57 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<FromServer>, rx: 
     let mut connected = false;
     let mut local_reliable: VecDeque<Vec<u8>> = VecDeque::new();
     let mut unreliable_out: u32 = 0;
-    let mut unreliable_in: Option<u32> = None;
+    let mut unreliable_in = UnreliableInbox::new();
+    let mut replace_session: Option<u64> = None;
+    let mut reset_latched = false;
 
-    let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
-    let _ = client.send_message(&connect_bytes);
+    let _ = client.send_message(&connect_packet(None));
     let mut challenge_response_bytes: Option<Vec<u8>> = None;
     let mut session: Option<u64> = None;
     let mut last_sent = Instant::now();
     let mut last_server_seen = Instant::now();
 
     loop {
+        if shutdown.load(Ordering::Relaxed) {
+            if let Some(current) = session {
+                let bytes = wincode::serialize(&PacketType::Disconnect { session: current }).unwrap();
+                let _ = client.send_message(&bytes);
+            }
+
+            let _ = tx.send(FromServer::Disconnected);
+
+            return;
+        }
+
+        if reliable_backlog(&local_reliable, &reliable_chan) < MAX_UNSENT {
+            reset_latched = false;
+        }
+
         flush_local_reliable(&mut reliable_chan, &mut local_reliable);
 
         while let Ok(outgoing) = rx.try_recv() {
             match outgoing {
                 NetSend::Reliable(event) | NetSend::ReliableTo(_, event) => {
                     let payload = wincode::serialize(&event).unwrap();
-                    if local_reliable.len() >= MAX_UNSENT {
+                    let backlog = reliable_backlog(&local_reliable, &reliable_chan);
+                    if connected && !reset_latched && backlog >= MAX_UNSENT {
+                        reset_latched = true;
+                        local_reliable.push_back(payload);
+                        begin_reconnect(
+                            &client,
+                            &mut reliable_chan,
+                            &mut local_reliable,
+                            &mut connected,
+                            &mut session,
+                            &mut replace_session,
+                            &mut challenge_response_bytes,
+                            &mut unreliable_out,
+                            &mut unreliable_in,
+                            &mut last_sent,
+                        );
+                        println!("[cl] reliable window full");
+                        let _ = tx.send(FromServer::Disconnected);
+                    } else if backlog >= OUTBOUND_CAP {
                         println!("[cl] reliable outbound full");
                     } else {
                         local_reliable.push_back(payload);
@@ -242,139 +286,150 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<FromServer>, rx: 
             last_sent = Instant::now();
         });
 
-        let recv_started = Instant::now();
-        match client.receive_message() {
-            Ok((data, _from)) => {
-                if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
-                    match packet {
-                        PacketType::Connect => {
-                        }
-                        PacketType::Challenge { token } => {
-                            if !connected {
-                                let bytes = wincode::serialize(&PacketType::ChallengeResponse { token }).unwrap();
-                                challenge_response_bytes = Some(bytes.clone());
-                                let _ = client.send_message(&bytes);
-                                last_sent = Instant::now();
-                                println!("[cl] challenge {token}");
-                            }
-                        }
-                        PacketType::ChallengeResponse { .. } => {
-                            println!("[cl] challenge response");
-                        }
-                        PacketType::Connected { session: new_session } => {
-                            if !connected {
-                                if session.is_some() && session != Some(new_session) {
-                                    restart_channel(&mut reliable_chan, &mut local_reliable);
-                                    unreliable_out = 0;
-                                    unreliable_in = None;
-                                }
+        let mut got_packet = false;
+        let mut need_ack = false;
+        loop {
+            let Some((data, _from)) = client.poll_message() else {
+                break;
+            };
 
-                                connected = true;
-                                session = Some(new_session);
-                                reliable_chan.set_session(new_session);
-                                challenge_response_bytes = None;
-                                last_server_seen = Instant::now();
-                                println!("[cl] connected");
-                                let _ = tx.send(FromServer::Connected);
-                            } else if session == Some(new_session) {
-                                last_server_seen = Instant::now();
-                            }
+            got_packet = true;
+            if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
+                match packet {
+                    PacketType::Connect { .. } => {
+                    }
+                    PacketType::Challenge { token } => {
+                        if !connected {
+                            let bytes = wincode::serialize(&PacketType::ChallengeResponse { token }).unwrap();
+                            challenge_response_bytes = Some(bytes.clone());
+                            let _ = client.send_message(&bytes);
+                            last_sent = Instant::now();
+                            println!("[cl] challenge {token}");
                         }
-                        PacketType::Disconnect { session: incoming } => {
-                            if connected && session == Some(incoming) {
-                                connected = false;
-                                session = None;
-                                challenge_response_bytes = None;
-                                unreliable_out = 0;
-                                unreliable_in = None;
+                    }
+                    PacketType::ChallengeResponse { .. } => {
+                        println!("[cl] challenge response");
+                    }
+                    PacketType::Connected { session: new_session } => {
+                        if !connected && replace_session != Some(new_session) {
+                            if session.is_some() && session != Some(new_session) {
                                 restart_channel(&mut reliable_chan, &mut local_reliable);
-                                println!("[cl] disconnect");
-                                let _ = tx.send(FromServer::Disconnected);
-                                let _ = client.send_message(&connect_bytes);
-                                last_sent = Instant::now();
+                                unreliable_out = 0;
+                                unreliable_in = UnreliableInbox::new();
                             }
+
+                            connected = true;
+                            session = Some(new_session);
+                            replace_session = None;
+                            reliable_chan.set_session(new_session);
+                            challenge_response_bytes = None;
+                            last_server_seen = Instant::now();
+                            println!("[cl] connected");
+                            let _ = tx.send(FromServer::Connected);
+                        } else if session == Some(new_session) {
+                            last_server_seen = Instant::now();
                         }
-                        PacketType::KeepAlive { session: incoming } => {
-                            if connected && session == Some(incoming) {
-                                last_server_seen = Instant::now();
-                            }
-                        }
-                        PacketType::Reliable { session: incoming, sequence, payload } => {
-                            push_client_reliable(
-                                &mut reliable_chan,
+                    }
+                    PacketType::Disconnect { session: incoming } => {
+                        if connected && session == Some(incoming) {
+                            begin_reconnect(
                                 &client,
-                                &tx,
-                                connected,
-                                session,
-                                incoming,
-                                sequence,
-                                ReliableBody::Complete(payload.to_vec()),
-                                &mut last_sent,
-                                &mut last_server_seen,
-                            );
-                        }
-                        PacketType::Ack { session: incoming, sequence } => {
-                            if connected && session == Some(incoming) {
-                                last_server_seen = Instant::now();
-                                reliable_chan.handle_ack(sequence);
-                                println!("[cl] ack {}", sequence);
-                            }
-                        }
-                        PacketType::Unreliable { session: incoming, sequence, payload } => {
-                            if connected && session == Some(incoming) && accept_unreliable(&mut unreliable_in, sequence) {
-                                last_server_seen = Instant::now();
-                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
-                                    let _ = tx.send(FromServer::Message(event));
-                                    println!("[cl] unreliable");
-                                }
-                            }
-                        }
-                        PacketType::Fragment { session: incoming, sequence, packet_id, fragment_idx, total_fragments, data } => {
-                            push_client_reliable(
                                 &mut reliable_chan,
-                                &client,
-                                &tx,
-                                connected,
-                                session,
-                                incoming,
-                                sequence,
-                                ReliableBody::Fragment {
-                                    packet_id,
-                                    fragment_idx,
-                                    total_fragments,
-                                    data: data.to_vec(),
-                                },
+                                &mut local_reliable,
+                                &mut connected,
+                                &mut session,
+                                &mut replace_session,
+                                &mut challenge_response_bytes,
+                                &mut unreliable_out,
+                                &mut unreliable_in,
                                 &mut last_sent,
-                                &mut last_server_seen,
                             );
+                            println!("[cl] disconnect");
+                            let _ = tx.send(FromServer::Disconnected);
+                        }
+                    }
+                    PacketType::KeepAlive { session: incoming } => {
+                        if connected && session == Some(incoming) {
+                            last_server_seen = Instant::now();
+                        }
+                    }
+                    PacketType::Reliable { session: incoming, sequence, payload } => {
+                        if push_client_reliable(
+                            &mut reliable_chan,
+                            &tx,
+                            connected,
+                            session,
+                            incoming,
+                            sequence,
+                            ReliableBody::Complete(payload.to_vec()),
+                            &mut last_server_seen,
+                        ) {
+                            need_ack = true;
+                        }
+                    }
+                    PacketType::Ack { session: incoming, cumulative, selective } => {
+                        if connected && session == Some(incoming) {
+                            last_server_seen = Instant::now();
+                            reliable_chan.handle_ack(cumulative, selective);
+                            println!("[cl] ack {}", cumulative);
+                        }
+                    }
+                    PacketType::Unreliable { session: incoming, sequence, payload } => {
+                        if connected && session == Some(incoming) && accept_unreliable(&mut unreliable_in, sequence) {
+                            last_server_seen = Instant::now();
+                            if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
+                                let _ = tx.send(FromServer::Message(event));
+                                println!("[cl] unreliable");
+                            }
+                        }
+                    }
+                    PacketType::Fragment { session: incoming, sequence, packet_id, fragment_idx, total_fragments, data } => {
+                        if push_client_reliable(
+                            &mut reliable_chan,
+                            &tx,
+                            connected,
+                            session,
+                            incoming,
+                            sequence,
+                            ReliableBody::Fragment {
+                                packet_id,
+                                fragment_idx,
+                                total_fragments,
+                                data: data.to_vec(),
+                            },
+                            &mut last_server_seen,
+                        ) {
+                            need_ack = true;
                         }
                     }
                 }
             }
-            Err(_) => {
-                if !connected {
-                    let _ = client.send_message(&connect_bytes);
-                    last_sent = Instant::now();
-                    if let Some(ref bytes) = challenge_response_bytes {
-                        let _ = client.send_message(bytes);
-                        last_sent = Instant::now();
-                    }
-                }
+        }
 
-                let poll = std::time::Duration::from_millis(50);
-                let rest = poll.saturating_sub(recv_started.elapsed());
-                if !rest.is_zero() {
-                    std::thread::sleep(rest);
+        if need_ack {
+            if let Some(current) = session {
+                if connected {
+                    let ack = reliable_chan.selective_ack();
+                    let packet = PacketType::Ack {
+                        session: current,
+                        cumulative: ack.cumulative,
+                        selective: ack.selective,
+                    };
+                    let bytes = wincode::serialize(&packet).unwrap();
+                    let _ = client.send_message(&bytes);
+                    last_sent = Instant::now();
+                    println!("[cl] ack {}", ack.cumulative);
                 }
             }
         }
 
         if connected && last_server_seen.elapsed() >= CONNECTION_TIMEOUT {
             connected = false;
+            replace_session = None;
             challenge_response_bytes = None;
             println!("[cl] server timeout");
             let _ = tx.send(FromServer::Disconnected);
-            let _ = client.send_message(&connect_bytes);
+            let _ = client.send_message(&connect_packet(None));
             last_sent = Instant::now();
         } else if connected && last_sent.elapsed() >= KEEPALIVE_INTERVAL {
             if let Some(current) = session {
@@ -382,12 +437,24 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<FromServer>, rx: 
                 let _ = client.send_message(&bytes);
                 last_sent = Instant::now();
             }
+        } else if !connected && last_sent.elapsed() >= HANDSHAKE_INTERVAL {
+            let _ = client.send_message(&connect_packet(replace_session));
+            last_sent = Instant::now();
+            if let Some(ref bytes) = challenge_response_bytes {
+                let _ = client.send_message(bytes);
+                last_sent = Instant::now();
+            }
         }
 
+        flush_local_reliable(&mut reliable_chan, &mut local_reliable);
         reliable_chan.pump(|packet_bytes| {
             let _ = client.send_message(packet_bytes);
             last_sent = Instant::now();
         });
+
+        if !got_packet {
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 }
 
@@ -418,12 +485,46 @@ fn flush_local_reliable(reliable_chan: &mut ReliableChannel, local_reliable: &mu
 
 #[cfg(feature = "client")]
 fn restart_channel(reliable_chan: &mut ReliableChannel, local_reliable: &mut VecDeque<Vec<u8>>) {
-    let queued = reliable_chan.take_unsent();
+    let queued = reliable_chan.take_unacked();
     *reliable_chan = ReliableChannel::new();
 
     for payload in queued.into_iter().rev() {
         local_reliable.push_front(payload);
     }
+}
+
+#[cfg(feature = "client")]
+fn reliable_backlog(local_reliable: &VecDeque<Vec<u8>>, reliable_chan: &ReliableChannel) -> usize {
+    local_reliable.len() + reliable_chan.queued_messages()
+}
+
+#[cfg(feature = "client")]
+fn connect_packet(replace: Option<u64>) -> Vec<u8> {
+    wincode::serialize(&PacketType::Connect { replace }).unwrap()
+}
+
+#[cfg(feature = "client")]
+fn begin_reconnect(
+    client: &NetworkClient,
+    reliable_chan: &mut ReliableChannel,
+    local_reliable: &mut VecDeque<Vec<u8>>,
+    connected: &mut bool,
+    session: &mut Option<u64>,
+    replace_session: &mut Option<u64>,
+    challenge_response_bytes: &mut Option<Vec<u8>>,
+    unreliable_out: &mut u32,
+    unreliable_in: &mut UnreliableInbox,
+    last_sent: &mut Instant,
+) {
+    *replace_session = *session;
+    *connected = false;
+    *session = None;
+    *challenge_response_bytes = None;
+    *unreliable_out = 0;
+    *unreliable_in = UnreliableInbox::new();
+    restart_channel(reliable_chan, local_reliable);
+    let _ = client.send_message(&connect_packet(*replace_session));
+    *last_sent = Instant::now();
 }
 
 #[cfg(feature = "client")]
@@ -460,31 +561,24 @@ fn send_client_unreliable(
 #[cfg(feature = "client")]
 fn push_client_reliable(
     reliable_chan: &mut ReliableChannel,
-    client: &NetworkClient,
     tx: &Sender<FromServer>,
     connected: bool,
     session: Option<u64>,
     packet_session: u64,
     sequence: u32,
     body: ReliableBody,
-    last_sent: &mut Instant,
     last_server_seen: &mut Instant,
-) {
+) -> bool {
     if !connected || session != Some(packet_session) {
-        return;
+        return false;
     }
 
     *last_server_seen = Instant::now();
 
     let result = reliable_chan.receive(sequence, body);
     if !result.ack {
-        return;
+        return false;
     }
-
-    let ack_packet = PacketType::Ack { session: packet_session, sequence };
-    let ack_bytes = wincode::serialize(&ack_packet).unwrap();
-    let _ = client.send_message(&ack_bytes);
-    *last_sent = Instant::now();
 
     for payload in result.messages {
         // Forward event
@@ -493,4 +587,6 @@ fn push_client_reliable(
             println!("[cl] deserialized and forwarded {}", sequence);
         }
     }
+
+    true
 }

@@ -14,8 +14,8 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 pub enum PacketType {
     Unreliable { session: u64, sequence: u32, payload: Arc<Vec<u8>> },
     Reliable { session: u64, sequence: u32, payload: Arc<Vec<u8>> },
-    Ack { session: u64, sequence: u32 },
-    Connect,
+    Ack { session: u64, cumulative: u32, selective: u32 },
+    Connect { replace: Option<u64> },
     Challenge { token: u64 },
     ChallengeResponse { token: u64 },
     Connected { session: u64 },

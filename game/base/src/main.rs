@@ -13,6 +13,10 @@ use crate::script::Realm;
 use crate::network::OUTBOUND_CAP;
 use std::net::SocketAddr;
 use std::str::FromStr;
+#[cfg(feature = "client")]
+use std::sync::atomic::AtomicBool;
+#[cfg(feature = "client")]
+use std::sync::Arc;
 
 fn main() {
     let cmdargs = console::get_cmdline_args();
@@ -55,12 +59,15 @@ fn main() {
     {
         let (client_tx, client_rx) = std::sync::mpsc::channel();
         let (client_out_tx, client_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let net_shutdown = Arc::clone(&shutdown);
         println!("Starting Client network loop");
-        std::thread::spawn(move || {
+        let net = std::thread::spawn(move || {
             client::client_network_loop(
                 SocketAddr::from_str("127.0.0.1:25400").expect("Failed to create SocketAddr"), 
                 client_tx, 
-                client_out_rx
+                client_out_rx,
+                net_shutdown
             );
         });
 
@@ -71,6 +78,7 @@ fn main() {
             tick_interval
         );
         println!("Entering Client loop");
-        client::client_loop(client_game);
+        client::client_loop(client_game, shutdown);
+        let _ = net.join();
     }
 }

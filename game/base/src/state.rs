@@ -90,6 +90,15 @@ impl<In, Out> GameState<In, Out> {
     }
 
     fn enqueue(&self, message: NetSend<Out>) {
+        let reliable = matches!(message, NetSend::Reliable(_) | NetSend::ReliableTo(_, _));
+        if reliable {
+            if self.network_sender.send(message).is_err() {
+                println!("[net] outbound disconnected");
+            }
+
+            return;
+        }
+
         match self.network_sender.try_send(message) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {

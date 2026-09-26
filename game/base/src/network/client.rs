@@ -1,6 +1,5 @@
 use std::net::UdpSocket;
 use std::net::SocketAddr;
-use std::time::Duration;
 use crate::network::packet::MAX_DATAGRAM;
 
 pub struct NetworkClient {
@@ -11,11 +10,12 @@ pub struct NetworkClient {
 impl NetworkClient {
     pub fn new(addr: SocketAddr) -> Self {
         let socket = UdpSocket::bind(addr).unwrap();
-        socket.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        socket.set_nonblocking(true).unwrap();
         Self { peer: addr, socket }
     }
 
     pub fn from_socket(socket: UdpSocket) -> Self {
+        socket.set_nonblocking(true).unwrap();
         Self {
             peer: socket.local_addr().unwrap(),
             socket: socket,
@@ -37,9 +37,11 @@ impl NetworkClient {
         self.peer
     }
 
-    pub fn receive_message(&self) -> Result<(Vec<u8>, SocketAddr), String> {
+    pub fn poll_message(&self) -> Option<(Vec<u8>, SocketAddr)> {
         let mut buffer = [0; MAX_DATAGRAM];
-        let (amt, src) = self.socket.recv_from(&mut buffer).map_err(|e| e.to_string())?;
-        Ok((buffer[..amt].to_vec(), src))
+        match self.socket.recv_from(&mut buffer) {
+            Ok((amt, src)) => Some((buffer[..amt].to_vec(), src)),
+            Err(_) => None,
+        }
     }
 }
