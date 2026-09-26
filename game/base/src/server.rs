@@ -19,7 +19,8 @@ use std::net::SocketAddr;
 pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
-    let mut tick_idx = 0; 
+    let mut tick_idx = 0;
+    let mut peers = Vec::new(); 
 
     loop {
         let now = Instant::now();
@@ -63,10 +64,16 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             match net_event {
                 FromClient::Connected { addr, generation } => {
                     println!("[sv] peer {}", addr);
+                    if !peers.contains(&addr) {
+                        peers.push(addr);
+                    }
+
                     emit_snapshot(&game, addr, generation);
+                    emit_voxel_baseline(&game, addr);
                 }
                 FromClient::Disconnected { addr } => {
                     println!("[sv] peer left {}", addr);
+                    peers.retain(|peer| *peer != addr);
                 }
                 FromClient::Message { addr, event } => {
                     match event {
@@ -86,6 +93,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         if ticked {
             emit_tick_state(&game);
+            emit_voxel_dirty(&mut game, &peers);
         }
 
         if !ticked {
@@ -468,6 +476,32 @@ fn take_client_unreliable(
     let client = server.clients.get_mut(&from)?;
 
     crate::network::take_unreliable(&mut client.unreliable_in, &mut client.unreliable_assembly, sequence, payload)
+}
+
+#[cfg(feature = "server")]
+fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
+    game.send_state_to(addr, ServerToClient::VoxelScale { scale: game.world.scale() });
+
+    for update in game.world.baseline() {
+        game.send_state_to(addr, ServerToClient::VoxelChunk(update));
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
+    if let Some(scale) = game.world.take_scale() {
+        for addr in peers {
+            game.send_state_to(*addr, ServerToClient::VoxelScale { scale });
+        }
+    }
+
+    let updates = game.world.take_dirty();
+
+    for update in updates {
+        for addr in peers {
+            game.send_state_to(*addr, ServerToClient::VoxelChunk(update.clone()));
+        }
+    }
 }
 
 #[cfg(feature = "server")]

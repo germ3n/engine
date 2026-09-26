@@ -1,4 +1,5 @@
 pub mod entities;
+pub mod world;
 pub mod network;
 pub mod state;
 pub mod client;

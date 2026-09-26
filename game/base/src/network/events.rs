@@ -4,6 +4,7 @@ use crate::script::libs::vector3::Vector3;
 use crate::script::libs::angle3::Angle3;
 use crate::r#enum::{InputButtons, EntityFlags};
 use crate::entities::EntityHandle;
+use crate::world::ChunkUpdate;
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub struct EntitySnapshot {
@@ -60,6 +61,8 @@ pub enum ServerToClient {
 
     WorldSnapshot { generation: u32, reset: bool, part: u16, parts: u16, entities: Vec<EntitySnapshot> },
     TickState { tick: u64, part: u16, parts: u16, transforms: Vec<NetTransform> },
+    VoxelScale { scale: f64 },
+    VoxelChunk(ChunkUpdate),
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]

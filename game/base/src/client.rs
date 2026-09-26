@@ -273,6 +273,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
+                                game.world.clear();
                                 hold_events = true;
                                 held.clear();
                                 snapshot_ingress = SnapshotIngress::new();
@@ -367,6 +368,16 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                             game.run_usermessage(hash, UserMsgReader::new(data));
                         },
                         ServerToClient::WorldSnapshot { .. } => {
+                        },
+                        ServerToClient::VoxelScale { scale } => {
+                            if !game.world.apply_scale(scale) {
+                                println!("[cl] bad voxel scale {scale}");
+                            }
+                        },
+                        ServerToClient::VoxelChunk(update) => {
+                            if !game.world.apply(&update) {
+                                println!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
+                            }
                         },
                         ServerToClient::TickState { tick, part, parts, transforms } => {
                             if let Some(transforms) = tick_ingress.push(tick, part, parts, transforms) {
