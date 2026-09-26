@@ -4,12 +4,13 @@ use crate::state::GameState;
 use std::time::{Instant, Duration};
 use std::sync::atomic::Ordering;
 use crate::network::server::NetworkServer;
-use crate::network::{PacketType, NetSend, FromClient, ReliableBody, accept_unreliable};
+use crate::network::{PacketType, NetSend, FromClient, ReliableBody};
+use crate::network::packet::STREAM_STATE;
 use crate::network::usermessage::hash_usermessage_name;
 use crate::network::usermessage::UserMsgReader;
 use crate::network::server::ReliableSendError;
 use crate::network::events::{EntitySnapshot, NetTransform};
-use crate::network::packet::{encoded_packet_count, stamp, unreliable_payload_limit, BundlePart};
+use crate::network::packet::{encoded_packet_count, stamp, unreliable_message_limit, BundlePart};
 use crate::entities::context::FrameInfo;
 use std::net::SocketAddr;
 
@@ -108,7 +109,7 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                 NetSend::Reliable(event) => {
                     let payload = wincode::serialize(&event).unwrap();
                     for addr in server.broadcast_reliable(&payload) {
-                        let _ = tx.send(FromClient::Disconnected { addr });
+                        println!("[sv] reliable outbound full {}", addr);
                     }
                 }
                 NetSend::Unreliable(event) => {
@@ -120,10 +121,20 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                     match server.enqueue_reliable(addr, &payload) {
                         Ok(()) => {}
                         Err(ReliableSendError::Full) => {
-                            println!("[sv] reliable window full {}", addr);
-                            if server.disconnect_client(addr) {
-                                let _ = tx.send(FromClient::Disconnected { addr });
-                            }
+                            println!("[sv] reliable outbound full {}", addr);
+                        }
+                        Err(ReliableSendError::TooLarge) => {
+                            println!("[sv] reliable payload too large");
+                        }
+                        Err(ReliableSendError::Missing) => {}
+                    }
+                }
+                NetSend::StateTo(addr, event) => {
+                    let payload = wincode::serialize(&event).unwrap();
+                    match server.enqueue_state(addr, &payload) {
+                        Ok(()) => {}
+                        Err(ReliableSendError::Full) => {
+                            println!("[sv] reliable outbound full {}", addr);
                         }
                         Err(ReliableSendError::TooLarge) => {
                             println!("[sv] reliable payload too large");
@@ -191,12 +202,13 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             let _ = tx.send(FromClient::Disconnected { addr: from });
                         }
                     }
-                    PacketType::Bundle { session, ack, cumulative, selective, parts } => {
+                    PacketType::Bundle { session, ack, cumulative, selective, state_cumulative, state_selective, parts } => {
                         if server.session_matches(from, session) {
                             server.touch_client(from);
                             if ack {
                                 if let Some(client) = server.clients.get_mut(&from) {
                                     client.reliable.handle_ack(cumulative, selective);
+                                    client.state.handle_ack(state_cumulative, state_selective);
                                 }
                                 if parts.is_empty() {
                                     println!("[sv] ack {}", cumulative);
@@ -216,10 +228,11 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             let _ = server.send_to(from, &bytes);
                         }
                     }
-                    PacketType::Reliable { session, sequence, payload } => {
+                    PacketType::Reliable { session, stream, sequence, payload } => {
                         if accept_from_client(
                             &mut server,
                             from,
+                            stream,
                             session,
                             sequence,
                             ReliableBody::Complete(payload.to_vec()),
@@ -228,24 +241,20 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             remember_ack(&mut ack_addrs, from);
                         }
                     }
-                    PacketType::Ack { session, cumulative, selective } => {
+                    PacketType::Ack { session, cumulative, selective, state_cumulative, state_selective } => {
                         if server.session_matches(from, session) {
                             server.touch_client(from);
 
                             if let Some(client) = server.clients.get_mut(&from) {
                                 client.reliable.handle_ack(cumulative, selective);
+                                client.state.handle_ack(state_cumulative, state_selective);
                             }
                             println!("[sv] ack {}", cumulative);
                         }
                     }
                     PacketType::Unreliable { session, sequence, payload } => {
                         if server.session_matches(from, session) {
-                            let fresh = {
-                                let client = server.clients.get_mut(&from).unwrap();
-                                accept_unreliable(&mut client.unreliable_in, sequence)
-                            };
-
-                            if fresh {
+                            if let Some(payload) = take_client_unreliable(&mut server, from, sequence, payload.to_vec()) {
                                 server.touch_client(from);
 
                                 if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
@@ -255,10 +264,11 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             }
                         }
                     }
-                    PacketType::Fragment { session, sequence, packet_id, fragment_idx, total_fragments, data } => {
+                    PacketType::Fragment { session, stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
                         if accept_from_client(
                             &mut server,
                             from,
+                            stream,
                             session,
                             sequence,
                             ReliableBody::Fragment {
@@ -307,6 +317,7 @@ fn remember_ack(addrs: &mut Vec<SocketAddr>, addr: SocketAddr) {
 fn accept_from_client(
     server: &mut NetworkServer,
     from: SocketAddr,
+    stream: u8,
     session: u64,
     sequence: u32,
     body: ReliableBody,
@@ -320,7 +331,13 @@ fn accept_from_client(
 
     let result = {
         let client = server.clients.get_mut(&from).unwrap();
-        client.reliable.receive(sequence, body)
+        let channel = if stream == STREAM_STATE {
+            &mut client.state
+        } else {
+            &mut client.reliable
+        };
+
+        channel.receive(sequence, body)
     };
 
     if !result.ack {
@@ -357,20 +374,22 @@ fn apply_server_part(
     tx: &Sender<FromClient>,
 ) -> bool {
     match part {
-        BundlePart::Reliable { sequence, payload } => {
+        BundlePart::Reliable { stream, sequence, payload } => {
             accept_from_client(
                 server,
                 from,
+                stream,
                 session,
                 sequence,
                 ReliableBody::Complete(payload),
                 tx,
             )
         }
-        BundlePart::Fragment { sequence, packet_id, fragment_idx, total_fragments, data } => {
+        BundlePart::Fragment { stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
             accept_from_client(
                 server,
                 from,
+                stream,
                 session,
                 sequence,
                 ReliableBody::Fragment {
@@ -383,16 +402,22 @@ fn apply_server_part(
             )
         }
         BundlePart::Unreliable { sequence, payload } => {
+            deliver_client_unreliable(server, from, session, sequence, payload, tx)
+        }
+        BundlePart::UnreliableFragment { sequence, fragment_idx, total_fragments, data } => {
             if !server.session_matches(from, session) {
                 return false;
             }
 
-            let fresh = {
-                let client = server.clients.get_mut(&from).unwrap();
-                accept_unreliable(&mut client.unreliable_in, sequence)
+            let payload = {
+                let Some(client) = server.clients.get_mut(&from) else {
+                    return false;
+                };
+
+                client.unreliable_assembly.push(&mut client.unreliable_in, sequence, fragment_idx, total_fragments, data)
             };
 
-            if fresh {
+            if let Some(payload) = payload {
                 server.touch_client(from);
 
                 if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
@@ -404,6 +429,43 @@ fn apply_server_part(
             false
         }
     }
+}
+
+#[cfg(feature = "server")]
+fn deliver_client_unreliable(
+    server: &mut NetworkServer,
+    from: SocketAddr,
+    session: u64,
+    sequence: u32,
+    payload: Vec<u8>,
+    tx: &Sender<FromClient>,
+) -> bool {
+    if !server.session_matches(from, session) {
+        return false;
+    }
+
+    if let Some(payload) = take_client_unreliable(server, from, sequence, payload) {
+        server.touch_client(from);
+
+        if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
+            let _ = tx.send(FromClient::Message { addr: from, event });
+            println!("[sv] unreliable");
+        }
+    }
+
+    false
+}
+
+#[cfg(feature = "server")]
+fn take_client_unreliable(
+    server: &mut NetworkServer,
+    from: SocketAddr,
+    sequence: u32,
+    payload: Vec<u8>,
+) -> Option<Vec<u8>> {
+    let client = server.clients.get_mut(&from)?;
+
+    crate::network::take_unreliable(&mut client.unreliable_in, &mut client.unreliable_assembly, sequence, payload)
 }
 
 #[cfg(feature = "server")]
@@ -421,46 +483,46 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
         });
     }
 
+    let mut batches = Vec::new();
     if pending.is_empty() {
-        game.send_reliable_to(addr, ServerToClient::WorldSnapshot {
-            generation,
-            reset: true,
-            entities: Vec::new(),
-        });
-
-        return;
+        batches.push(Vec::new());
     }
 
     let mut batch = Vec::new();
-    let mut reset = true;
     for entity in pending {
         batch.push(entity);
-        if snapshot_fits(generation, reset, &batch) {
+        if snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch) {
             continue;
         }
 
         let overflow = batch.pop().unwrap();
         if !batch.is_empty() {
-            game.send_reliable_to(addr, ServerToClient::WorldSnapshot {
-                generation,
-                reset,
-                entities: std::mem::take(&mut batch),
-            });
-            reset = false;
+            batches.push(std::mem::take(&mut batch));
         }
 
         batch.push(overflow);
-        if !snapshot_fits(generation, reset, &batch) {
+        if !snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch) {
             println!("[sv] snapshot entity too large");
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
-        game.send_reliable_to(addr, ServerToClient::WorldSnapshot {
+        batches.push(batch);
+    }
+
+    if batches.is_empty() {
+        batches.push(Vec::new());
+    }
+
+    let part_count = batches.len() as u16;
+    for (idx, entities) in batches.into_iter().enumerate() {
+        game.send_state_to(addr, ServerToClient::WorldSnapshot {
             generation,
-            reset,
-            entities: batch,
+            reset: idx == 0,
+            part: idx as u16,
+            parts: part_count,
+            entities,
         });
     }
 }
@@ -483,41 +545,63 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>) {
         return;
     }
 
+    if tick_fits(tick, 0, 1, &pending) {
+        game.send_unreliable(ServerToClient::TickState {
+            tick,
+            part: 0,
+            parts: 1,
+            transforms: pending,
+        });
+
+        return;
+    }
+
+    let mut batches = Vec::new();
     let mut batch = Vec::new();
     for transform in pending {
         batch.push(transform);
-        if tick_fits(tick, &batch) {
+        if tick_fits(tick, u16::MAX, u16::MAX, &batch) {
             continue;
         }
 
         let overflow = batch.pop().unwrap();
         if !batch.is_empty() {
-            game.send_unreliable(ServerToClient::TickState {
-                tick,
-                transforms: std::mem::take(&mut batch),
-            });
+            batches.push(std::mem::take(&mut batch));
         }
 
         batch.push(overflow);
-        if !tick_fits(tick, &batch) {
+        if !tick_fits(tick, u16::MAX, u16::MAX, &batch) {
             println!("[sv] tick state too large");
             batch.clear();
         }
     }
 
     if !batch.is_empty() {
+        batches.push(batch);
+    }
+
+    if batches.is_empty() {
+        return;
+    }
+
+    let part_count = batches.len() as u16;
+    for (idx, transforms) in batches.into_iter().enumerate() {
         game.send_unreliable(ServerToClient::TickState {
             tick,
-            transforms: batch,
+            part: idx as u16,
+            parts: part_count,
+            transforms,
         });
     }
 }
 
 #[cfg(feature = "server")]
-fn snapshot_fits(generation: u32, reset: bool, entities: &[EntitySnapshot]) -> bool {
+fn snapshot_fits(generation: u32, reset: bool, part: u16, parts: u16, entities: &[EntitySnapshot]) -> bool {
     let event = ServerToClient::WorldSnapshot {
         generation,
         reset,
+        part,
+        parts,
         entities: entities.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
@@ -527,12 +611,14 @@ fn snapshot_fits(generation: u32, reset: bool, entities: &[EntitySnapshot]) -> b
 }
 
 #[cfg(feature = "server")]
-fn tick_fits(tick: u64, transforms: &[NetTransform]) -> bool {
+fn tick_fits(tick: u64, part: u16, parts: u16, transforms: &[NetTransform]) -> bool {
     let event = ServerToClient::TickState {
         tick,
+        part,
+        parts,
         transforms: transforms.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
 
-    payload.len() <= unreliable_payload_limit()
+    payload.len() <= unreliable_message_limit()
 }

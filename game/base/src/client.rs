@@ -14,13 +14,143 @@ use core::net::SocketAddr;
 use std::str::FromStr;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, accept_unreliable, OUTBOUND_CAP};
-use crate::network::packet::{bundle_part, pack_bundles, stamp, unstamp, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, unreliable_payload_limit};
-use crate::network::events::EntitySnapshot;
+use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP};
+use crate::network::packet::{bundle_part, pack_bundles, stamp, unstamp, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
+use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::entities::Player;
-use crate::network::reliable::MAX_UNSENT;
 use crate::network::usermessage::UserMsgReader;
 use crate::entities::context::FrameInfo;
+
+struct TickIngress {
+    tick: u64,
+    part_count: u16,
+    filled: u16,
+    started: bool,
+    parts: Vec<Option<Vec<NetTransform>>>,
+}
+
+impl TickIngress {
+    fn new() -> Self {
+        Self {
+            tick: 0,
+            part_count: 0,
+            filled: 0,
+            started: false,
+            parts: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, tick: u64, part: u16, part_count: u16, transforms: Vec<NetTransform>) -> Option<Vec<NetTransform>> {
+        if part_count == 0 || part >= part_count || part_count > 1024 {
+            return None;
+        }
+
+        if self.started && self.part_count == 0 && tick <= self.tick {
+            return None;
+        }
+
+        if self.started && tick < self.tick {
+            return None;
+        }
+
+        if !self.started || self.tick != tick || self.part_count != part_count || self.parts.len() != part_count as usize {
+            self.started = true;
+            self.tick = tick;
+            self.part_count = part_count;
+            self.filled = 0;
+            self.parts = vec![None; part_count as usize];
+        }
+
+        if self.parts[part as usize].is_none() {
+            self.parts[part as usize] = Some(transforms);
+            self.filled = self.filled.saturating_add(1);
+        }
+
+        if self.filled != part_count {
+            return None;
+        }
+
+        let mut all = Vec::new();
+        for slot in self.parts.drain(..) {
+            if let Some(batch) = slot {
+                all.extend(batch);
+            }
+        }
+
+        self.filled = 0;
+        self.part_count = 0;
+
+        Some(all)
+    }
+}
+
+struct BuiltSnapshot {
+    reset: bool,
+    entities: Vec<EntitySnapshot>,
+}
+
+struct SnapshotIngress {
+    generation: u32,
+    reset: bool,
+    part_count: u16,
+    filled: u16,
+    parts: Vec<Option<Vec<EntitySnapshot>>>,
+}
+
+impl SnapshotIngress {
+    fn new() -> Self {
+        Self {
+            generation: 0,
+            reset: false,
+            part_count: 0,
+            filled: 0,
+            parts: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, generation: u32, reset: bool, part: u16, part_count: u16, entities: Vec<EntitySnapshot>) -> Option<BuiltSnapshot> {
+        if part_count == 0 || part >= part_count || part_count > 1024 {
+            return None;
+        }
+
+        if self.part_count != part_count || self.generation != generation || self.parts.len() != part_count as usize {
+            self.generation = generation;
+            self.reset = false;
+            self.part_count = part_count;
+            self.filled = 0;
+            self.parts = vec![None; part_count as usize];
+        }
+
+        if part == 0 {
+            self.reset = reset;
+        }
+
+        if self.parts[part as usize].is_none() {
+            self.parts[part as usize] = Some(entities);
+            self.filled = self.filled.saturating_add(1);
+        }
+
+        if self.filled != part_count {
+            return None;
+        }
+
+        let mut built_entities = Vec::new();
+        for slot in self.parts.drain(..) {
+            if let Some(batch) = slot {
+                built_entities.extend(batch);
+            }
+        }
+
+        let built = BuiltSnapshot {
+            reset: self.reset,
+            entities: built_entities,
+        };
+        self.filled = 0;
+        self.part_count = 0;
+
+        Some(built)
+    }
+}
 
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
     let mut client_window = OpenGLWindow::create_window();
@@ -37,6 +167,10 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut last_frame = std::time::Instant::now();
     let mut accumulated_time = 0.0;
     let mut world_generation = 0u32;
+    let mut hold_events = false;
+    let mut held: VecDeque<ServerToClient> = VecDeque::new();
+    let mut snapshot_ingress = SnapshotIngress::new();
+    let mut tick_ingress = TickIngress::new();
 
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
@@ -134,12 +268,15 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
 
                 while let Ok(net_event) = game.network_receiver.try_recv() {
-                    let message = match net_event {
+                    match net_event {
                         FromServer::Connected { generation } => {
                             println!("[cl] link up");
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
+                                hold_events = true;
+                                held.clear();
+                                snapshot_ingress = SnapshotIngress::new();
                             }
 
                             continue;
@@ -149,10 +286,56 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                             continue;
                         }
-                        FromServer::Message(message) => message,
-                    };
+                        FromServer::Message(message) => {
+                            if let ServerToClient::WorldSnapshot { generation, reset, part, parts, entities } = message {
+                                if generation == world_generation {
+                                    if let Some(built) = snapshot_ingress.push(generation, reset, part, parts, entities) {
+                                        if built.reset {
+                                            game.entities.clear();
+                                        }
 
-                    match message {
+                                        for entity in built.entities {
+                                            apply_spawn(&mut game, entity);
+                                        }
+
+                                        hold_events = false;
+                                        while let Some(waiting) = held.pop_front() {
+                                            apply_server_event(&mut game, &mut tick_ingress, waiting);
+                                        }
+                                    } else {
+                                        hold_events = true;
+                                    }
+                                }
+
+                                continue;
+                            }
+
+                            if hold_events {
+                                held.push_back(message);
+
+                                continue;
+                            }
+
+                            apply_server_event(&mut game, &mut tick_ingress, message);
+
+                            continue;
+                        }
+                    }
+                }
+
+                while let Some((hash, data)) = game.script_engine.poll_usermessage() {
+                    game.send_reliable(ClientToServer::UserMessage { hash, data });
+                }
+
+                client_window.window.request_redraw();
+            },
+            _ => (),
+        }
+    }).unwrap();
+}
+
+fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ingress: &mut TickIngress, message: ServerToClient) {
+    match message {
                         ServerToClient::PlayerConnected { handle, name } => {
                             game.script_engine.run_hook("PlayerConnected", (handle, name));
                         },
@@ -184,48 +367,30 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         ServerToClient::UserMessage { hash, data } => {
                             game.script_engine.run_usermessage(hash, UserMsgReader::new(data));
                         },
-                        ServerToClient::WorldSnapshot { generation, reset, entities } => {
-                            if generation == world_generation {
-                                if reset {
-                                    game.entities.clear();
-                                }
-
-                                for entity in entities {
-                                    apply_spawn(&mut game, entity);
-                                }
-                            }
+                        ServerToClient::WorldSnapshot { .. } => {
                         },
-                        ServerToClient::TickState { transforms, .. } => {
-                            for transform in transforms {
-                                if let Some(entity) = game.entities.get_mut(transform.handle) {
-                                    let base = entity.base_mut();
-                                    base.position = transform.position;
-                                    base.angles = transform.angles;
-                                    base.velocity = transform.velocity;
-                                }
+                        ServerToClient::TickState { tick, part, parts, transforms } => {
+                            if let Some(transforms) = tick_ingress.push(tick, part, parts, transforms) {
+                                for transform in transforms {
+                                    if let Some(entity) = game.entities.get_mut(transform.handle) {
+                                        let base = entity.base_mut();
+                                        base.position = transform.position;
+                                        base.angles = transform.angles;
+                                        base.velocity = transform.velocity;
+                                    }
 
-                                game.script_engine.run_hook(
-                                    "TransformUpdated",
-                                    (transform.handle, Some(transform.position), Some(transform.angles), Some(transform.velocity)),
-                                );
+                                    game.script_engine.run_hook(
+                                        "TransformUpdated",
+                                        (transform.handle, Some(transform.position), Some(transform.angles), Some(transform.velocity)),
+                                    );
+                                }
                             }
                         },
 
                         other => {
                             println!("[cl] unhandled {other:?}");
                         },
-                    }
-                }
-
-                while let Some((hash, data)) = game.script_engine.poll_usermessage() {
-                    game.send_reliable(ClientToServer::UserMessage { hash, data });
-                }
-
-                client_window.window.request_redraw();
-            },
-            _ => (),
-        }
-    }).unwrap();
+    }
 }
 
 #[cfg(feature = "client")]
@@ -246,13 +411,14 @@ pub fn client_network_loop(
     let mut client = NetworkClient::new(SocketAddr::from_str(local_addr).unwrap());
     client.connect(server_addr).expect("Failed to connect to server");
     let mut reliable_chan = ReliableChannel::new();
+    let mut state_chan = ReliableChannel::with_stream(STREAM_STATE);
     let mut connected = false;
     let mut local_reliable: VecDeque<Vec<u8>> = VecDeque::new();
     let mut unreliable_out: u32 = 0;
     let mut unreliable_in = UnreliableInbox::new();
+    let mut unreliable_assembly = UnreliableAssembly::new();
     let mut replace_session: Option<u64> = None;
     let mut generation: Option<u32> = None;
-    let mut reset_latched = false;
 
     let _ = client.send_message(&connect_packet(None));
     let mut challenge_response_bytes: Option<Vec<u8>> = None;
@@ -272,45 +438,21 @@ pub fn client_network_loop(
             return;
         }
 
-        if reliable_backlog(&local_reliable, &reliable_chan) < MAX_UNSENT {
-            reset_latched = false;
-        }
-
         let mut unreliable_parts: Vec<BundlePart> = Vec::new();
 
         while let Ok(outgoing) = rx.try_recv() {
             match outgoing {
-                NetSend::Reliable(event) | NetSend::ReliableTo(_, event) => {
+                NetSend::Reliable(event) | NetSend::ReliableTo(_, event) | NetSend::StateTo(_, event) => {
                     let payload = wincode::serialize(&event).unwrap();
                     let backlog = reliable_backlog(&local_reliable, &reliable_chan);
-                    if connected && !reset_latched && backlog >= MAX_UNSENT {
-                        reset_latched = true;
-                        local_reliable.push_back(payload);
-                        unreliable_parts.clear();
-                        begin_reconnect(
-                            &client,
-                            &mut reliable_chan,
-                            &mut connected,
-                            &mut session,
-                            &mut generation,
-                            &mut replace_session,
-                            &mut challenge_response_bytes,
-                            &mut unreliable_out,
-                            &mut unreliable_in,
-                            &mut last_sent,
-                        );
-                        println!("[cl] reliable window full");
-                        let _ = tx.send(FromServer::Disconnected);
-                    } else if backlog >= OUTBOUND_CAP {
+                    if backlog >= OUTBOUND_CAP {
                         println!("[cl] reliable outbound full");
                     } else {
                         local_reliable.push_back(payload);
                     }
                 }
                 NetSend::Unreliable(event) | NetSend::UnreliableTo(_, event) => {
-                    if let Some(part) = queue_client_unreliable(&mut unreliable_out, connected, session, &event) {
-                        unreliable_parts.push(part);
-                    }
+                    queue_client_unreliable(&mut unreliable_out, connected, session, &event, &mut unreliable_parts);
                 }
             }
         }
@@ -344,9 +486,12 @@ pub fn client_network_loop(
                             let session_changed = session.is_some() && session != Some(new_session);
                             let generation_changed = generation != Some(new_generation);
                             if session_changed || generation_changed {
+                                reclaim_reliable(&mut reliable_chan, generation, &mut local_reliable);
                                 reliable_chan = ReliableChannel::new();
+                                state_chan = ReliableChannel::with_stream(STREAM_STATE);
                                 unreliable_out = 0;
                                 unreliable_in = UnreliableInbox::new();
+                                unreliable_assembly = UnreliableAssembly::new();
                                 unreliable_parts.clear();
                             }
 
@@ -355,6 +500,7 @@ pub fn client_network_loop(
                             generation = Some(new_generation);
                             replace_session = None;
                             reliable_chan.set_session(new_session);
+                            state_chan.set_session(new_session);
                             challenge_response_bytes = None;
                             last_server_seen = Instant::now();
                             println!("[cl] connected");
@@ -369,6 +515,8 @@ pub fn client_network_loop(
                             begin_reconnect(
                                 &client,
                                 &mut reliable_chan,
+                                &mut state_chan,
+                                &mut local_reliable,
                                 &mut connected,
                                 &mut session,
                                 &mut generation,
@@ -376,17 +524,19 @@ pub fn client_network_loop(
                                 &mut challenge_response_bytes,
                                 &mut unreliable_out,
                                 &mut unreliable_in,
+                                &mut unreliable_assembly,
                                 &mut last_sent,
                             );
                             println!("[cl] disconnect");
                             let _ = tx.send(FromServer::Disconnected);
                         }
                     }
-                    PacketType::Bundle { session: incoming, ack, cumulative, selective, parts } => {
+                    PacketType::Bundle { session: incoming, ack, cumulative, selective, state_cumulative, state_selective, parts } => {
                         if connected && session == Some(incoming) {
                             last_server_seen = Instant::now();
                             if ack {
                                 reliable_chan.handle_ack(cumulative, selective);
+                                state_chan.handle_ack(state_cumulative, state_selective);
                                 if parts.is_empty() {
                                     println!("[cl] ack {}", cumulative);
                                 }
@@ -395,8 +545,10 @@ pub fn client_network_loop(
                             for part in parts {
                                 if apply_client_part(
                                     &mut reliable_chan,
+                                    &mut state_chan,
                                     &tx,
                                     &mut unreliable_in,
+                                    &mut unreliable_assembly,
                                     connected,
                                     session,
                                     generation,
@@ -414,9 +566,15 @@ pub fn client_network_loop(
                             last_server_seen = Instant::now();
                         }
                     }
-                    PacketType::Reliable { session: incoming, sequence, payload } => {
+                    PacketType::Reliable { session: incoming, stream, sequence, payload } => {
+                        let channel = if stream == STREAM_STATE {
+                            &mut state_chan
+                        } else {
+                            &mut reliable_chan
+                        };
+
                         if push_client_reliable(
-                            &mut reliable_chan,
+                            channel,
                             &tx,
                             connected,
                             session,
@@ -429,25 +587,34 @@ pub fn client_network_loop(
                             need_ack = true;
                         }
                     }
-                    PacketType::Ack { session: incoming, cumulative, selective } => {
+                    PacketType::Ack { session: incoming, cumulative, selective, state_cumulative, state_selective } => {
                         if connected && session == Some(incoming) {
                             last_server_seen = Instant::now();
                             reliable_chan.handle_ack(cumulative, selective);
+                            state_chan.handle_ack(state_cumulative, state_selective);
                             println!("[cl] ack {}", cumulative);
                         }
                     }
                     PacketType::Unreliable { session: incoming, sequence, payload } => {
-                        if connected && session == Some(incoming) && accept_unreliable(&mut unreliable_in, sequence) {
-                            last_server_seen = Instant::now();
-                            if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
-                                let _ = tx.send(FromServer::Message(event));
-                                println!("[cl] unreliable");
+                        if connected && session == Some(incoming) {
+                            if let Some(payload) = take_unreliable(&mut unreliable_in, &mut unreliable_assembly, sequence, payload.to_vec()) {
+                                last_server_seen = Instant::now();
+                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
+                                    let _ = tx.send(FromServer::Message(event));
+                                    println!("[cl] unreliable");
+                                }
                             }
                         }
                     }
-                    PacketType::Fragment { session: incoming, sequence, packet_id, fragment_idx, total_fragments, data } => {
+                    PacketType::Fragment { session: incoming, stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
+                        let channel = if stream == STREAM_STATE {
+                            &mut state_chan
+                        } else {
+                            &mut reliable_chan
+                        };
+
                         if push_client_reliable(
-                            &mut reliable_chan,
+                            channel,
                             &tx,
                             connected,
                             session,
@@ -470,10 +637,14 @@ pub fn client_network_loop(
         }
 
         if connected {
-            reliable_chan.evict_stale_fragments();
             flush_local_reliable(&mut reliable_chan, &mut local_reliable, generation);
             let mut parts = Vec::new();
             reliable_chan.pump(|packet| {
+                if let Some(part) = bundle_part(&packet) {
+                    parts.push(part);
+                }
+            });
+            state_chan.pump(|packet| {
                 if let Some(part) = bundle_part(&packet) {
                     parts.push(part);
                 }
@@ -483,7 +654,16 @@ pub fn client_network_loop(
             if let Some(current) = session {
                 if !parts.is_empty() || need_ack {
                     let ack = reliable_chan.selective_ack();
-                    let datagrams = pack_bundles(current, ack.cumulative, ack.selective, true, parts);
+                    let state_ack = state_chan.selective_ack();
+                    let datagrams = pack_bundles(
+                        current,
+                        ack.cumulative,
+                        ack.selective,
+                        state_ack.cumulative,
+                        state_ack.selective,
+                        true,
+                        parts,
+                    );
                     for datagram in datagrams {
                         let _ = client.send_message(&datagram);
                         last_sent = Instant::now();
@@ -571,6 +751,8 @@ fn connect_packet(replace: Option<u64>) -> Vec<u8> {
 fn begin_reconnect(
     client: &NetworkClient,
     reliable_chan: &mut ReliableChannel,
+    state_chan: &mut ReliableChannel,
+    local_reliable: &mut VecDeque<Vec<u8>>,
     connected: &mut bool,
     session: &mut Option<u64>,
     generation: &mut Option<u32>,
@@ -578,8 +760,10 @@ fn begin_reconnect(
     challenge_response_bytes: &mut Option<Vec<u8>>,
     unreliable_out: &mut u32,
     unreliable_in: &mut UnreliableInbox,
+    unreliable_assembly: &mut UnreliableAssembly,
     last_sent: &mut Instant,
 ) {
+    reclaim_reliable(reliable_chan, *generation, local_reliable);
     *replace_session = *session;
     *connected = false;
     *session = None;
@@ -587,9 +771,37 @@ fn begin_reconnect(
     *challenge_response_bytes = None;
     *unreliable_out = 0;
     *unreliable_in = UnreliableInbox::new();
+    *unreliable_assembly = UnreliableAssembly::new();
     *reliable_chan = ReliableChannel::new();
+    *state_chan = ReliableChannel::with_stream(STREAM_STATE);
     let _ = client.send_message(&connect_packet(*replace_session));
     *last_sent = Instant::now();
+}
+
+#[cfg(feature = "client")]
+fn reclaim_reliable(channel: &mut ReliableChannel, generation: Option<u32>, local_reliable: &mut VecDeque<Vec<u8>>) {
+    let Some(generation) = generation else {
+        return;
+    };
+
+    let pending = channel.take_unacked();
+    let mut restored = VecDeque::new();
+    for payload in pending {
+        if let Some(raw) = unstamp(generation, &payload) {
+            restored.push_back(raw);
+        }
+    }
+
+    while restored.len() + local_reliable.len() > OUTBOUND_CAP && !local_reliable.is_empty() {
+        local_reliable.pop_back();
+    }
+
+    while restored.len() > OUTBOUND_CAP {
+        restored.pop_back();
+    }
+
+    restored.append(local_reliable);
+    *local_reliable = restored;
 }
 
 #[cfg(feature = "client")]
@@ -598,22 +810,21 @@ fn queue_client_unreliable(
     connected: bool,
     session: Option<u64>,
     event: &ClientToServer,
-) -> Option<BundlePart> {
+    parts: &mut Vec<BundlePart>,
+) {
     if !connected || session.is_none() {
-        return None;
+        return;
     }
 
     let payload = wincode::serialize(event).unwrap();
-    if payload.len() > unreliable_payload_limit() {
-        println!("[cl] unreliable payload too large");
-
-        return None;
+    let sequence = *unreliable_out;
+    let split = split_unreliable(sequence, payload);
+    if split.is_empty() {
+        return;
     }
 
-    let sequence = *unreliable_out;
     *unreliable_out = unreliable_out.wrapping_add(1);
-
-    Some(BundlePart::Unreliable { sequence, payload })
+    parts.extend(split);
 }
 
 #[cfg(feature = "client")]
@@ -661,8 +872,10 @@ fn push_client_reliable(
 #[cfg(feature = "client")]
 fn apply_client_part(
     reliable_chan: &mut ReliableChannel,
+    state_chan: &mut ReliableChannel,
     tx: &Sender<FromServer>,
     unreliable_in: &mut UnreliableInbox,
+    unreliable_assembly: &mut UnreliableAssembly,
     connected: bool,
     session: Option<u64>,
     generation: Option<u32>,
@@ -671,9 +884,15 @@ fn apply_client_part(
     last_server_seen: &mut Instant,
 ) -> bool {
     match part {
-        BundlePart::Reliable { sequence, payload } => {
+        BundlePart::Reliable { stream, sequence, payload } => {
+            let channel = if stream == STREAM_STATE {
+                state_chan
+            } else {
+                reliable_chan
+            };
+
             push_client_reliable(
-                reliable_chan,
+                channel,
                 tx,
                 connected,
                 session,
@@ -684,9 +903,15 @@ fn apply_client_part(
                 last_server_seen,
             )
         }
-        BundlePart::Fragment { sequence, packet_id, fragment_idx, total_fragments, data } => {
+        BundlePart::Fragment { stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
+            let channel = if stream == STREAM_STATE {
+                state_chan
+            } else {
+                reliable_chan
+            };
+
             push_client_reliable(
-                reliable_chan,
+                channel,
                 tx,
                 connected,
                 session,
@@ -703,11 +928,26 @@ fn apply_client_part(
             )
         }
         BundlePart::Unreliable { sequence, payload } => {
-            if connected && session == Some(incoming) && accept_unreliable(unreliable_in, sequence) {
-                *last_server_seen = Instant::now();
-                if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
-                    let _ = tx.send(FromServer::Message(event));
-                    println!("[cl] unreliable");
+            if connected && session == Some(incoming) {
+                if let Some(payload) = take_unreliable(unreliable_in, unreliable_assembly, sequence, payload) {
+                    *last_server_seen = Instant::now();
+                    if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
+                        let _ = tx.send(FromServer::Message(event));
+                        println!("[cl] unreliable");
+                    }
+                }
+            }
+
+            false
+        }
+        BundlePart::UnreliableFragment { sequence, fragment_idx, total_fragments, data } => {
+            if connected && session == Some(incoming) {
+                if let Some(payload) = unreliable_assembly.push(unreliable_in, sequence, fragment_idx, total_fragments, data) {
+                    *last_server_seen = Instant::now();
+                    if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
+                        let _ = tx.send(FromServer::Message(event));
+                        println!("[cl] unreliable");
+                    }
                 }
             }
 

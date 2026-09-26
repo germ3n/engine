@@ -89,8 +89,12 @@ impl<In, Out> GameState<In, Out> {
         self.enqueue(NetSend::UnreliableTo(addr, event));
     }
 
+    pub fn send_state_to(&self, addr: SocketAddr, event: Out) {
+        self.enqueue(NetSend::StateTo(addr, event));
+    }
+
     fn enqueue(&self, message: NetSend<Out>) {
-        let reliable = matches!(message, NetSend::Reliable(_) | NetSend::ReliableTo(_, _));
+        let reliable = matches!(message, NetSend::Reliable(_) | NetSend::ReliableTo(_, _) | NetSend::StateTo(_, _));
         if reliable {
             if self.network_sender.send(message).is_err() {
                 println!("[net] outbound disconnected");

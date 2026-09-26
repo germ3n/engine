@@ -58,8 +58,8 @@ pub enum ServerToClient {
     WeaponReloaded { entity_handle: EntityHandle },
     ItemEquipped { entity_handle: EntityHandle, slot: u8, item_handle: EntityHandle },
 
-    WorldSnapshot { generation: u32, reset: bool, entities: Vec<EntitySnapshot> },
-    TickState { tick: u64, transforms: Vec<NetTransform> },
+    WorldSnapshot { generation: u32, reset: bool, part: u16, parts: u16, entities: Vec<EntitySnapshot> },
+    TickState { tick: u64, part: u16, parts: u16, transforms: Vec<NetTransform> },
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
@@ -82,6 +82,7 @@ pub enum NetSend<E> {
     Reliable(E),
     UnreliableTo(SocketAddr, E),
     ReliableTo(SocketAddr, E),
+    StateTo(SocketAddr, E),
 }
 
 #[derive(Clone, Debug)]
