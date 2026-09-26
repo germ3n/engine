@@ -33,6 +33,7 @@ pub struct NetworkServer {
     pub max_clients: u32,
     pub clients: HashMap<SocketAddr, ConnectedClient>,
     pub socket: UdpSocket,
+    recv_buf: Vec<u8>,
     challenge_secret: u64,
     session_counter: u64,
     generations: HashMap<SocketAddr, (u32, Instant)>,
@@ -49,6 +50,7 @@ impl NetworkServer {
             max_clients,
             clients: HashMap::new(),
             socket,
+            recv_buf: Vec::with_capacity(MAX_DATAGRAM),
             challenge_secret: random_secret(),
             session_counter: 0,
             generations: HashMap::new(),
@@ -106,12 +108,19 @@ impl NetworkServer {
         dropped
     }
 
-    pub fn poll_message(&self) -> Option<(Vec<u8>, SocketAddr)> {
-        let mut buffer = [0; MAX_DATAGRAM];
-        match self.socket.recv_from(&mut buffer) {
-            Ok((amt, src)) => Some((buffer[..amt].to_vec(), src)),
-            Err(_) => None,
+    pub fn poll_packet(&mut self) -> Option<(Result<PacketType, ()>, SocketAddr)> {
+        if self.recv_buf.len() < MAX_DATAGRAM {
+            self.recv_buf.resize(MAX_DATAGRAM, 0);
         }
+
+        let (amt, src) = match self.socket.recv_from(&mut self.recv_buf) {
+            Ok(packet) => packet,
+            Err(_) => {
+                return None;
+            }
+        };
+
+        Some((wincode::deserialize(&self.recv_buf[..amt]).map_err(|_| ()), src))
     }
 
     pub fn add_client(&mut self, addr: SocketAddr) -> Option<(u64, u32)> {
@@ -299,9 +308,9 @@ impl NetworkServer {
         }
 
         let status = if state {
-            client.state.enqueue(&stamped)
+            client.state.enqueue_bytes(stamped)
         } else {
-            client.reliable.enqueue(&stamped)
+            client.reliable.enqueue_bytes(stamped)
         };
 
         match status {
@@ -448,7 +457,7 @@ fn drain_outbound(outbound: &mut VecDeque<Vec<u8>>, channel: &mut ReliableChanne
         };
 
         let stamped = stamp(generation, &payload);
-        match channel.enqueue(&stamped) {
+        match channel.enqueue_bytes(stamped) {
             EnqueueStatus::Queued => {}
             EnqueueStatus::Full => {
                 outbound.push_front(payload);

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque};
 use crate::network::PacketType;
-use crate::network::packet::{encoded_packet_count, fragment_payload_limit, reliable_payload_limit, MAX_FRAGMENTS, STREAM_EVENT};
+use crate::network::packet::{encoded_packet_count, fragment_payload_limit, owned_payload, reliable_payload_limit, MAX_FRAGMENTS, STREAM_EVENT};
 
 const RECV_WINDOW: u32 = 1024;
 const UNRELIABLE_JUMP: u32 = 1024;
@@ -90,7 +90,7 @@ pub struct ReliableChannel {
     session: Option<u64>,
     outgoing_seq: u32,
     next_fragment_id: u16,
-    unsent: VecDeque<Vec<u8>>,
+    unsent: VecDeque<Arc<Vec<u8>>>,
     inflight: VecDeque<InflightMessage>,
     encoded: VecDeque<OutPacket>,
     pending_acknowledgements: HashMap<u32, PendingPacket>,
@@ -133,6 +133,10 @@ impl ReliableChannel {
     }
 
     pub fn enqueue(&mut self, payload: &[u8]) -> EnqueueStatus {
+        self.enqueue_bytes(payload.to_vec())
+    }
+
+    pub fn enqueue_bytes(&mut self, payload: Vec<u8>) -> EnqueueStatus {
         let Some(count) = encoded_packet_count(payload.len()) else {
             return EnqueueStatus::TooLarge;
         };
@@ -141,7 +145,7 @@ impl ReliableChannel {
             return EnqueueStatus::Full;
         }
 
-        self.unsent.push_back(payload.to_vec());
+        self.unsent.push_back(Arc::new(payload));
 
         EnqueueStatus::Queued
     }
@@ -154,7 +158,7 @@ impl ReliableChannel {
             }
         }
 
-        out.extend(self.unsent.drain(..));
+        out.extend(self.unsent.drain(..).map(owned_payload));
         self.encoded.clear();
         self.pending_acknowledgements.clear();
 
@@ -242,7 +246,7 @@ impl ReliableChannel {
                     break;
                 };
 
-                self.encode(&payload);
+                self.encode(payload);
             }
 
             let Some(packet) = self.encoded.pop_front() else {
@@ -422,10 +426,9 @@ impl ReliableChannel {
         seq
     }
 
-    fn encode(&mut self, payload: &[u8]) {
+    fn encode(&mut self, payload: Arc<Vec<u8>>) {
         if payload.len() <= reliable_payload_limit() {
             let seq = self.alloc_seq();
-            let payload = Arc::new(payload.to_vec());
             self.encoded.push_back(OutPacket {
                 seq,
                 kind: OutKind::Complete(Arc::clone(&payload)),
@@ -435,7 +438,7 @@ impl ReliableChannel {
             return;
         }
 
-        let shared = Arc::new(payload.to_vec());
+        let shared = payload;
         let chunk_len = fragment_payload_limit();
         let total_fragments = shared.len().div_ceil(chunk_len) as u16;
         let packet_id = self.next_fragment_id;

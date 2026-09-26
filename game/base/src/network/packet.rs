@@ -179,10 +179,10 @@ pub fn split_unreliable(sequence: u32, payload: Vec<u8>) -> Vec<BundlePart> {
 }
 
 pub fn stamp(generation: u32, payload: &[u8]) -> Vec<u8> {
-    wincode::serialize(&ReliableFrame {
-        generation,
-        payload: payload.to_vec(),
-    }).unwrap()
+    let mut bytes = wincode::serialize(&generation).unwrap();
+    wincode::serialize_into(&mut bytes, payload).unwrap();
+
+    bytes
 }
 
 pub fn unstamp(generation: u32, bytes: &[u8]) -> Option<Vec<u8>> {

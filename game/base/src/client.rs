@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use crate::state::GameState;
 use crate::network::{ServerToClient, ClientToServer, NetworkClient};
 use crate::ui::{opengl::OpenGLWindow, window::Window};
@@ -422,6 +422,7 @@ pub fn client_network_loop(
     let mut session: Option<u64> = None;
     let mut last_sent = Instant::now();
     let mut last_server_seen = Instant::now();
+    let mut unreliable_parts: Vec<BundlePart> = Vec::new();
 
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -435,35 +436,23 @@ pub fn client_network_loop(
             return;
         }
 
-        let mut unreliable_parts: Vec<BundlePart> = Vec::new();
-
         while let Ok(outgoing) = rx.try_recv() {
-            match outgoing {
-                NetSend::Reliable(event) | NetSend::ReliableTo(_, event) | NetSend::StateTo(_, event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    let backlog = reliable_backlog(&local_reliable, &reliable_chan);
-                    if backlog >= OUTBOUND_CAP {
-                        println!("[cl] reliable outbound full");
-                    } else {
-                        local_reliable.push_back(payload);
-                    }
-                }
-                NetSend::Unreliable(event) | NetSend::UnreliableTo(_, event) => {
-                    queue_client_unreliable(&mut unreliable_out, connected, session, &event, &mut unreliable_parts);
-                }
-            }
+            queue_client_send(outgoing, &reliable_chan, &mut local_reliable, &mut unreliable_out, connected, session, &mut unreliable_parts);
         }
 
         let mut got_packet = false;
         let mut need_ack = false;
         for _idx in 0..RECV_BUDGET {
-            let Some((data, _from)) = client.poll_message() else {
+            let Some(parsed) = client.poll_packet() else {
                 break;
             };
 
             got_packet = true;
-            if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
-                match packet {
+            let Ok(packet) = parsed else {
+                continue;
+            };
+
+            match packet {
                     PacketType::Connect { .. } => {
                     }
                     PacketType::Challenge { token } => {
@@ -534,9 +523,6 @@ pub fn client_network_loop(
                             if ack {
                                 reliable_chan.handle_ack(cumulative, selective);
                                 state_chan.handle_ack(state_cumulative, state_selective);
-                                if parts.is_empty() {
-                                    println!("[cl] ack {}", cumulative);
-                                }
                             }
 
                             for part in parts {
@@ -578,7 +564,7 @@ pub fn client_network_loop(
                             generation,
                             incoming,
                             sequence,
-                            ReliableBody::Complete(payload.to_vec()),
+                            ReliableBody::Complete(owned_payload(payload)),
                             &mut last_server_seen,
                         ) {
                             need_ack = true;
@@ -589,16 +575,14 @@ pub fn client_network_loop(
                             last_server_seen = Instant::now();
                             reliable_chan.handle_ack(cumulative, selective);
                             state_chan.handle_ack(state_cumulative, state_selective);
-                            println!("[cl] ack {}", cumulative);
                         }
                     }
                     PacketType::Unreliable { session: incoming, sequence, payload } => {
                         if connected && session == Some(incoming) {
-                            if let Some(payload) = take_unreliable(&mut unreliable_in, &mut unreliable_assembly, sequence, payload.to_vec()) {
+                            if let Some(payload) = take_unreliable(&mut unreliable_in, &mut unreliable_assembly, sequence, owned_payload(payload)) {
                                 last_server_seen = Instant::now();
                                 if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                                     let _ = tx.send(FromServer::Message(event));
-                                    println!("[cl] unreliable");
                                 }
                             }
                         }
@@ -622,14 +606,13 @@ pub fn client_network_loop(
                                 packet_id,
                                 fragment_idx,
                                 total_fragments,
-                                data: data.to_vec(),
+                                data: owned_payload(data),
                             },
                             &mut last_server_seen,
                         ) {
                             need_ack = true;
                         }
                     }
-                }
             }
         }
 
@@ -646,7 +629,7 @@ pub fn client_network_loop(
                     parts.push(part);
                 }
             });
-            parts.extend(unreliable_parts);
+            parts.extend(std::mem::take(&mut unreliable_parts));
 
             if let Some(current) = session {
                 if !parts.is_empty() || need_ack {
@@ -666,9 +649,6 @@ pub fn client_network_loop(
                         last_sent = Instant::now();
                     }
 
-                    if need_ack {
-                        println!("[cl] ack {}", ack.cumulative);
-                    }
                 }
             }
         }
@@ -697,7 +677,39 @@ pub fn client_network_loop(
         }
 
         if !got_packet {
-            std::thread::sleep(Duration::from_millis(2));
+            match rx.recv_timeout(Duration::from_millis(2)) {
+                Ok(outgoing) => queue_client_send(outgoing, &reliable_chan, &mut local_reliable, &mut unreliable_out, connected, session, &mut unreliable_parts),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "client")]
+fn queue_client_send(
+    outgoing: NetSend<ClientToServer>,
+    reliable_chan: &ReliableChannel,
+    local_reliable: &mut VecDeque<Vec<u8>>,
+    unreliable_out: &mut u32,
+    connected: bool,
+    session: Option<u64>,
+    unreliable_parts: &mut Vec<BundlePart>,
+) {
+    match outgoing {
+        NetSend::Reliable(event) | NetSend::ReliableTo(_, event) | NetSend::StateTo(_, event) => {
+            let payload = wincode::serialize(&event).unwrap();
+            let backlog = reliable_backlog(local_reliable, reliable_chan);
+            if backlog >= OUTBOUND_CAP {
+                println!("[cl] reliable outbound full");
+            } else {
+                local_reliable.push_back(payload);
+            }
+        }
+        NetSend::Unreliable(event) | NetSend::UnreliableTo(_, event) => {
+            queue_client_unreliable(unreliable_out, connected, session, &event, unreliable_parts);
         }
     }
 }
@@ -712,7 +724,7 @@ fn flush_local_reliable(reliable_chan: &mut ReliableChannel, local_reliable: &mu
         let status = match local_reliable.front() {
             Some(payload) => {
                 let stamped = stamp(generation, payload);
-                reliable_chan.enqueue(&stamped)
+                reliable_chan.enqueue_bytes(stamped)
             }
             None => {
                 break;
@@ -859,7 +871,6 @@ fn push_client_reliable(
         // Forward event
         if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
             let _ = tx.send(FromServer::Message(event));
-            println!("[cl] deserialized and forwarded {}", sequence);
         }
     }
 
@@ -930,7 +941,6 @@ fn apply_client_part(
                     *last_server_seen = Instant::now();
                     if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                         let _ = tx.send(FromServer::Message(event));
-                        println!("[cl] unreliable");
                     }
                 }
             }
@@ -943,7 +953,6 @@ fn apply_client_part(
                     *last_server_seen = Instant::now();
                     if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                         let _ = tx.send(FromServer::Message(event));
-                        println!("[cl] unreliable");
                     }
                 }
             }

@@ -1,4 +1,4 @@
-use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use crate::network::{ClientToServer, ServerToClient};
 use crate::state::GameState;
 use std::time::{Instant, Duration};
@@ -101,48 +101,7 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
 
     loop {
         while let Ok(outgoing) = rx.try_recv() {
-            match outgoing {
-                NetSend::Reliable(event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    for addr in server.broadcast_reliable(&payload) {
-                        println!("[sv] reliable outbound full {}", addr);
-                    }
-                }
-                NetSend::Unreliable(event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    server.broadcast_unreliable(payload);
-                }
-                NetSend::ReliableTo(addr, event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    match server.enqueue_reliable(addr, &payload) {
-                        Ok(()) => {}
-                        Err(ReliableSendError::Full) => {
-                            println!("[sv] reliable outbound full {}", addr);
-                        }
-                        Err(ReliableSendError::TooLarge) => {
-                            println!("[sv] reliable payload too large");
-                        }
-                        Err(ReliableSendError::Missing) => {}
-                    }
-                }
-                NetSend::StateTo(addr, event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    match server.enqueue_state(addr, &payload) {
-                        Ok(()) => {}
-                        Err(ReliableSendError::Full) => {
-                            println!("[sv] reliable outbound full {}", addr);
-                        }
-                        Err(ReliableSendError::TooLarge) => {
-                            println!("[sv] reliable payload too large");
-                        }
-                        Err(ReliableSendError::Missing) => {}
-                    }
-                }
-                NetSend::UnreliableTo(addr, event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    server.send_unreliable_to(addr, payload);
-                }
-            }
+            handle_server_send(&mut server, outgoing);
         }
 
         let mut ack_addrs = Vec::new();
@@ -150,13 +109,16 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
 
         // Use match instead of unwrap to handle the timeout gracefully
         for _idx in 0..RECV_BUDGET {
-            let Some((data, from)) = server.poll_message() else {
+            let Some((parsed, from)) = server.poll_packet() else {
                 break;
             };
 
             got_packet = true;
-            if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
-                match packet {
+            let Ok(packet) = parsed else {
+                continue;
+            };
+
+            match packet {
                     PacketType::Connect { replace } => {
                         println!("[sv] connect");
                         let restart = replace.map(|session| server.session_matches(from, session)).unwrap_or(false);
@@ -206,9 +168,6 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                                     client.reliable.handle_ack(cumulative, selective);
                                     client.state.handle_ack(state_cumulative, state_selective);
                                 }
-                                if parts.is_empty() {
-                                    println!("[sv] ack {}", cumulative);
-                                }
                             }
 
                             for part in parts {
@@ -231,7 +190,7 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             stream,
                             session,
                             sequence,
-                            ReliableBody::Complete(payload.to_vec()),
+                            ReliableBody::Complete(owned_payload(payload)),
                             &tx,
                         ) {
                             remember_ack(&mut ack_addrs, from);
@@ -245,17 +204,15 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                                 client.reliable.handle_ack(cumulative, selective);
                                 client.state.handle_ack(state_cumulative, state_selective);
                             }
-                            println!("[sv] ack {}", cumulative);
                         }
                     }
                     PacketType::Unreliable { session, sequence, payload } => {
                         if server.session_matches(from, session) {
-                            if let Some(payload) = take_client_unreliable(&mut server, from, sequence, payload.to_vec()) {
+                            if let Some(payload) = take_client_unreliable(&mut server, from, sequence, owned_payload(payload)) {
                                 server.touch_client(from);
 
                                 if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
                                     let _ = tx.send(FromClient::Message { addr: from, event });
-                                    println!("[sv] unreliable");
                                 }
                             }
                         }
@@ -271,14 +228,13 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                                 packet_id,
                                 fragment_idx,
                                 total_fragments,
-                                data: data.to_vec(),
+                                data: owned_payload(data),
                             },
                             &tx,
                         ) {
                             remember_ack(&mut ack_addrs, from);
                         }
                     }
-                }
             }
         }
 
@@ -297,7 +253,59 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
         }
 
         if !got_packet {
-            std::thread::sleep(Duration::from_millis(2));
+            match rx.recv_timeout(Duration::from_millis(2)) {
+                Ok(outgoing) => handle_server_send(&mut server, outgoing),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+fn handle_server_send(server: &mut NetworkServer, outgoing: NetSend<ServerToClient>) {
+    match outgoing {
+        NetSend::Reliable(event) => {
+            let payload = wincode::serialize(&event).unwrap();
+            for addr in server.broadcast_reliable(&payload) {
+                println!("[sv] reliable outbound full {}", addr);
+            }
+        }
+        NetSend::Unreliable(event) => {
+            let payload = wincode::serialize(&event).unwrap();
+            server.broadcast_unreliable(payload);
+        }
+        NetSend::ReliableTo(addr, event) => {
+            let payload = wincode::serialize(&event).unwrap();
+            match server.enqueue_reliable(addr, &payload) {
+                Ok(()) => {}
+                Err(ReliableSendError::Full) => {
+                    println!("[sv] reliable outbound full {}", addr);
+                }
+                Err(ReliableSendError::TooLarge) => {
+                    println!("[sv] reliable payload too large");
+                }
+                Err(ReliableSendError::Missing) => {}
+            }
+        }
+        NetSend::StateTo(addr, event) => {
+            let payload = wincode::serialize(&event).unwrap();
+            match server.enqueue_state(addr, &payload) {
+                Ok(()) => {}
+                Err(ReliableSendError::Full) => {
+                    println!("[sv] reliable outbound full {}", addr);
+                }
+                Err(ReliableSendError::TooLarge) => {
+                    println!("[sv] reliable payload too large");
+                }
+                Err(ReliableSendError::Missing) => {}
+            }
+        }
+        NetSend::UnreliableTo(addr, event) => {
+            let payload = wincode::serialize(&event).unwrap();
+            server.send_unreliable_to(addr, payload);
         }
     }
 }
@@ -354,7 +362,6 @@ fn accept_from_client(
 
         if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
             let _ = tx.send(FromClient::Message { addr: from, event });
-            println!("[sv] deserialized and forwarded {}", sequence);
         }
     }
 
@@ -418,7 +425,6 @@ fn apply_server_part(
 
                 if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
                     let _ = tx.send(FromClient::Message { addr: from, event });
-                    println!("[sv] unreliable");
                 }
             }
 
@@ -445,7 +451,6 @@ fn deliver_client_unreliable(
 
         if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
             let _ = tx.send(FromClient::Message { addr: from, event });
-            println!("[sv] unreliable");
         }
     }
 
