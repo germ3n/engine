@@ -28,6 +28,9 @@ jobs:
           - os: ubuntu-latest
             binary_name: base
             asset_name: base-linux-x86_64
+          - os: ubuntu-24.04-arm
+            binary_name: base
+            asset_name: base-linux-arm64
           - os: windows-latest
             binary_name: base.exe
             asset_name: base-windows-x86_64.exe
