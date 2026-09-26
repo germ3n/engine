@@ -5,6 +5,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use crate::script::{ScriptEngine, Realm};
+use crate::network::NetWake;
 use std::sync::Arc;
 
 pub struct GameState<In, Out> {
@@ -18,6 +19,7 @@ pub struct GameState<In, Out> {
     pub cur_time: f64,
     pub frame_time: f64,
     pub tick_count: u64,
+    wake: NetWake,
 }
 
 impl<In, Out> GameState<In, Out> {
@@ -25,7 +27,8 @@ impl<In, Out> GameState<In, Out> {
         realm: Realm,
         network_receiver: Receiver<In>,
         network_sender: SyncSender<NetSend<Out>>,
-        tick_interval: f64
+        tick_interval: f64,
+        wake: NetWake,
     ) -> Self {
         let mut cvars = HashMap::new();
         cvars.insert(
@@ -51,6 +54,7 @@ impl<In, Out> GameState<In, Out> {
             cur_time: 0.0,
             frame_time: 0.0,
             tick_count: 0,
+            wake,
         }
     }
 
@@ -84,7 +88,7 @@ impl<In, Out> GameState<In, Out> {
 
     fn enqueue(&self, message: NetSend<Out>) {
         match self.network_sender.try_send(message) {
-            Ok(()) => {}
+            Ok(()) => self.wake.poke(),
             Err(TrySendError::Full(_)) => {
                 println!("[net] outbound queue full");
             }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque};
 use crate::network::PacketType;
-use crate::network::packet::{encoded_packet_count, fragment_payload_limit, owned_payload, reliable_payload_limit, MAX_FRAGMENTS, STREAM_EVENT};
+use crate::network::packet::{encoded_packet_count, fragment_payload_limit, reliable_payload_limit, SharedBytes, MAX_FRAGMENTS, STREAM_EVENT};
 
 const RECV_WINDOW: u32 = 1024;
 const UNRELIABLE_JUMP: u32 = 1024;
@@ -32,6 +32,8 @@ enum OutKind {
         fragment_idx: u16,
         total_fragments: u16,
         data: Arc<Vec<u8>>,
+        start: usize,
+        end: usize,
     },
 }
 
@@ -88,6 +90,7 @@ pub struct RecvResult {
 pub struct ReliableChannel {
     stream: u8,
     session: Option<u64>,
+    generation: u32,
     outgoing_seq: u32,
     next_fragment_id: u16,
     unsent: VecDeque<Arc<Vec<u8>>>,
@@ -112,6 +115,7 @@ impl ReliableChannel {
         Self {
             stream,
             session: None,
+            generation: 0,
             outgoing_seq: 0,
             next_fragment_id: 0,
             unsent: VecDeque::new(),
@@ -132,11 +136,19 @@ impl ReliableChannel {
         self.session = Some(session);
     }
 
+    pub fn set_generation(&mut self, generation: u32) {
+        self.generation = generation;
+    }
+
     pub fn enqueue(&mut self, payload: &[u8]) -> EnqueueStatus {
         self.enqueue_bytes(payload.to_vec())
     }
 
     pub fn enqueue_bytes(&mut self, payload: Vec<u8>) -> EnqueueStatus {
+        self.enqueue_shared(&Arc::new(payload))
+    }
+
+    pub fn enqueue_shared(&mut self, payload: &Arc<Vec<u8>>) -> EnqueueStatus {
         let Some(count) = encoded_packet_count(payload.len()) else {
             return EnqueueStatus::TooLarge;
         };
@@ -145,7 +157,7 @@ impl ReliableChannel {
             return EnqueueStatus::Full;
         }
 
-        self.unsent.push_back(Arc::new(payload));
+        self.unsent.push_back(Arc::clone(payload));
 
         EnqueueStatus::Queued
     }
@@ -158,7 +170,10 @@ impl ReliableChannel {
             }
         }
 
-        out.extend(self.unsent.drain(..).map(owned_payload));
+        out.extend(self.unsent.drain(..).map(|payload| match Arc::try_unwrap(payload) {
+            Ok(bytes) => bytes,
+            Err(payload) => payload.as_ref().clone(),
+        }));
         self.encoded.clear();
         self.pending_acknowledgements.clear();
 
@@ -456,7 +471,9 @@ impl ReliableChannel {
                     packet_id,
                     fragment_idx,
                     total_fragments,
-                    data: Arc::new(shared[offset..end].to_vec()),
+                    data: Arc::clone(&shared),
+                    start: offset,
+                    end,
                 },
             });
             offset = end;
@@ -482,16 +499,18 @@ impl ReliableChannel {
                 session,
                 stream: self.stream,
                 sequence: packet.seq,
-                payload: Arc::clone(payload),
+                generation: self.generation,
+                payload: SharedBytes::full(Arc::clone(payload)),
             },
-            OutKind::Fragment { packet_id, fragment_idx, total_fragments, data } => PacketType::Fragment {
+            OutKind::Fragment { packet_id, fragment_idx, total_fragments, data, start, end } => PacketType::Fragment {
                 session,
                 stream: self.stream,
                 sequence: packet.seq,
+                generation: self.generation,
                 packet_id: *packet_id,
                 fragment_idx: *fragment_idx,
                 total_fragments: *total_fragments,
-                data: Arc::clone(data),
+                data: SharedBytes::range(Arc::clone(data), *start, *end),
             },
         }
     }
@@ -779,7 +798,7 @@ mod tests {
             packet_id: *packet_id,
             fragment_idx: *fragment_idx,
             total_fragments: *total_fragments,
-            data: data.to_vec(),
+            data: owned_payload(data.clone()),
         })
     }
 
@@ -982,9 +1001,9 @@ mod tests {
             panic!("expected reliable");
         };
 
-        let first = recv.receive(*seq0, ReliableBody::Complete(body0.to_vec()));
+        let first = recv.receive(*seq0, ReliableBody::Complete(body0.as_slice().to_vec()));
         assert!(first.ack);
-        let third = recv.receive(*seq2, ReliableBody::Complete(body2.to_vec()));
+        let third = recv.receive(*seq2, ReliableBody::Complete(body2.as_slice().to_vec()));
         assert!(third.ack);
         assert!(third.messages.is_empty());
 
@@ -1216,7 +1235,7 @@ mod tests {
         let mut inbox = UnreliableInbox::new();
         let mut assembly = UnreliableAssembly::new();
         let payload = vec![3u8; unreliable_payload_limit() + 40];
-        let mut parts = split_unreliable(0, payload.clone());
+        let mut parts = split_unreliable(0, Arc::new(payload.clone()));
         assert!(parts.len() > 1);
         parts.reverse();
 

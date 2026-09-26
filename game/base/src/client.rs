@@ -1,4 +1,6 @@
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, Sender};
+use std::os::unix::net::UnixStream;
+use crate::network::wait_socket;
 use crate::state::GameState;
 use crate::network::{ServerToClient, ClientToServer, NetworkClient};
 use crate::ui::{opengl::OpenGLWindow, window::Window};
@@ -15,7 +17,7 @@ use std::str::FromStr;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP, RECV_BUDGET};
-use crate::network::packet::{bundle_part, owned_payload, pack_bundles, stamp, unstamp, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
+use crate::network::packet::{bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
 use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::entities::Player;
 use crate::network::usermessage::UserMsgReader;
@@ -399,6 +401,7 @@ pub fn client_network_loop(
     tx: Sender<FromServer>,
     rx: Receiver<NetSend<ClientToServer>>,
     shutdown: Arc<AtomicBool>,
+    mut wake: UnixStream,
 ) {
     let local_addr = if server_addr.is_ipv6() {
         "[::]:0"
@@ -549,7 +552,7 @@ pub fn client_network_loop(
                             last_server_seen = Instant::now();
                         }
                     }
-                    PacketType::Reliable { session: incoming, stream, sequence, payload } => {
+                    PacketType::Reliable { session: incoming, stream, sequence, generation: packet_generation, payload } => {
                         let channel = if stream == STREAM_STATE {
                             &mut state_chan
                         } else {
@@ -563,6 +566,7 @@ pub fn client_network_loop(
                             session,
                             generation,
                             incoming,
+                            packet_generation,
                             sequence,
                             ReliableBody::Complete(owned_payload(payload)),
                             &mut last_server_seen,
@@ -587,7 +591,7 @@ pub fn client_network_loop(
                             }
                         }
                     }
-                    PacketType::Fragment { session: incoming, stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
+                    PacketType::Fragment { session: incoming, stream, sequence, generation: packet_generation, packet_id, fragment_idx, total_fragments, data } => {
                         let channel = if stream == STREAM_STATE {
                             &mut state_chan
                         } else {
@@ -601,6 +605,7 @@ pub fn client_network_loop(
                             session,
                             generation,
                             incoming,
+                            packet_generation,
                             sequence,
                             ReliableBody::Fragment {
                                 packet_id,
@@ -617,7 +622,11 @@ pub fn client_network_loop(
         }
 
         if connected {
-            flush_local_reliable(&mut reliable_chan, &mut local_reliable, generation);
+            if let Some(current_generation) = generation {
+                reliable_chan.set_generation(current_generation);
+                state_chan.set_generation(current_generation);
+            }
+            flush_local_reliable(&mut reliable_chan, &mut local_reliable);
             let mut parts = Vec::new();
             reliable_chan.pump(|packet| {
                 if let Some(part) = bundle_part(&packet) {
@@ -677,13 +686,7 @@ pub fn client_network_loop(
         }
 
         if !got_packet {
-            match rx.recv_timeout(Duration::from_millis(2)) {
-                Ok(outgoing) => queue_client_send(outgoing, &reliable_chan, &mut local_reliable, &mut unreliable_out, connected, session, &mut unreliable_parts),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-            }
+            wait_socket(client.socket(), &mut wake);
         }
     }
 }
@@ -715,16 +718,11 @@ fn queue_client_send(
 }
 
 #[cfg(feature = "client")]
-fn flush_local_reliable(reliable_chan: &mut ReliableChannel, local_reliable: &mut VecDeque<Vec<u8>>, generation: Option<u32>) {
-    let Some(generation) = generation else {
-        return;
-    };
-
+fn flush_local_reliable(reliable_chan: &mut ReliableChannel, local_reliable: &mut VecDeque<Vec<u8>>) {
     loop {
         let status = match local_reliable.front() {
             Some(payload) => {
-                let stamped = stamp(generation, payload);
-                reliable_chan.enqueue_bytes(stamped)
+                reliable_chan.enqueue_bytes(payload.clone())
             }
             None => {
                 break;
@@ -789,16 +787,14 @@ fn begin_reconnect(
 
 #[cfg(feature = "client")]
 fn reclaim_reliable(channel: &mut ReliableChannel, generation: Option<u32>, local_reliable: &mut VecDeque<Vec<u8>>) {
-    let Some(generation) = generation else {
+    let Some(_generation) = generation else {
         return;
     };
 
     let pending = channel.take_unacked();
     let mut restored = VecDeque::new();
     for payload in pending {
-        if let Some(raw) = unstamp(generation, &payload) {
-            restored.push_back(raw);
-        }
+        restored.push_back(payload);
     }
 
     while restored.len() + local_reliable.len() > OUTBOUND_CAP && !local_reliable.is_empty() {
@@ -825,7 +821,7 @@ fn queue_client_unreliable(
         return;
     }
 
-    let payload = wincode::serialize(event).unwrap();
+    let payload = Arc::new(wincode::serialize(event).unwrap());
     let sequence = *unreliable_out;
     let split = split_unreliable(sequence, payload);
     if split.is_empty() {
@@ -844,6 +840,7 @@ fn push_client_reliable(
     session: Option<u64>,
     generation: Option<u32>,
     packet_session: u64,
+    packet_generation: u32,
     sequence: u32,
     body: ReliableBody,
     last_server_seen: &mut Instant,
@@ -863,11 +860,11 @@ fn push_client_reliable(
         return true;
     };
 
-    for payload in result.messages {
-        let Some(payload) = unstamp(generation, &payload) else {
-            continue;
-        };
+    if packet_generation != generation {
+        return true;
+    }
 
+    for payload in result.messages {
         // Forward event
         if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
             let _ = tx.send(FromServer::Message(event));
@@ -892,7 +889,7 @@ fn apply_client_part(
     last_server_seen: &mut Instant,
 ) -> bool {
     match part {
-        BundlePart::Reliable { stream, sequence, payload } => {
+        BundlePart::Reliable { stream, sequence, generation: packet_generation, payload } => {
             let channel = if stream == STREAM_STATE {
                 state_chan
             } else {
@@ -906,12 +903,13 @@ fn apply_client_part(
                 session,
                 generation,
                 incoming,
+                packet_generation,
                 sequence,
                 ReliableBody::Complete(owned_payload(payload)),
                 last_server_seen,
             )
         }
-        BundlePart::Fragment { stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
+        BundlePart::Fragment { stream, sequence, generation: packet_generation, packet_id, fragment_idx, total_fragments, data } => {
             let channel = if stream == STREAM_STATE {
                 state_chan
             } else {
@@ -925,6 +923,7 @@ fn apply_client_part(
                 session,
                 generation,
                 incoming,
+                packet_generation,
                 sequence,
                 ReliableBody::Fragment {
                     packet_id,

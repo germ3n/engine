@@ -1,4 +1,6 @@
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, Sender};
+use std::os::unix::net::UnixStream;
+use crate::network::wait_socket;
 use crate::network::{ClientToServer, ServerToClient};
 use crate::state::GameState;
 use std::time::{Instant, Duration};
@@ -9,7 +11,7 @@ use crate::network::usermessage::hash_usermessage_name;
 use crate::network::usermessage::UserMsgReader;
 use crate::network::server::ReliableSendError;
 use crate::network::events::{EntitySnapshot, NetTransform};
-use crate::network::packet::{encoded_packet_count, owned_payload, stamp, unreliable_message_limit, BundlePart};
+use crate::network::packet::{encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart};
 use crate::entities::context::FrameInfo;
 use std::net::SocketAddr;
 
@@ -96,7 +98,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
-pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerToClient>>) {
+pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerToClient>>, mut wake: UnixStream) {
     let mut server = NetworkServer::new(25400, 128);
 
     loop {
@@ -183,12 +185,13 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             let _ = server.send_to(from, &bytes);
                         }
                     }
-                    PacketType::Reliable { session, stream, sequence, payload } => {
+                    PacketType::Reliable { session, stream, sequence, generation, payload } => {
                         if accept_from_client(
                             &mut server,
                             from,
                             stream,
                             session,
+                            generation,
                             sequence,
                             ReliableBody::Complete(owned_payload(payload)),
                             &tx,
@@ -217,12 +220,13 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
                             }
                         }
                     }
-                    PacketType::Fragment { session, stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
+                    PacketType::Fragment { session, stream, sequence, generation, packet_id, fragment_idx, total_fragments, data } => {
                         if accept_from_client(
                             &mut server,
                             from,
                             stream,
                             session,
+                            generation,
                             sequence,
                             ReliableBody::Fragment {
                                 packet_id,
@@ -253,13 +257,7 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
         }
 
         if !got_packet {
-            match rx.recv_timeout(Duration::from_millis(2)) {
-                Ok(outgoing) => handle_server_send(&mut server, outgoing),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-            }
+            wait_socket(&server.socket, &mut wake);
         }
     }
 }
@@ -323,6 +321,7 @@ fn accept_from_client(
     from: SocketAddr,
     stream: u8,
     session: u64,
+    packet_generation: u32,
     sequence: u32,
     body: ReliableBody,
     tx: &Sender<FromClient>,
@@ -355,11 +354,11 @@ fn accept_from_client(
         }
     };
 
-    for payload in result.messages {
-        let Some(payload) = crate::network::packet::unstamp(generation, &payload) else {
-            continue;
-        };
+    if packet_generation != generation {
+        return true;
+    }
 
+    for payload in result.messages {
         if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
             let _ = tx.send(FromClient::Message { addr: from, event });
         }
@@ -377,23 +376,25 @@ fn apply_server_part(
     tx: &Sender<FromClient>,
 ) -> bool {
     match part {
-        BundlePart::Reliable { stream, sequence, payload } => {
+        BundlePart::Reliable { stream, sequence, generation, payload } => {
             accept_from_client(
                 server,
                 from,
                 stream,
                 session,
+                generation,
                 sequence,
                 ReliableBody::Complete(owned_payload(payload)),
                 tx,
             )
         }
-        BundlePart::Fragment { stream, sequence, packet_id, fragment_idx, total_fragments, data } => {
+        BundlePart::Fragment { stream, sequence, generation, packet_id, fragment_idx, total_fragments, data } => {
             accept_from_client(
                 server,
                 from,
                 stream,
                 session,
+                generation,
                 sequence,
                 ReliableBody::Fragment {
                     packet_id,
@@ -606,9 +607,8 @@ fn snapshot_fits(generation: u32, reset: bool, part: u16, parts: u16, entities: 
         entities: entities.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
-    let stamped = stamp(generation, &payload);
 
-    encoded_packet_count(stamped.len()).is_some()
+    encoded_packet_count(payload.len()).is_some()
 }
 
 #[cfg(feature = "server")]

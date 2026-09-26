@@ -40,6 +40,10 @@ impl NetworkClient {
         self.peer
     }
 
+    pub fn socket(&self) -> &UdpSocket {
+        &self.socket
+    }
+
     pub fn poll_packet(&mut self) -> Option<Result<PacketType, ()>> {
         if self.recv_buf.len() < MAX_DATAGRAM {
             self.recv_buf.resize(MAX_DATAGRAM, 0);

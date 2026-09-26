@@ -10,7 +10,8 @@ pub mod r#enum;
 
 use crate::state::GameState;
 use crate::script::Realm;
-use crate::network::OUTBOUND_CAP;
+use crate::network::{NetWake, OUTBOUND_CAP};
+use std::os::unix::net::UnixStream;
 use std::net::SocketAddr;
 use std::str::FromStr;
 #[cfg(feature = "client")]
@@ -31,15 +32,19 @@ fn main() {
         println!("Starting server network loop");
         let (server_tx, server_rx) = std::sync::mpsc::channel();
         let (server_out_tx, server_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
+        let (server_wake_read, server_wake_write) = UnixStream::pair().expect("Failed to create server wake");
+        server_wake_read.set_nonblocking(true).expect("Failed to set server wake nonblocking");
+        server_wake_write.set_nonblocking(true).expect("Failed to set server wake nonblocking");
         std::thread::spawn(move || {
-            server::server_network_loop(server_tx, server_out_rx);
+            server::server_network_loop(server_tx, server_out_rx, server_wake_read);
         });
 
         let server_game = GameState::new(
             Realm::Server,
             server_rx,
             server_out_tx,
-            tick_interval
+            tick_interval,
+            NetWake::new(server_wake_write),
         );
 
         #[cfg(feature = "client")]
@@ -59,6 +64,9 @@ fn main() {
     {
         let (client_tx, client_rx) = std::sync::mpsc::channel();
         let (client_out_tx, client_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
+        let (client_wake_read, client_wake_write) = UnixStream::pair().expect("Failed to create client wake");
+        client_wake_read.set_nonblocking(true).expect("Failed to set client wake nonblocking");
+        client_wake_write.set_nonblocking(true).expect("Failed to set client wake nonblocking");
         let shutdown = Arc::new(AtomicBool::new(false));
         let net_shutdown = Arc::clone(&shutdown);
         println!("Starting Client network loop");
@@ -67,7 +75,8 @@ fn main() {
                 SocketAddr::from_str("127.0.0.1:25400").expect("Failed to create SocketAddr"), 
                 client_tx, 
                 client_out_rx,
-                net_shutdown
+                net_shutdown,
+                client_wake_read,
             );
         });
 
@@ -75,7 +84,8 @@ fn main() {
             Realm::Client,
             client_rx,
             client_out_tx,
-            tick_interval
+            tick_interval,
+            NetWake::new(client_wake_write),
         );
         println!("Entering Client loop");
         client::client_loop(client_game, shutdown);

@@ -158,6 +158,7 @@ dependencies = [
  "glow_glyph",
  "glutin",
  "glutin-winit",
+ "libc",
  "log",
  "macro",
  "mlua",

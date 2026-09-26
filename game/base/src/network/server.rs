@@ -1,11 +1,12 @@
 use crate::network::reliable::{EnqueueStatus, ReliableChannel, UnreliableAssembly};
 use crate::network::{PacketType, UnreliableInbox, OUTBOUND_CAP};
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::Arc;
 use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use crate::network::packet::{bundle_part, pack_bundles, stamp, split_unreliable, BundlePart, CONNECTION_TIMEOUT, MAX_DATAGRAM, STREAM_STATE};
+use crate::network::packet::{bundle_part, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, MAX_DATAGRAM, STREAM_STATE};
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
 
@@ -257,14 +258,38 @@ impl NetworkServer {
     }
 
     pub fn enqueue_reliable(&mut self, addr: SocketAddr, payload: &[u8]) -> Result<(), ReliableSendError> {
-        self.enqueue_on(addr, payload, false)
+        self.enqueue_shared(addr, Arc::new(payload.to_vec()), false)
     }
 
     pub fn enqueue_state(&mut self, addr: SocketAddr, payload: &[u8]) -> Result<(), ReliableSendError> {
-        self.enqueue_on(addr, payload, true)
+        self.enqueue_shared(addr, Arc::new(payload.to_vec()), true)
     }
 
-    fn enqueue_on(&mut self, addr: SocketAddr, payload: &[u8], state: bool) -> Result<(), ReliableSendError> {
+    pub fn broadcast_reliable(&mut self, payload: &[u8]) -> Vec<SocketAddr> {
+        let shared = Arc::new(payload.to_vec());
+        let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
+        let mut stalled = Vec::new();
+        let mut reported_large = false;
+        for addr in addrs {
+            match self.enqueue_shared(addr, Arc::clone(&shared), false) {
+                Ok(()) => {}
+                Err(ReliableSendError::Full) => {
+                    stalled.push(addr);
+                }
+                Err(ReliableSendError::TooLarge) => {
+                    if !reported_large {
+                        println!("[sv] reliable payload too large");
+                        reported_large = true;
+                    }
+                }
+                Err(ReliableSendError::Missing) => {}
+            }
+        }
+
+        stalled
+    }
+
+    fn enqueue_shared(&mut self, addr: SocketAddr, payload: Arc<Vec<u8>>, state: bool) -> Result<(), ReliableSendError> {
         let generation = match self.clients.get(&addr) {
             Some(client) => client.generation,
             None => {
@@ -272,8 +297,7 @@ impl NetworkServer {
             }
         };
 
-        let stamped = stamp(generation, payload);
-        if crate::network::packet::encoded_packet_count(stamped.len()).is_none() {
+        if crate::network::packet::encoded_packet_count(payload.len()).is_none() {
             return Err(ReliableSendError::TooLarge);
         }
 
@@ -299,27 +323,30 @@ impl NetworkServer {
 
         if waiting {
             if state {
-                client.state_outbound.push_back(payload.to_vec());
+                client.state_outbound.push_back(payload.as_ref().clone());
             } else {
-                client.outbound.push_back(payload.to_vec());
+                client.outbound.push_back(payload.as_ref().clone());
             }
 
             return Ok(());
         }
 
-        let status = if state {
-            client.state.enqueue_bytes(stamped)
-        } else {
-            client.reliable.enqueue_bytes(stamped)
+        let status = {
+            let channel = if state {
+                &mut client.state
+            } else {
+                &mut client.reliable
+            };
+            channel.set_generation(generation);
+            channel.enqueue_shared(&payload)
         };
-
         match status {
             EnqueueStatus::Queued => Ok(()),
             EnqueueStatus::Full => {
                 if state {
-                    client.state_outbound.push_back(payload.to_vec());
+                    client.state_outbound.push_back(payload.as_ref().clone());
                 } else {
-                    client.outbound.push_back(payload.to_vec());
+                    client.outbound.push_back(payload.as_ref().clone());
                 }
 
                 Ok(())
@@ -328,41 +355,19 @@ impl NetworkServer {
         }
     }
 
-    pub fn broadcast_reliable(&mut self, payload: &[u8]) -> Vec<SocketAddr> {
-        let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
-        let mut stalled = Vec::new();
-        let mut reported_large = false;
-        for addr in addrs {
-            match self.enqueue_reliable(addr, payload) {
-                Ok(()) => {}
-                Err(ReliableSendError::Full) => {
-                    stalled.push(addr);
-                }
-                Err(ReliableSendError::TooLarge) => {
-                    if !reported_large {
-                        println!("[sv] reliable payload too large");
-                        reported_large = true;
-                    }
-                }
-                Err(ReliableSendError::Missing) => {}
-            }
-        }
-
-        stalled
-    }
-
     pub fn send_unreliable_to(&mut self, addr: SocketAddr, payload: Vec<u8>) {
-        self.write_unreliable(addr, payload);
+        self.write_unreliable(addr, Arc::new(payload));
     }
 
     pub fn broadcast_unreliable(&mut self, payload: Vec<u8>) {
+        let shared = Arc::new(payload);
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         for addr in addrs {
-            self.write_unreliable(addr, payload.clone());
+            self.write_unreliable(addr, Arc::clone(&shared));
         }
     }
 
-    fn write_unreliable(&mut self, addr: SocketAddr, payload: Vec<u8>) {
+    fn write_unreliable(&mut self, addr: SocketAddr, payload: Arc<Vec<u8>>) {
         let sequence = {
             let Some(client) = self.clients.get(&addr) else {
                 return;
@@ -451,21 +456,22 @@ impl NetworkServer {
 }
 
 fn drain_outbound(outbound: &mut VecDeque<Vec<u8>>, channel: &mut ReliableChannel, generation: u32) {
+    channel.set_generation(generation);
     loop {
-        let Some(payload) = outbound.pop_front() else {
+        let Some(payload) = outbound.front().cloned() else {
             break;
         };
 
-        let stamped = stamp(generation, &payload);
-        match channel.enqueue_bytes(stamped) {
-            EnqueueStatus::Queued => {}
+        match channel.enqueue_bytes(payload) {
+            EnqueueStatus::Queued => {
+                outbound.pop_front();
+            }
             EnqueueStatus::Full => {
-                outbound.push_front(payload);
-
                 break;
             }
             EnqueueStatus::TooLarge => {
                 println!("[sv] reliable payload too large");
+                outbound.pop_front();
             }
         }
     }
