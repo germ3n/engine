@@ -25,6 +25,10 @@ impl UserMsgWriter {
         Self { data: Vec::with_capacity(capacity) }
     }
 
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
     pub fn write_u8(&mut self, val: u8) {
         self.data.push(val);
     }
@@ -242,13 +246,19 @@ impl UserData for UserMsgReader {
             Ok(Some(val))
         });
 
-        methods.add_method_mut("read_i8", |_, _this, ()| {
+        methods.add_method_mut("read_i8", |_, this, ()| {
             /*if this.idx >= this.data.len() { return Ok(None); }
             let val = this.data[this.idx];
             this.idx += size_of::<i8>();
             Ok(Some(val)) */
-            todo!();
-            Ok(mlua::Nil)
+            if this.idx >= this.data.len() {
+                return Ok(None);
+            }
+
+            let val = this.data[this.idx] as i8;
+            this.idx += size_of::<u8>();
+
+            Ok(Some(val))
         });
 
         methods.add_method_mut("read_u16", |_, this, ()| {

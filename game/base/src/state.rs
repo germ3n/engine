@@ -1,7 +1,8 @@
 use crate::entities::EntityList;
 use crate::network::NetSend;
 use crate::console::{ConVar, ConVarValue};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::net::SocketAddr;
 use std::collections::HashMap;
 use crate::script::{ScriptEngine, Realm};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
@@ -12,7 +13,7 @@ pub struct GameState<In, Out> {
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub tick_interval: f64,
     pub network_receiver: Receiver<In>,
-    pub network_sender: Sender<NetSend<Out>>,
+    pub network_sender: SyncSender<NetSend<Out>>,
     pub script_engine: ScriptEngine,
     pub cur_time: Arc<AtomicU64>,
     pub frame_time: Arc<AtomicU64>,
@@ -23,7 +24,7 @@ impl<In, Out> GameState<In, Out> {
     pub fn new(
         realm: Realm,
         network_receiver: Receiver<In>,
-        network_sender: Sender<NetSend<Out>>,
+        network_sender: SyncSender<NetSend<Out>>,
         tick_interval: f64
     ) -> Self {
         let mut cvars = HashMap::new();
@@ -73,10 +74,30 @@ impl<In, Out> GameState<In, Out> {
     }
 
     pub fn send_reliable(&self, event: Out) {
-        let _ = self.network_sender.send(NetSend::Reliable(event));
+        self.enqueue(NetSend::Reliable(event));
     }
 
     pub fn send_unreliable(&self, event: Out) {
-        let _ = self.network_sender.send(NetSend::Unreliable(event));
+        self.enqueue(NetSend::Unreliable(event));
+    }
+
+    pub fn send_reliable_to(&self, addr: SocketAddr, event: Out) {
+        self.enqueue(NetSend::ReliableTo(addr, event));
+    }
+
+    pub fn send_unreliable_to(&self, addr: SocketAddr, event: Out) {
+        self.enqueue(NetSend::UnreliableTo(addr, event));
+    }
+
+    fn enqueue(&self, message: NetSend<Out>) {
+        match self.network_sender.try_send(message) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                println!("[net] outbound queue full");
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                println!("[net] outbound disconnected");
+            }
+        }
     }
 }

@@ -12,15 +12,17 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum PacketType {
-    Unreliable(Arc<Vec<u8>>),
-    Reliable { sequence: u32, payload: Arc<Vec<u8>> },
-    Ack { sequence: u32 },
+    Unreliable { session: u64, sequence: u32, payload: Arc<Vec<u8>> },
+    Reliable { session: u64, sequence: u32, payload: Arc<Vec<u8>> },
+    Ack { session: u64, sequence: u32 },
     Connect,
     Challenge { token: u64 },
     ChallengeResponse { token: u64 },
     Connected { session: u64 },
     KeepAlive { session: u64 },
+    Disconnect { session: u64 },
     Fragment { 
+        session: u64,
         sequence: u32,
         packet_id: u16, 
         fragment_idx: u16, 
@@ -33,6 +35,7 @@ pub fn reliable_payload_limit() -> usize {
     static LIMIT: OnceLock<usize> = OnceLock::new();
     *LIMIT.get_or_init(|| {
         let packet = PacketType::Reliable {
+            session: 0,
             sequence: 0,
             payload: Arc::new(Vec::new()),
         };
@@ -44,6 +47,7 @@ pub fn fragment_payload_limit() -> usize {
     static LIMIT: OnceLock<usize> = OnceLock::new();
     *LIMIT.get_or_init(|| {
         let packet = PacketType::Fragment {
+            session: 0,
             sequence: 0,
             packet_id: 0,
             fragment_idx: 0,
@@ -70,6 +74,18 @@ pub fn encoded_packet_count(payload_len: usize) -> Option<usize> {
     }
 
     Some(count)
+}
+
+pub fn unreliable_payload_limit() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let packet = PacketType::Unreliable {
+            session: 0,
+            sequence: 0,
+            payload: Arc::new(Vec::new()),
+        };
+        MAX_DATAGRAM.saturating_sub(wincode::serialize(&packet).unwrap().len())
+    })
 }
 
 struct ReassemblyBuffer {

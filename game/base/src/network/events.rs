@@ -1,4 +1,5 @@
 use wincode::{SchemaWrite, SchemaRead};
+use std::net::SocketAddr;
 use crate::script::libs::vector3::Vector3;
 use crate::script::libs::angle3::Angle3;
 use crate::r#enum::{InputButtons, EntityFlags};
@@ -58,4 +59,20 @@ pub enum ClientToServer {
 pub enum NetSend<E> {
     Unreliable(E),
     Reliable(E),
+    UnreliableTo(SocketAddr, E),
+    ReliableTo(SocketAddr, E),
+}
+
+#[derive(Clone, Debug)]
+pub enum FromClient {
+    Connected { addr: SocketAddr },
+    Disconnected { addr: SocketAddr },
+    Message { addr: SocketAddr, event: ClientToServer },
+}
+
+#[derive(Clone, Debug)]
+pub enum FromServer {
+    Message(ServerToClient),
+    Connected,
+    Disconnected,
 }

@@ -5,15 +5,23 @@ use std::collections::HashMap;
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::network::packet::{FragmentAssembler, CONNECTION_TIMEOUT, encoded_packet_count};
+use crate::network::packet::{CONNECTION_TIMEOUT, MAX_DATAGRAM, encoded_packet_count, unreliable_payload_limit};
+use std::sync::Arc;
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
 
 pub struct ConnectedClient {
     pub reliable: ReliableChannel,
-    pub assembler: FragmentAssembler,
     pub last_seen: Instant,
     pub session: u64,
+    pub unreliable_out: u32,
+    pub unreliable_in: Option<u32>,
+}
+
+pub enum ReliableSendError {
+    Missing,
+    Full,
+    TooLarge,
 }
 
 pub struct NetworkServer {
@@ -68,21 +76,33 @@ impl NetworkServer {
         }
     }
 
-    pub fn drop_idle_clients(&mut self) {
+    pub fn drop_idle_clients(&mut self) -> Vec<SocketAddr> {
         let timeout = CONNECTION_TIMEOUT;
-        self.clients.retain(|addr, client| {
-            client.assembler.evict_stale();
-            if client.last_seen.elapsed() >= timeout {
-                println!("[sv] timeout {}", addr);
-                false
-            } else {
-                true
+        let idle: Vec<SocketAddr> = self.clients.iter()
+            .filter(|(_, client)| client.last_seen.elapsed() >= timeout)
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        let mut dropped = Vec::new();
+        for addr in idle {
+            println!("[sv] timeout {}", addr);
+            if self.disconnect_client(addr) {
+                dropped.push(addr);
             }
-        });
+        }
+
+        let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
+        for addr in addrs {
+            if let Some(client) = self.clients.get_mut(&addr) {
+                client.reliable.evict_stale_fragments();
+            }
+        }
+
+        dropped
     }
 
     pub fn receive_message(&self) -> Result<(Vec<u8>, SocketAddr), String> {
-        let mut buffer = [0; 65535];
+        let mut buffer = [0; MAX_DATAGRAM];
         let (amt, src) = self.socket.recv_from(&mut buffer).map_err(|e| e.to_string())?;
         Ok((buffer[..amt].to_vec(), src))
     }
@@ -97,11 +117,14 @@ impl NetworkServer {
         }
 
         let session = self.issue_session(addr);
+        let mut reliable = ReliableChannel::new();
+        reliable.set_session(session);
         self.clients.insert(addr, ConnectedClient {
-            reliable: ReliableChannel::new(),
-            assembler: FragmentAssembler::new(),
+            reliable,
             last_seen: Instant::now(),
             session,
+            unreliable_out: 0,
+            unreliable_in: None,
         });
 
         Some(session)
@@ -140,6 +163,25 @@ impl NetworkServer {
         hasher.finish()
     }
 
+    pub fn session_matches(&self, addr: SocketAddr, session: u64) -> bool {
+        match self.clients.get(&addr) {
+            Some(client) => client.session == session,
+            None => false,
+        }
+    }
+
+    pub fn disconnect_client(&mut self, addr: SocketAddr) -> bool {
+        let Some(session) = self.clients.get(&addr).map(|client| client.session) else {
+            return false;
+        };
+
+        let bytes = wincode::serialize(&PacketType::Disconnect { session }).unwrap();
+        let _ = self.send_to(addr, &bytes);
+        self.clients.remove(&addr);
+
+        true
+    }
+
     pub fn remove_client(&mut self, addr: SocketAddr) {
         self.clients.remove(&addr);
     }
@@ -157,35 +199,76 @@ impl NetworkServer {
         Ok(())
     }
 
-    pub fn broadcast_reliable(&mut self, payload: Vec<u8>) {
+    pub fn enqueue_reliable(&mut self, addr: SocketAddr, payload: &[u8]) -> Result<(), ReliableSendError> {
+        let Some(client) = self.clients.get_mut(&addr) else {
+            return Err(ReliableSendError::Missing);
+        };
+
+        match client.reliable.enqueue(payload) {
+            EnqueueStatus::Queued => Ok(()),
+            EnqueueStatus::Full => Err(ReliableSendError::Full),
+            EnqueueStatus::TooLarge => Err(ReliableSendError::TooLarge),
+        }
+    }
+
+    pub fn broadcast_reliable(&mut self, payload: Vec<u8>) -> Vec<SocketAddr> {
         if encoded_packet_count(payload.len()).is_none() {
             println!("[sv] reliable payload too large");
 
-            return;
+            return Vec::new();
         }
 
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         let mut stalled = Vec::new();
         for addr in addrs {
-            let status = {
-                let client = self.clients.get_mut(&addr).unwrap();
-                client.reliable.enqueue(&payload)
-            };
-            if status == EnqueueStatus::Full {
+            if let Err(ReliableSendError::Full) = self.enqueue_reliable(addr, &payload) {
                 stalled.push(addr);
             }
         }
 
-        for addr in stalled {
+        for addr in stalled.iter().copied() {
             println!("[sv] reliable window full {}", addr);
-            self.remove_client(addr);
+            self.disconnect_client(addr);
+        }
+
+        stalled
+    }
+
+    pub fn send_unreliable_to(&mut self, addr: SocketAddr, payload: Vec<u8>) {
+        if payload.len() > unreliable_payload_limit() {
+            println!("[sv] unreliable payload too large");
+
+            return;
+        }
+
+        self.write_unreliable(addr, Arc::new(payload));
+    }
+
+    pub fn broadcast_unreliable(&mut self, payload: Vec<u8>) {
+        if payload.len() > unreliable_payload_limit() {
+            println!("[sv] unreliable payload too large");
+
+            return;
+        }
+
+        let payload = Arc::new(payload);
+        let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
+        for addr in addrs {
+            self.write_unreliable(addr, Arc::clone(&payload));
         }
     }
 
-    pub fn broadcast_unreliable(&self, payload: Vec<u8>) {
-        let packet = PacketType::Unreliable(payload.into());
+    fn write_unreliable(&mut self, addr: SocketAddr, payload: Arc<Vec<u8>>) {
+        let Some(client) = self.clients.get_mut(&addr) else {
+            return;
+        };
+
+        let sequence = client.unreliable_out;
+        client.unreliable_out = client.unreliable_out.wrapping_add(1);
+        let session = client.session;
+        let packet = PacketType::Unreliable { session, sequence, payload };
         let bytes = wincode::serialize(&packet).unwrap();
-        let _ = self.send_message(&bytes);
+        let _ = self.send_to(addr, &bytes);
     }
 
     pub fn pump_reliable(&mut self) {

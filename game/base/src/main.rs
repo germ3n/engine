@@ -10,6 +10,7 @@ pub mod r#enum;
 
 use crate::state::GameState;
 use crate::script::Realm;
+use crate::network::OUTBOUND_CAP;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
@@ -25,7 +26,7 @@ fn main() {
     {
         println!("Starting server network loop");
         let (server_tx, server_rx) = std::sync::mpsc::channel();
-        let (server_out_tx, server_out_rx) = std::sync::mpsc::channel();
+        let (server_out_tx, server_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
         std::thread::spawn(move || {
             server::server_network_loop(server_tx, server_out_rx);
         });
@@ -46,14 +47,14 @@ fn main() {
         #[cfg(not(feature = "client"))]
         {
             println!("Entering Server loop");
-            server::server_loop(server_game, server_args);
+            server::server_loop(server_game);
         }
     }
 
     #[cfg(feature = "client")]
     {
         let (client_tx, client_rx) = std::sync::mpsc::channel();
-        let (client_out_tx, client_out_rx) = std::sync::mpsc::channel();
+        let (client_out_tx, client_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
         println!("Starting Client network loop");
         std::thread::spawn(move || {
             client::client_network_loop(

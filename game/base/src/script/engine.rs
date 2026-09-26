@@ -1,5 +1,6 @@
 use mlua::{Lua, RegistryKey, StdLib, LuaOptions};
 use std::sync::{Arc, Mutex, atomic::{AtomicU64}};
+use std::sync::mpsc::Receiver;
 use crate::script::libs::{
     register_angle3_lib, register_convar_lib, register_engine_lib, 
     register_net_lib, register_surface_lib, register_vector3_lib
@@ -33,6 +34,7 @@ pub struct ScriptEngine {
     pub frame_time: Arc<AtomicU64>,
     pub tick_count: Arc<AtomicU64>,
     pub render_queue: RenderQueue,
+    usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
 impl ScriptEngine {
@@ -44,6 +46,7 @@ impl ScriptEngine {
         tick_count: Arc<AtomicU64>,
         cvars: Arc<HashMap<String, Arc<ConVar>>>
     ) -> Self {
+        let (usermsg_sender, usermsg_receiver) = std::sync::mpsc::channel();
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
         lua.globals().set("CLIENT", matches!(realm, Realm::Client)).expect("Failed to set CLIENT global");
         lua.globals().set("SERVER", matches!(realm, Realm::Server)).expect("Failed to set SERVER global");
@@ -58,7 +61,9 @@ impl ScriptEngine {
                 let net_lib_data = include_bytes!("libs/net.lua");
                 lua.load(&net_lib_data[..]).exec().expect("Failed to execute net.lua");
 
-                register_net_lib(&lua);
+                register_net_lib(&lua, usermsg_sender);
+            } else {
+                drop(usermsg_sender);
             }
 
             register_convar_lib(&lua, cvars);
@@ -90,7 +95,12 @@ impl ScriptEngine {
             frame_time,
             tick_count,
             render_queue: render_queue.clone(),
+            usermsg_receiver,
         }
+    }
+
+    pub fn poll_usermessage(&self) -> Option<(u32, Vec<u8>)> {
+        self.usermsg_receiver.try_recv().ok()
     }
 
     pub fn run_hook<A: mlua::IntoLuaMulti>(&self, hook_name: &str, args: A) {

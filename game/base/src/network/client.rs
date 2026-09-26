@@ -1,6 +1,7 @@
 use std::net::UdpSocket;
 use std::net::SocketAddr;
 use std::time::Duration;
+use crate::network::packet::MAX_DATAGRAM;
 
 pub struct NetworkClient {
     peer: SocketAddr,
@@ -37,7 +38,7 @@ impl NetworkClient {
     }
 
     pub fn receive_message(&self) -> Result<(Vec<u8>, SocketAddr), String> {
-        let mut buffer = [0; 65535];
+        let mut buffer = [0; MAX_DATAGRAM];
         let (amt, src) = self.socket.recv_from(&mut buffer).map_err(|e| e.to_string())?;
         Ok((buffer[..amt].to_vec(), src))
     }
