@@ -12,7 +12,7 @@ const MIN_RTO: Duration = Duration::from_millis(20);
 const MAX_RTO: Duration = Duration::from_millis(1000);
 
 struct PendingPacket {
-    data: Vec<u8>,
+    packet: PacketType,
     first_sent: Instant,
     last_sent: Instant,
     retransmitted: bool,
@@ -218,9 +218,9 @@ impl ReliableChannel {
         self.assembler.evict_stale();
     }
 
-    pub fn pump<F>(&mut self, mut send_fn: F)
+    pub fn pump<F>(&mut self, mut emit: F)
     where
-        F: FnMut(&[u8]),
+        F: FnMut(PacketType),
     {
         if self.session.is_none() {
             return;
@@ -242,10 +242,10 @@ impl ReliableChannel {
             };
 
             let seq = packet.seq;
-            let data = self.serialize(&packet);
-            send_fn(&data);
+            let wire = self.to_packet(&packet);
+            emit(wire.clone());
             self.pending_acknowledgements.insert(seq, PendingPacket {
-                data,
+                packet: wire,
                 first_sent: now,
                 last_sent: now,
                 retransmitted: false,
@@ -256,7 +256,7 @@ impl ReliableChannel {
         let mut retransmitted = false;
         for pending in self.pending_acknowledgements.values_mut() {
             if now.duration_since(pending.last_sent) > timeout {
-                send_fn(&pending.data);
+                emit(pending.packet.clone());
                 pending.last_sent = now;
                 pending.retransmitted = true;
                 retransmitted = true;
@@ -365,9 +365,9 @@ impl ReliableChannel {
         });
     }
 
-    fn serialize(&self, packet: &OutPacket) -> Vec<u8> {
+    fn to_packet(&self, packet: &OutPacket) -> PacketType {
         let session = self.session.unwrap();
-        let wire = match &packet.kind {
+        match &packet.kind {
             OutKind::Complete(payload) => PacketType::Reliable {
                 session,
                 sequence: packet.seq,
@@ -381,9 +381,7 @@ impl ReliableChannel {
                 total_fragments: *total_fragments,
                 data: data.clone().into(),
             },
-        };
-
-        wincode::serialize(&wire).unwrap()
+        }
     }
 
     fn drain_ready(&mut self) -> Vec<Vec<u8>> {
@@ -464,7 +462,7 @@ pub fn accept_unreliable(inbox: &mut UnreliableInbox, sequence: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::packet::{MAX_DATAGRAM, MAX_FRAGMENTS, fragment_payload_limit};
+    use crate::network::packet::{bundle_part, pack_bundles, BundlePart, MAX_DATAGRAM, MAX_FRAGMENTS, fragment_payload_limit};
 
     fn push_fragment(recv: &mut ReliableChannel, packet: &PacketType) -> RecvResult {
         let PacketType::Fragment { sequence, packet_id, fragment_idx, total_fragments, data, .. } = packet else {
@@ -487,14 +485,13 @@ mod tests {
         assert_eq!(channel.enqueue(&payload), EnqueueStatus::Queued);
 
         let mut sent = Vec::new();
-        channel.pump(|bytes| sent.push(bytes.to_vec()));
+        channel.pump(|packet| sent.push(packet));
         assert_eq!(sent.len(), 1);
 
-        let packet = wincode::deserialize::<PacketType>(&sent[0]).unwrap();
-        match packet {
+        match &sent[0] {
             PacketType::Reliable { session, sequence, payload: body } => {
-                assert_eq!(session, 1);
-                assert_eq!(sequence, 0);
+                assert_eq!(*session, 1);
+                assert_eq!(*sequence, 0);
                 assert_eq!(body.as_slice(), payload.as_slice());
             }
             other => panic!("unexpected {other:?}"),
@@ -509,12 +506,13 @@ mod tests {
         assert_eq!(channel.enqueue(&payload), EnqueueStatus::Queued);
 
         let mut sent = Vec::new();
-        channel.pump(|bytes| sent.push(bytes.to_vec()));
+        channel.pump(|packet| sent.push(packet));
         assert!(sent.len() > 1);
-        assert!(sent.iter().all(|bytes| bytes.len() <= MAX_DATAGRAM));
+        let packed = pack_bundles(1, 0, 0, true, sent.iter().filter_map(bundle_part).collect());
+        assert!(packed.iter().all(|bytes| bytes.len() <= MAX_DATAGRAM));
 
         let mut recv = ReliableChannel::new();
-        let packets: Vec<PacketType> = sent.iter().map(|bytes| wincode::deserialize(bytes).unwrap()).collect();
+        let packets = sent;
         let last = packets.len() - 1;
         let early = push_fragment(&mut recv, &packets[last]);
         assert!(early.ack);
@@ -550,7 +548,7 @@ mod tests {
         assert_eq!(queued, MAX_UNSENT);
 
         let mut sent = Vec::new();
-        channel.pump(|bytes| sent.push(bytes.to_vec()));
+        channel.pump(|_| sent.push(()));
         assert_eq!(sent.len(), SEND_WINDOW);
         assert_eq!(channel.pending_acknowledgements.len(), SEND_WINDOW);
 
@@ -666,11 +664,11 @@ mod tests {
         assert_eq!(sender.enqueue(b"c"), EnqueueStatus::Queued);
 
         let mut sent = Vec::new();
-        sender.pump(|bytes| sent.push(bytes.to_vec()));
+        sender.pump(|packet| sent.push(packet));
         assert_eq!(sent.len(), 3);
 
         let mut recv = ReliableChannel::new();
-        let packets: Vec<PacketType> = sent.iter().map(|bytes| wincode::deserialize(bytes).unwrap()).collect();
+        let packets = sent;
         let PacketType::Reliable { sequence: seq0, payload: body0, .. } = &packets[0] else {
             panic!("expected reliable");
         };
@@ -746,5 +744,39 @@ mod tests {
         assert!(accept_unreliable(&mut inbox, 50_001));
         assert!(!accept_unreliable(&mut inbox, 50_000));
         assert!(accept_unreliable(&mut inbox, 50_002));
+    }
+
+    #[test]
+    fn packed_datagram_delivers_in_order() {
+        let mut sender = ReliableChannel::new();
+        sender.set_session(4);
+        assert_eq!(sender.enqueue(b"a"), EnqueueStatus::Queued);
+        assert_eq!(sender.enqueue(b"b"), EnqueueStatus::Queued);
+        assert_eq!(sender.enqueue(b"c"), EnqueueStatus::Queued);
+
+        let mut packets = Vec::new();
+        sender.pump(|packet| packets.push(packet));
+        let datagrams = pack_bundles(4, 9, 0, true, packets.iter().filter_map(bundle_part).collect());
+        assert_eq!(datagrams.len(), 1);
+        assert!(datagrams[0].len() <= MAX_DATAGRAM);
+
+        let packet = wincode::deserialize::<PacketType>(&datagrams[0]).unwrap();
+        let PacketType::Bundle { ack, cumulative, parts, .. } = packet else {
+            panic!("expected bundle");
+        };
+        assert!(ack);
+        assert_eq!(cumulative, 9);
+
+        let mut recv = ReliableChannel::new();
+        let mut messages = Vec::new();
+        for part in parts {
+            let BundlePart::Reliable { sequence, payload } = part else {
+                panic!("expected reliable");
+            };
+            let result = recv.receive(sequence, ReliableBody::Complete(payload));
+            messages.extend(result.messages);
+        }
+
+        assert_eq!(messages, vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]);
     }
 }

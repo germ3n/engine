@@ -185,6 +185,14 @@ impl EntityList {
         true
     }
 
+    pub fn clear(&mut self) {
+        self.slots.clear();
+        self.free.clear();
+        self.think_list.clear();
+        self.commands.clear();
+        self.count = 0;
+    }
+
     pub fn remove(&mut self, handle: EntityHandle) -> bool {
         if handle.is_null() {
             return false;

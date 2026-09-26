@@ -6,6 +6,24 @@ use crate::r#enum::{InputButtons, EntityFlags};
 use crate::entities::EntityHandle;
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub struct EntitySnapshot {
+    pub handle: EntityHandle,
+    pub class_hash: u32,
+    pub health: i32,
+    pub position: Vector3,
+    pub angles: Angle3,
+    pub velocity: Vector3,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub struct NetTransform {
+    pub handle: EntityHandle,
+    pub position: Vector3,
+    pub angles: Angle3,
+    pub velocity: Vector3,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum ServerToClient {
     MapChange { map_name: String },
     GameStateChanged { state: u16 },
@@ -39,6 +57,9 @@ pub enum ServerToClient {
     WeaponFired { entity_handle: EntityHandle, weapon_handle: EntityHandle },
     WeaponReloaded { entity_handle: EntityHandle },
     ItemEquipped { entity_handle: EntityHandle, slot: u8, item_handle: EntityHandle },
+
+    WorldSnapshot { generation: u32, reset: bool, entities: Vec<EntitySnapshot> },
+    TickState { tick: u64, transforms: Vec<NetTransform> },
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
@@ -65,7 +86,7 @@ pub enum NetSend<E> {
 
 #[derive(Clone, Debug)]
 pub enum FromClient {
-    Connected { addr: SocketAddr },
+    Connected { addr: SocketAddr, generation: u32 },
     Disconnected { addr: SocketAddr },
     Message { addr: SocketAddr, event: ClientToServer },
 }
@@ -73,6 +94,6 @@ pub enum FromClient {
 #[derive(Clone, Debug)]
 pub enum FromServer {
     Message(ServerToClient),
-    Connected,
+    Connected { generation: u32 },
     Disconnected,
 }

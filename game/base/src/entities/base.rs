@@ -34,4 +34,12 @@ pub trait BaseEntity: Networkable {
     fn on_spawn(&mut self, ctx: &mut TickContext);
     fn tick(&mut self, ctx: &mut TickContext);
     fn wants_think(&self) -> bool;
+
+    fn class_hash(&self) -> u32 {
+        0
+    }
+
+    fn net_health(&self) -> i32 {
+        0
+    }
 }

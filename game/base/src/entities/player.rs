@@ -20,9 +20,23 @@ impl Default for Player {
 }
 
 impl Player {
+    pub const CLASS_HASH: u32 = fnv1a(b"Player");
+
     pub fn new() -> Self {
         Self::default()
     }
+}
+
+const fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 2166136261;
+    let mut idx = 0;
+    while idx < bytes.len() {
+        hash ^= bytes[idx] as u32;
+        hash = hash.wrapping_mul(16777619);
+        idx += 1;
+    }
+
+    hash
 }
 
 impl BaseEntity for Player {
@@ -44,5 +58,13 @@ impl BaseEntity for Player {
 
     fn wants_think(&self) -> bool {
         true
+    }
+
+    fn class_hash(&self) -> u32 {
+        Self::CLASS_HASH
+    }
+
+    fn net_health(&self) -> i32 {
+        self.health
     }
 }
