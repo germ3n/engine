@@ -273,22 +273,31 @@ impl ReliableChannel {
             return;
         }
 
-        let Some(seq) = self.oldest_pending() else {
-            return;
-        };
+        let origin = self.outgoing_seq;
+        let mut overdue: Vec<u32> = self.pending_acknowledgements.iter().filter_map(|(seq, pending)| {
+            if now.duration_since(pending.last_sent) > self.current_rto {
+                Some(*seq)
+            } else {
+                None
+            }
+        }).collect();
 
-        let Some(pending) = self.pending_acknowledgements.get_mut(&seq) else {
-            return;
-        };
-
-        if now.duration_since(pending.last_sent) <= self.current_rto {
+        if overdue.is_empty() {
             return;
         }
 
-        emit(pending.packet.clone());
-        pending.last_sent = now;
-        pending.retransmitted = true;
-        pending.fast_sent = true;
+        overdue.sort_by_key(|seq| std::cmp::Reverse(origin.wrapping_sub(*seq)));
+
+        for seq in overdue {
+            let Some(pending) = self.pending_acknowledgements.get_mut(&seq) else {
+                continue;
+            };
+
+            emit(pending.packet.clone());
+            pending.last_sent = now;
+            pending.retransmitted = true;
+            pending.fast_sent = true;
+        }
 
         if self.current_rto < MAX_RTO {
             self.current_rto = (self.current_rto * 2).min(MAX_RTO);
@@ -1142,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn timeout_retransmits_one_packet_per_interval() {
+    fn timeout_retransmits_every_overdue_packet() {
         let mut channel = ReliableChannel::new();
         channel.set_session(1);
         assert_eq!(channel.enqueue(b"a"), EnqueueStatus::Queued);
@@ -1157,13 +1166,44 @@ mod tests {
         channel.current_rto = Duration::from_millis(1);
         channel.retransmit_after = Instant::now() - Duration::from_secs(1);
 
-        let mut resent = 0;
-        channel.pump(|_| resent += 1);
-        assert_eq!(resent, 1);
+        let mut resent = Vec::new();
+        channel.pump(|packet| resent.push(packet));
+        assert_eq!(resent.len(), 3);
+        let mut sequences: Vec<u32> = resent.iter().map(|packet| {
+            let PacketType::Reliable { sequence, .. } = packet else {
+                panic!("expected reliable");
+            };
+
+            *sequence
+        }).collect();
+        sequences.sort();
+        assert_eq!(sequences, vec![0, 1, 2]);
+        assert_eq!(channel.current_rto, Duration::from_millis(2));
 
         let mut again = 0;
         channel.pump(|_| again += 1);
         assert_eq!(again, 0);
+    }
+
+    #[test]
+    fn timeout_leaves_a_fresh_packet() {
+        let mut channel = ReliableChannel::new();
+        channel.set_session(1);
+        assert_eq!(channel.enqueue(b"a"), EnqueueStatus::Queued);
+        assert_eq!(channel.enqueue(b"b"), EnqueueStatus::Queued);
+        channel.pump(|_| {});
+
+        channel.pending_acknowledgements.get_mut(&0).unwrap().last_sent = Instant::now() - Duration::from_secs(5);
+        channel.current_rto = Duration::from_millis(1);
+        channel.retransmit_after = Instant::now() - Duration::from_secs(1);
+
+        let mut resent = Vec::new();
+        channel.pump(|packet| resent.push(packet));
+        assert_eq!(resent.len(), 1);
+        let PacketType::Reliable { sequence, .. } = &resent[0] else {
+            panic!("expected reliable");
+        };
+        assert_eq!(*sequence, 0);
     }
 
     #[test]

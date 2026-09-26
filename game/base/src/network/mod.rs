@@ -12,3 +12,4 @@ pub use packet::PacketType;
 pub use reliable::{EnqueueStatus, ReliableChannel, ReliableBody, SelectiveAck, UnreliableAssembly, UnreliableInbox, accept_unreliable, take_unreliable};
 
 pub const OUTBOUND_CAP: usize = 1024;
+pub const RECV_BUDGET: usize = 64;

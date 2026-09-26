@@ -4,7 +4,7 @@ use crate::state::GameState;
 use std::time::{Instant, Duration};
 use std::sync::atomic::Ordering;
 use crate::network::server::NetworkServer;
-use crate::network::{PacketType, NetSend, FromClient, ReliableBody};
+use crate::network::{PacketType, NetSend, FromClient, ReliableBody, RECV_BUDGET};
 use crate::network::packet::STREAM_STATE;
 use crate::network::usermessage::hash_usermessage_name;
 use crate::network::usermessage::UserMsgReader;
@@ -153,7 +153,7 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
         let mut got_packet = false;
 
         // Use match instead of unwrap to handle the timeout gracefully
-        loop {
+        for _idx in 0..RECV_BUDGET {
             let Some((data, from)) = server.poll_message() else {
                 break;
             };

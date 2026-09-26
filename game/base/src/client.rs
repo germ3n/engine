@@ -14,7 +14,7 @@ use core::net::SocketAddr;
 use std::str::FromStr;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP};
+use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP, RECV_BUDGET};
 use crate::network::packet::{bundle_part, pack_bundles, stamp, unstamp, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
 use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::entities::Player;
@@ -459,7 +459,7 @@ pub fn client_network_loop(
 
         let mut got_packet = false;
         let mut need_ack = false;
-        loop {
+        for _idx in 0..RECV_BUDGET {
             let Some((data, _from)) = client.poll_message() else {
                 break;
             };
