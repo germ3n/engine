@@ -21,6 +21,8 @@ glow_glyph = "0.6.0"
 mlua = { version = "0.12.1", features = ["luajit52", "send", "vendored"] }
 wincode = { version = "0.6.1", features = ["derive"] }
 bitflags = "2.13.2"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [features]

@@ -1,5 +1,5 @@
 use std::sync::mpsc::{Receiver, Sender};
-use std::os::unix::net::UnixStream;
+use std::net::TcpStream;
 use crate::network::wait_socket;
 use crate::state::GameState;
 use crate::network::{ServerToClient, ClientToServer, NetworkClient};
@@ -401,7 +401,7 @@ pub fn client_network_loop(
     tx: Sender<FromServer>,
     rx: Receiver<NetSend<ClientToServer>>,
     shutdown: Arc<AtomicBool>,
-    mut wake: UnixStream,
+    mut wake: TcpStream,
 ) {
     let local_addr = if server_addr.is_ipv6() {
         "[::]:0"

@@ -1,5 +1,5 @@
 use std::sync::mpsc::{Receiver, Sender};
-use std::os::unix::net::UnixStream;
+use std::net::TcpStream;
 use crate::network::wait_socket;
 use crate::network::{ClientToServer, ServerToClient};
 use crate::state::GameState;
@@ -98,7 +98,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
-pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerToClient>>, mut wake: UnixStream) {
+pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerToClient>>, mut wake: TcpStream) {
     let mut server = NetworkServer::new(25400, 128);
 
     loop {
