@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 const MAX_FRAGMENTS: u16 = 64;
 const MAX_CONCURRENT_BUFFERS: usize = 8;
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(5);
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum PacketType {
@@ -15,6 +17,8 @@ pub enum PacketType {
     Connect,
     Challenge { token: u64 },
     ChallengeResponse { token: u64 },
+    Connected { session: u64 },
+    KeepAlive { session: u64 },
     Fragment { 
         packet_id: u16, 
         fragment_idx: u16, 

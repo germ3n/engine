@@ -5,16 +5,16 @@ use std::collections::HashMap;
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::network::packet::FragmentAssembler;
+use crate::network::packet::{FragmentAssembler, CONNECTION_TIMEOUT};
 use std::sync::Arc;
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
-const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ConnectedClient {
     pub reliable: ReliableChannel,
     pub assembler: FragmentAssembler,
     pub last_seen: Instant,
+    pub session: u64,
 }
 
 pub struct NetworkServer {
@@ -23,6 +23,7 @@ pub struct NetworkServer {
     pub clients: HashMap<SocketAddr, ConnectedClient>,
     pub socket: UdpSocket,
     challenge_secret: u64,
+    session_counter: u64,
 }
 
 impl NetworkServer {
@@ -36,6 +37,7 @@ impl NetworkServer {
             clients: HashMap::new(),
             socket,
             challenge_secret: random_secret(),
+            session_counter: 0,
         }
     }
 
@@ -68,7 +70,7 @@ impl NetworkServer {
     }
 
     pub fn drop_idle_clients(&mut self) {
-        let timeout = CLIENT_IDLE_TIMEOUT;
+        let timeout = CONNECTION_TIMEOUT;
         self.clients.retain(|addr, client| {
             client.assembler.evict_stale();
             if client.last_seen.elapsed() >= timeout {
@@ -86,22 +88,57 @@ impl NetworkServer {
         Ok((buffer[..amt].to_vec(), src))
     }
 
-    pub fn add_client(&mut self, addr: SocketAddr) -> bool {
-        if self.clients.contains_key(&addr) {
-            return true;
+    pub fn add_client(&mut self, addr: SocketAddr) -> Option<u64> {
+        if let Some(client) = self.clients.get(&addr) {
+            return Some(client.session);
         }
 
         if self.clients.len() as u32 >= self.max_clients {
-            return false;
+            return None;
         }
 
+        let session = self.issue_session(addr);
         self.clients.insert(addr, ConnectedClient {
             reliable: ReliableChannel::new(),
             assembler: FragmentAssembler::new(),
             last_seen: Instant::now(),
+            session,
         });
 
+        Some(session)
+    }
+
+    pub fn send_connected(&self, addr: SocketAddr) {
+        let Some(session) = self.clients.get(&addr).map(|client| client.session) else {
+            return;
+        };
+
+        let bytes = wincode::serialize(&PacketType::Connected { session }).unwrap();
+        let _ = self.send_to(addr, &bytes);
+    }
+
+    pub fn touch_if_session(&mut self, addr: SocketAddr, session: u64) -> bool {
+        let Some(client) = self.clients.get_mut(&addr) else {
+            return false;
+        };
+
+        if client.session != session {
+            return false;
+        }
+
+        client.last_seen = Instant::now();
+
         true
+    }
+
+    fn issue_session(&mut self, addr: SocketAddr) -> u64 {
+        self.session_counter = self.session_counter.wrapping_add(1);
+
+        let mut hasher = DefaultHasher::new();
+        self.challenge_secret.hash(&mut hasher);
+        addr.hash(&mut hasher);
+        self.session_counter.hash(&mut hasher);
+        hasher.finish()
     }
 
     pub fn remove_client(&mut self, addr: SocketAddr) {

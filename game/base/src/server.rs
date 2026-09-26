@@ -95,9 +95,7 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
                         PacketType::Connect => {
                             println!("[sv] connect");
                             if server.is_connected(from) {
-                                server.touch_client(from);
-                                let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
-                                let _ = server.send_to(from, &connect_bytes);
+                                server.send_connected(from);
                             } else {
                                 let token = server.challenge_for(from);
                                 let challenge_bytes = wincode::serialize(&PacketType::Challenge { token }).unwrap();
@@ -107,13 +105,10 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
                         PacketType::ChallengeResponse { token } => {
                             println!("[sv] challenge response");
                             if server.is_connected(from) {
-                                server.touch_client(from);
-                                let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
-                                let _ = server.send_to(from, &connect_bytes);
+                                server.send_connected(from);
                             } else if server.verify_challenge(from, token) {
-                                if server.add_client(from) {
-                                    let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
-                                    let _ = server.send_to(from, &connect_bytes);
+                                if server.add_client(from).is_some() {
+                                    server.send_connected(from);
                                     println!("[sv] connect {}", from);
                                 }
                             } else {
@@ -124,6 +119,14 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
                         }
                         PacketType::Challenge { .. } => {
                             println!("[sv] challenge");
+                        }
+                        PacketType::Connected { .. } => {
+                        }
+                        PacketType::KeepAlive { session } => {
+                            if server.touch_if_session(from, session) {
+                                let bytes = wincode::serialize(&PacketType::KeepAlive { session }).unwrap();
+                                let _ = server.send_to(from, &bytes);
+                            }
                         }
                         PacketType::Reliable { sequence, payload } => {
                             if server.is_connected(from) {

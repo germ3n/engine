@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use core::net::SocketAddr;
 use std::str::FromStr;
 use crate::network::{PacketType, ReliableChannel, NetSend};
-use crate::network::packet::FragmentAssembler;
+use crate::network::packet::{FragmentAssembler, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL};
 use crate::network::usermessage::UserMsgReader;
 use crate::entities::context::FrameInfo;
 
@@ -183,7 +183,9 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
     let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
     let _ = client.send_message(&connect_bytes);
     let mut challenge_response_bytes: Option<Vec<u8>> = None;
-    let mut last_keepalive = std::time::Instant::now();
+    let mut session: Option<u64> = None;
+    let mut last_sent = std::time::Instant::now();
+    let mut last_server_seen = std::time::Instant::now();
 
     loop {
         while let Ok(outgoing) = rx.try_recv() {
@@ -192,12 +194,14 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
                     let payload = wincode::serialize(&event).unwrap();
                     let (_, bytes) = reliable_chan.create_reliable_packet(payload);
                     let _ = client.send_message(&bytes);
+                    last_sent = std::time::Instant::now();
                 }
                 NetSend::Unreliable(event) => {
                     let payload = wincode::serialize(&event).unwrap();
                     let packet = PacketType::Unreliable(payload.into());
                     let bytes = wincode::serialize(&packet).unwrap();
                     let _ = client.send_message(&bytes);
+                    last_sent = std::time::Instant::now();
                 }
             }
         }
@@ -207,54 +211,83 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
                 if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
                     match packet {
                         PacketType::Connect => {
-                            connected = true;
-                            challenge_response_bytes = None;
-                            last_keepalive = std::time::Instant::now();
-                            println!("[cl] connected");
                         }
                         PacketType::Challenge { token } => {
                             if !connected {
                                 let bytes = wincode::serialize(&PacketType::ChallengeResponse { token }).unwrap();
                                 challenge_response_bytes = Some(bytes.clone());
                                 let _ = client.send_message(&bytes);
+                                last_sent = std::time::Instant::now();
                                 println!("[cl] challenge {token}");
                             }
                         }
                         PacketType::ChallengeResponse { .. } => {
                             println!("[cl] challenge response");
                         }
-                        PacketType::Reliable { sequence, payload } => {
-                            connected = true;
-                            let ack_packet = PacketType::Ack { sequence };
-                            let ack_bytes = wincode::serialize(&ack_packet).unwrap();
-                            let _ = client.send_message(&ack_bytes);
+                        PacketType::Connected { session: new_session } => {
+                            if !connected {
+                                if let Some(previous) = session {
+                                    if previous != new_session {
+                                        reliable_chan = ReliableChannel::new();
+                                        assembler = FragmentAssembler::new();
+                                    }
+                                }
 
-                            // Forward event
-                            if !reliable_chan.is_duplicate_and_track(sequence) {
-                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
-                                    let _ = tx.send(event);
-                                    println!("[cl] deserialized and forwarded {}", sequence);
+                                connected = true;
+                                session = Some(new_session);
+                                challenge_response_bytes = None;
+                                last_server_seen = std::time::Instant::now();
+                                println!("[cl] connected");
+                            } else if session == Some(new_session) {
+                                last_server_seen = std::time::Instant::now();
+                            }
+                        }
+                        PacketType::KeepAlive { session: incoming } => {
+                            if connected && session == Some(incoming) {
+                                last_server_seen = std::time::Instant::now();
+                            }
+                        }
+                        PacketType::Reliable { sequence, payload } => {
+                            if connected {
+                                last_server_seen = std::time::Instant::now();
+                                let ack_packet = PacketType::Ack { sequence };
+                                let ack_bytes = wincode::serialize(&ack_packet).unwrap();
+                                let _ = client.send_message(&ack_bytes);
+                                last_sent = std::time::Instant::now();
+
+                                // Forward event
+                                if !reliable_chan.is_duplicate_and_track(sequence) {
+                                    if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
+                                        let _ = tx.send(event);
+                                        println!("[cl] deserialized and forwarded {}", sequence);
+                                    }
                                 }
                             }
                         }
                         PacketType::Ack { sequence } => {
-                            connected = true;
-                            reliable_chan.handle_ack(sequence);
-                            println!("[cl] ack {}", sequence);
+                            if connected {
+                                last_server_seen = std::time::Instant::now();
+                                reliable_chan.handle_ack(sequence);
+                                println!("[cl] ack {}", sequence);
+                            }
                         }
                         PacketType::Unreliable(payload) => {
-                            connected = true;
-                            if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
-                                let _ = tx.send(event);
-                                println!("[cl] unreliable");
+                            if connected {
+                                last_server_seen = std::time::Instant::now();
+                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
+                                    let _ = tx.send(event);
+                                    println!("[cl] unreliable");
+                                }
                             }
                         }
                         PacketType::Fragment { packet_id, fragment_idx, total_fragments, data } => {
-                            connected = true;
-                            if let Some(full_payload) = assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec()) {
-                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&full_payload) {
-                                    let _ = tx.send(event);
-                                    println!("[cl] reassembled and forwarded fragment packet {}", packet_id);
+                            if connected {
+                                last_server_seen = std::time::Instant::now();
+                                if let Some(full_payload) = assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec()) {
+                                    if let Ok(event) = wincode::deserialize::<ServerToClient>(&full_payload) {
+                                        let _ = tx.send(event);
+                                        println!("[cl] reassembled and forwarded fragment packet {}", packet_id);
+                                    }
                                 }
                             }
                         }
@@ -264,20 +297,32 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
             Err(_) => {
                 if !connected {
                     let _ = client.send_message(&connect_bytes);
+                    last_sent = std::time::Instant::now();
                     if let Some(ref bytes) = challenge_response_bytes {
                         let _ = client.send_message(bytes);
+                        last_sent = std::time::Instant::now();
                     }
                 }
             }
         }
 
-        if connected && last_keepalive.elapsed() >= Duration::from_secs(2) {
+        if connected && last_server_seen.elapsed() >= CONNECTION_TIMEOUT {
+            connected = false;
+            challenge_response_bytes = None;
+            println!("[cl] server timeout");
             let _ = client.send_message(&connect_bytes);
-            last_keepalive = std::time::Instant::now();
+            last_sent = std::time::Instant::now();
+        } else if connected && last_sent.elapsed() >= KEEPALIVE_INTERVAL {
+            if let Some(current) = session {
+                let bytes = wincode::serialize(&PacketType::KeepAlive { session: current }).unwrap();
+                let _ = client.send_message(&bytes);
+                last_sent = std::time::Instant::now();
+            }
         }
 
         reliable_chan.check_resends(|packet_bytes| {
             let _ = client.send_message(packet_bytes);
+            last_sent = std::time::Instant::now();
         });
     }
 }
