@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use crate::entities::{DynEntity, EntityHandle, EntityCommand, TickContext, FrameInfo};
 
@@ -7,10 +8,14 @@ const NOT_THINKING: u32 = u32::MAX;
 
 pub const DEFAULT_MAX_ENTITIES: usize = 102400;
 
+fn slot_entity(slot: &Slot) -> &Option<Box<DynEntity>> {
+    unsafe { &*slot.entity.get() }
+}
+
 struct Slot {
     generation: u16,
     think_idx: u32,
-    entity: Option<Box<DynEntity>>,
+    entity: UnsafeCell<Option<Box<DynEntity>>>,
 }
 
 pub struct EntityList {
@@ -80,7 +85,7 @@ impl EntityList {
         }
 
         match self.slots.get(handle.index() as usize) {
-            Some(slot) => slot.generation == handle.generation() && slot.entity.is_some(),
+            Some(slot) => slot.generation == handle.generation() && slot_entity(slot).is_some(),
             None => false,
         }
     }
@@ -91,7 +96,7 @@ impl EntityList {
             return None;
         }
 
-        slot.entity.as_deref()
+        slot_entity(slot).as_deref()
     }
 
     pub fn get_mut(&mut self, handle: EntityHandle) -> Option<&mut DynEntity> {
@@ -100,7 +105,7 @@ impl EntityList {
             return None;
         }
 
-        slot.entity.as_deref_mut()
+        slot.entity.get_mut().as_deref_mut()
     }
 
     fn allocate_index(&mut self) -> Option<u32> {
@@ -108,7 +113,7 @@ impl EntityList {
 
         if at_capacity || self.free.len() > MIN_FREE_SLOTS {
             while let Some(idx) = self.free.pop_front() {
-                if self.slots[idx as usize].entity.is_none() {
+                if self.slots[idx as usize].entity.get_mut().is_none() {
                     return Some(idx);
                 }
             }
@@ -119,7 +124,7 @@ impl EntityList {
         }
 
         let idx = self.slots.len() as u32;
-        self.slots.push(Slot { generation: 0, think_idx: NOT_THINKING, entity: None });
+        self.slots.push(Slot { generation: 0, think_idx: NOT_THINKING, entity: UnsafeCell::new(None) });
 
         Some(idx)
     }
@@ -133,7 +138,7 @@ impl EntityList {
 
         let slot = &mut self.slots[idx as usize];
         slot.generation = generation;
-        slot.entity = Some(entity);
+        *slot.entity.get_mut() = Some(entity);
         self.count += 1;
 
         if wants_think {
@@ -156,10 +161,10 @@ impl EntityList {
         }
 
         if idx >= self.slots.len() {
-            self.slots.resize_with(idx + 1, || Slot { generation: 0, think_idx: NOT_THINKING, entity: None });
+            self.slots.resize_with(idx + 1, || Slot { generation: 0, think_idx: NOT_THINKING, entity: UnsafeCell::new(None) });
         }
 
-        if self.slots[idx].entity.is_some() {
+        if self.slots[idx].entity.get_mut().is_some() {
             return false;
         }
 
@@ -168,7 +173,7 @@ impl EntityList {
 
         let slot = &mut self.slots[idx];
         slot.generation = handle.generation();
-        slot.entity = Some(entity);
+        *slot.entity.get_mut() = Some(entity);
         self.count += 1;
 
         if wants_think {
@@ -194,7 +199,7 @@ impl EntityList {
         self.remove_think(handle);
 
         let slot = &mut self.slots[idx];
-        slot.entity = None;
+        *slot.entity.get_mut() = None;
         slot.generation = EntityHandle::next_generation(slot.generation);
         self.free.push_back(handle.index());
         self.count -= 1;
@@ -241,54 +246,50 @@ impl EntityList {
         }
     }
 
-    fn take(&mut self, handle: EntityHandle) -> Option<Box<DynEntity>> {
-        let slot = self.slots.get_mut(handle.index() as usize)?;
-        if slot.generation != handle.generation() {
-            return None;
-        }
+    fn with_entity(&mut self, handle: EntityHandle, commands: &mut Vec<EntityCommand>, f: impl FnOnce(&mut DynEntity, &mut TickContext)) {
+        let idx = handle.index() as usize;
+        let frame = self.frame;
+        let entity_ptr = {
+            let Some(slot) = self.slots.get(idx) else {
+                return;
+            };
 
-        slot.entity.take()
-    }
-
-    fn put_back(&mut self, handle: EntityHandle, entity: Box<DynEntity>) {
-        if let Some(slot) = self.slots.get_mut(handle.index() as usize) {
-            if slot.generation == handle.generation() && slot.entity.is_none() {
-                slot.entity = Some(entity);
+            if slot.generation != handle.generation() {
+                return;
             }
+
+            unsafe {
+                (*slot.entity.get()).as_mut().map(|entity| entity.as_mut() as *mut DynEntity)
+            }
+        };
+
+        let Some(entity_ptr) = entity_ptr else {
+            return;
+        };
+
+        let mut ctx = TickContext::new(frame, self, commands);
+        unsafe {
+            f(&mut *entity_ptr, &mut ctx);
         }
     }
 
     fn dispatch_on_spawn(&mut self, handle: EntityHandle) {
         let mut commands = std::mem::take(&mut self.commands);
-        let frame = self.frame;
-
-        if let Some(mut entity) = self.take(handle) {
-            {
-                let mut ctx = TickContext::new(frame, self, &mut commands);
-                entity.on_spawn(&mut ctx);
-            }
-
-            self.put_back(handle, entity);
-        }
-
+        self.with_entity(handle, &mut commands, |entity, ctx| {
+            entity.on_spawn(ctx);
+        });
         self.commands = commands;
     }
 
     pub fn tick_all(&mut self) {
         let mut commands = std::mem::take(&mut self.commands);
-        let frame = self.frame;
         let count = self.think_list.len();
 
         for think_idx in 0..count {
             let handle = self.think_list[think_idx];
-            let Some(mut entity) = self.take(handle) else { continue; };
-
-            {
-                let mut ctx = TickContext::new(frame, self, &mut commands);
-                entity.tick(&mut ctx);
-            }
-
-            self.put_back(handle, entity);
+            self.with_entity(handle, &mut commands, |entity, ctx| {
+                entity.tick(ctx);
+            });
         }
 
         self.commands = commands;
@@ -330,7 +331,7 @@ impl EntityList {
         let mut out = Vec::with_capacity(self.count);
 
         for (idx, slot) in self.slots.iter().enumerate() {
-            if slot.entity.is_some() {
+            if slot_entity(slot).is_some() {
                 out.push(EntityHandle::new(idx as u32, slot.generation));
             }
         }
@@ -340,9 +341,108 @@ impl EntityList {
 
     pub fn iter(&self) -> impl Iterator<Item = (EntityHandle, &DynEntity)> {
         self.slots.iter().enumerate().filter_map(|(idx, slot)| {
-            let entity = slot.entity.as_deref()?;
+            let entity = slot_entity(slot).as_deref()?;
 
             Some((EntityHandle::new(idx as u32, slot.generation), entity))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use crate::entities::base::{BaseEntity, BaseEntityData, Networkable};
+
+    struct Probe {
+        base: BaseEntityData,
+        other: EntityHandle,
+        saw_self_on_spawn: Arc<AtomicBool>,
+        saw_self: Arc<AtomicBool>,
+        saw_other: Arc<AtomicBool>,
+    }
+
+    impl Networkable for Probe {
+        fn handle(&self) -> EntityHandle {
+            self.base.handle
+        }
+
+        fn sync_network_vars(&self) {
+        }
+    }
+
+    impl BaseEntity for Probe {
+        fn base(&self) -> &BaseEntityData {
+            &self.base
+        }
+
+        fn base_mut(&mut self) -> &mut BaseEntityData {
+            &mut self.base
+        }
+
+        fn on_spawn(&mut self, ctx: &mut TickContext) {
+            let handle = self.base.handle;
+            if let Some(current) = ctx.get(handle) {
+                self.saw_self_on_spawn.store(current.handle() == handle && ctx.is_valid(handle), Ordering::Relaxed);
+            }
+        }
+
+        fn tick(&mut self, ctx: &mut TickContext) {
+            let handle = self.base.handle;
+            if let Some(current) = ctx.get(handle) {
+                self.saw_self.store(current.handle() == handle && ctx.is_valid(handle), Ordering::Relaxed);
+            }
+
+            if self.other.is_null() {
+                return;
+            }
+
+            if let Some(other) = ctx.get(self.other) {
+                self.saw_other.store(other.handle() == self.other, Ordering::Relaxed);
+            }
+        }
+
+        fn wants_think(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn ticking_entity_stays_visible() {
+        let mut list = EntityList::new();
+        let other_saw_self_on_spawn = Arc::new(AtomicBool::new(false));
+        let other_saw_self = Arc::new(AtomicBool::new(false));
+        let other = list.spawn(Box::new(Probe {
+            base: BaseEntityData::default(),
+            other: EntityHandle::NULL,
+            saw_self_on_spawn: other_saw_self_on_spawn.clone(),
+            saw_self: other_saw_self.clone(),
+            saw_other: Arc::new(AtomicBool::new(false)),
+        })).unwrap();
+
+        let saw_self_on_spawn = Arc::new(AtomicBool::new(false));
+        let saw_self = Arc::new(AtomicBool::new(false));
+        let saw_other = Arc::new(AtomicBool::new(false));
+        let main = list.spawn(Box::new(Probe {
+            base: BaseEntityData::default(),
+            other,
+            saw_self_on_spawn: saw_self_on_spawn.clone(),
+            saw_self: saw_self.clone(),
+            saw_other: saw_other.clone(),
+        })).unwrap();
+
+        assert!(other_saw_self_on_spawn.load(Ordering::Relaxed));
+        assert!(saw_self_on_spawn.load(Ordering::Relaxed));
+        assert!(list.is_valid(other));
+        assert!(list.is_valid(main));
+
+        list.tick_all();
+
+        assert!(other_saw_self.load(Ordering::Relaxed));
+        assert!(saw_self.load(Ordering::Relaxed));
+        assert!(saw_other.load(Ordering::Relaxed));
+        assert!(list.get(main).is_some());
+        assert!(list.get(other).is_some());
     }
 }

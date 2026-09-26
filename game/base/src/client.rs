@@ -93,16 +93,16 @@ pub fn client_loop(mut game: GameState<ServerToClient, ClientToServer>) {
                 last_frame = now;
 
                 {
-                    let ct = game.cur_time(); //game.cur_time.lock().unwrap();
-                    game.cur_time.store((ct + dt as f64).to_bits(), Ordering::Relaxed);
-                    game.frame_time.store(dt.to_bits(), Ordering::Relaxed);
-
                     accumulated_time += dt;
                     //let mut ticked = false;
-                    
+
                     // Use a while loop to catch up if a frame lags
                     while accumulated_time >= game.tick_interval {
                         accumulated_time -= game.tick_interval;
+
+                        let ct = game.cur_time() + game.tick_interval; //game.cur_time.lock().unwrap();
+                        game.cur_time.store(ct.to_bits(), Ordering::Relaxed);
+                        game.frame_time.store(game.tick_interval.to_bits(), Ordering::Relaxed);
 
                         game.entities.set_frame(FrameInfo {
                             dt: game.tick_interval,
@@ -233,6 +233,7 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
             last_sent = std::time::Instant::now();
         });
 
+        let recv_started = std::time::Instant::now();
         match client.receive_message() {
             Ok((data, _from)) => {
                 if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
@@ -336,6 +337,12 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
                         let _ = client.send_message(bytes);
                         last_sent = std::time::Instant::now();
                     }
+                }
+
+                let poll = std::time::Duration::from_millis(50);
+                let rest = poll.saturating_sub(recv_started.elapsed());
+                if !rest.is_zero() {
+                    std::thread::sleep(rest);
                 }
             }
         }
