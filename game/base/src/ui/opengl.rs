@@ -151,6 +151,18 @@ impl Window for OpenGLWindow {
         self.window.set_title(title);
     }
 
+    fn winit_window(&self) -> &WinitWindow {
+        &self.window
+    }
+
+    fn take_event_loop(&mut self) -> EventLoop<()> {
+        self.event_loop.take().expect("Event loop missing")
+    }
+
+    fn present(&mut self) {
+        self.surface.swap_buffers(&self.context).unwrap();
+    }
+
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         unsafe {
             self.gl.depth_mask(true);

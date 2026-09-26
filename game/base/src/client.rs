@@ -3,14 +3,14 @@ use std::net::TcpStream;
 use crate::network::wait_socket;
 use crate::state::GameState;
 use crate::network::{ServerToClient, ClientToServer, NetworkClient};
-use crate::ui::{opengl::OpenGLWindow, window::Window, Color};
+use crate::ui::backend;
+use crate::ui::window::Window;
+use crate::ui::Color;
 use crate::ui::voxel::FlyCamera;
 use winit::event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::CursorGrabMode;
-use glutin::prelude::GlSurface;
 use winit::event_loop::ControlFlow;
-use glow::HasContext;
 use crate::ui::menu::draw_menu;
 use crate::script::engine::DrawCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -158,11 +158,11 @@ impl SnapshotIngress {
 }
 
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
-    let mut client_window = OpenGLWindow::create_window();
+    let mut client_window = backend::create();
     client_window.set_window_title("Rust Engine - Rendering");
     client_window.set_size(1920, 1080);
 
-    let event_loop = client_window.event_loop.take().expect("Event loop missing");
+    let event_loop = client_window.take_event_loop();
 
     let menu_script = include_bytes!("lua/menu/menu.lua");
     game.script_engine.lua.load(&menu_script[..])
@@ -196,16 +196,12 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
                 WindowEvent::Resized(physical_size) => {
                     client_window.set_size(physical_size.width, physical_size.height);
-                    
-                    unsafe {
-                        client_window.gl.viewport(0, 0, physical_size.width as i32, physical_size.height as i32);
-                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     if let PhysicalKey::Code(code) = event.physical_key {
                         if code == KeyCode::Escape && event.state == ElementState::Pressed {
                             captured = false;
-                            set_capture(&client_window.window, false);
+                            set_capture(client_window.winit_window(), false);
                         } else if event.state == ElementState::Pressed {
                             keys.insert(code);
                         } else {
@@ -215,10 +211,10 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
                 WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                     captured = true;
-                    set_capture(&client_window.window, true);
+                    set_capture(client_window.winit_window(), true);
                 }
                 WindowEvent::RedrawRequested => {
-                    let size = client_window.window.inner_size();
+                    let size = client_window.winit_window().inner_size();
                     let aspect = size.width as f32 / size.height.max(1) as f32;
                     let revision = game.world.revision();
 
@@ -275,8 +271,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     client_window.draw_rectangle(8.0, 8.0, 96.0, 24.0, Color::ColorRGBA { r: 0, g: 0, b: 0, a: 160 });
                     client_window.draw_text("default", &fps_label, 14.0, 10.0, 16.0, Color::ColorRGBA { r: 255, g: 255, b: 255, a: 255 });
                     client_window.render_text();
-    
-                    client_window.surface.swap_buffers(&client_window.context).unwrap();
+                    client_window.present();
                 }
                 _ => (),
             },
@@ -387,7 +382,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     game.send_reliable(ClientToServer::UserMessage { hash, data });
                 }
 
-                client_window.window.request_redraw();
+                client_window.winit_window().request_redraw();
             },
             _ => (),
         }
