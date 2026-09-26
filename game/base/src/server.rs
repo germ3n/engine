@@ -87,6 +87,8 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
             }
         }
 
+        server.pump_reliable();
+
         // Use match instead of unwrap to handle the timeout gracefully
         match server.receive_message() {
             Ok((data, from)) => {
@@ -169,19 +171,30 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
                                 }
                             }
                         }
-                        PacketType::Fragment { packet_id, fragment_idx, total_fragments, data } => {
+                        PacketType::Fragment { sequence, packet_id, fragment_idx, total_fragments, data } => {
                             if server.is_connected(from) {
                                 server.touch_client(from);
 
-                                let full_payload_opt = {
+                                let ack_packet = PacketType::Ack { sequence };
+                                let ack_bytes = wincode::serialize(&ack_packet).unwrap();
+                                let _ = server.send_to(from, &ack_bytes);
+
+                                let duplicate = {
                                     let client = server.clients.get_mut(&from).unwrap();
-                                    client.assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec())
+                                    client.reliable.is_duplicate_and_track(sequence)
                                 };
 
-                                if let Some(full_payload) = full_payload_opt {
-                                    if let Ok(event) = wincode::deserialize::<ClientToServer>(&full_payload) {
-                                        let _ = tx.send(event);
-                                        println!("[sv] reassembled and forwarded fragment packet {}", packet_id);
+                                if !duplicate {
+                                    let full_payload_opt = {
+                                        let client = server.clients.get_mut(&from).unwrap();
+                                        client.assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec())
+                                    };
+
+                                    if let Some(full_payload) = full_payload_opt {
+                                        if let Ok(event) = wincode::deserialize::<ClientToServer>(&full_payload) {
+                                            let _ = tx.send(event);
+                                            println!("[sv] reassembled and forwarded fragment packet {}", packet_id);
+                                        }
                                     }
                                 }
                             }
@@ -191,13 +204,13 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
             }
             Err(_) => {
                 // This catches the WouldBlock timeout. 
-                // Leaving this empty allows the loop to continue to check_resends().
+                // Leaving this empty allows the loop to continue to pump_reliable().
             }
         }
 
         server.drop_idle_clients();
 
         // Periodically check and resend unacknowledged reliable packets
-        server.check_resends();
+        server.pump_reliable();
     }
 }

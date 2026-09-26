@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use wincode::{SchemaWrite, SchemaRead};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const MAX_FRAGMENTS: u16 = 64;
+pub const MAX_FRAGMENTS: u16 = 64;
+pub const MAX_DATAGRAM: usize = 1200;
 const MAX_CONCURRENT_BUFFERS: usize = 8;
 const BUFFER_TIMEOUT: Duration = Duration::from_secs(5);
 pub const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
@@ -20,11 +21,55 @@ pub enum PacketType {
     Connected { session: u64 },
     KeepAlive { session: u64 },
     Fragment { 
+        sequence: u32,
         packet_id: u16, 
         fragment_idx: u16, 
         total_fragments: u16, 
         data: Arc<Vec<u8>> 
     },
+}
+
+pub fn reliable_payload_limit() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let packet = PacketType::Reliable {
+            sequence: 0,
+            payload: Arc::new(Vec::new()),
+        };
+        MAX_DATAGRAM.saturating_sub(wincode::serialize(&packet).unwrap().len())
+    })
+}
+
+pub fn fragment_payload_limit() -> usize {
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        let packet = PacketType::Fragment {
+            sequence: 0,
+            packet_id: 0,
+            fragment_idx: 0,
+            total_fragments: 1,
+            data: Arc::new(Vec::new()),
+        };
+        MAX_DATAGRAM.saturating_sub(wincode::serialize(&packet).unwrap().len())
+    })
+}
+
+pub fn encoded_packet_count(payload_len: usize) -> Option<usize> {
+    if payload_len <= reliable_payload_limit() {
+        return Some(1);
+    }
+
+    let chunk_len = fragment_payload_limit();
+    if chunk_len == 0 {
+        return None;
+    }
+
+    let count = payload_len.div_ceil(chunk_len);
+    if count > MAX_FRAGMENTS as usize {
+        return None;
+    }
+
+    Some(count)
 }
 
 struct ReassemblyBuffer {

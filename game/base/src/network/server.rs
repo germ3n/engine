@@ -1,12 +1,11 @@
-use crate::network::reliable::ReliableChannel;
+use crate::network::reliable::{EnqueueStatus, ReliableChannel};
 use crate::network::PacketType;
 use std::net::{SocketAddr, UdpSocket};
 use std::collections::HashMap;
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use crate::network::packet::{FragmentAssembler, CONNECTION_TIMEOUT};
-use std::sync::Arc;
+use crate::network::packet::{FragmentAssembler, CONNECTION_TIMEOUT, encoded_packet_count};
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
 
@@ -159,14 +158,27 @@ impl NetworkServer {
     }
 
     pub fn broadcast_reliable(&mut self, payload: Vec<u8>) {
-        let shared_payload = Arc::new(payload);
+        if encoded_packet_count(payload.len()).is_none() {
+            println!("[sv] reliable payload too large");
+
+            return;
+        }
+
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
+        let mut stalled = Vec::new();
         for addr in addrs {
-            let bytes = {
+            let status = {
                 let client = self.clients.get_mut(&addr).unwrap();
-                client.reliable.create_reliable_packet((*shared_payload).clone()).1
+                client.reliable.enqueue(&payload)
             };
-            let _ = self.socket.send_to(&bytes, addr);
+            if status == EnqueueStatus::Full {
+                stalled.push(addr);
+            }
+        }
+
+        for addr in stalled {
+            println!("[sv] reliable window full {}", addr);
+            self.remove_client(addr);
         }
     }
 
@@ -176,13 +188,13 @@ impl NetworkServer {
         let _ = self.send_message(&bytes);
     }
 
-    pub fn check_resends(&mut self) {
+    pub fn pump_reliable(&mut self) {
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         for addr in addrs {
             let packets: Vec<Vec<u8>> = {
                 let client = self.clients.get_mut(&addr).unwrap();
                 let mut packets = Vec::new();
-                client.reliable.check_resends(|packet_bytes| {
+                client.reliable.pump(|packet_bytes| {
                     packets.push(packet_bytes.to_vec());
                 });
                 packets

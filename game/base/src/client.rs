@@ -8,11 +8,10 @@ use winit::event_loop::ControlFlow;
 use glow::HasContext;
 use crate::ui::menu::draw_menu;
 use crate::script::engine::DrawCommand;
-use std::time::Duration;
 use std::sync::atomic::Ordering;
 use core::net::SocketAddr;
 use std::str::FromStr;
-use crate::network::{PacketType, ReliableChannel, NetSend};
+use crate::network::{PacketType, ReliableChannel, EnqueueStatus, NetSend};
 use crate::network::packet::{FragmentAssembler, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL};
 use crate::network::usermessage::UserMsgReader;
 use crate::entities::context::FrameInfo;
@@ -99,7 +98,7 @@ pub fn client_loop(mut game: GameState<ServerToClient, ClientToServer>) {
                     game.frame_time.store(dt.to_bits(), Ordering::Relaxed);
 
                     accumulated_time += dt;
-                    let mut ticked = false;
+                    //let mut ticked = false;
                     
                     // Use a while loop to catch up if a frame lags
                     while accumulated_time >= game.tick_interval {
@@ -114,7 +113,7 @@ pub fn client_loop(mut game: GameState<ServerToClient, ClientToServer>) {
 
                         let tc = game.tick_count.load(Ordering::Relaxed);
                         game.tick_count.store(tc + 1, Ordering::Relaxed);
-                        ticked = true;
+                        //ticked = true;
                     }
 
                     /*if !ticked {
@@ -184,27 +183,55 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
     let _ = client.send_message(&connect_bytes);
     let mut challenge_response_bytes: Option<Vec<u8>> = None;
     let mut session: Option<u64> = None;
+    let mut held_reliable: Option<Vec<u8>> = None;
     let mut last_sent = std::time::Instant::now();
     let mut last_server_seen = std::time::Instant::now();
 
     loop {
-        while let Ok(outgoing) = rx.try_recv() {
-            match outgoing {
-                NetSend::Reliable(event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    let (_, bytes) = reliable_chan.create_reliable_packet(payload);
-                    let _ = client.send_message(&bytes);
-                    last_sent = std::time::Instant::now();
+        if let Some(payload) = held_reliable.take() {
+            match reliable_chan.enqueue(&payload) {
+                EnqueueStatus::Queued => {}
+                EnqueueStatus::Full => {
+                    held_reliable = Some(payload);
                 }
-                NetSend::Unreliable(event) => {
-                    let payload = wincode::serialize(&event).unwrap();
-                    let packet = PacketType::Unreliable(payload.into());
-                    let bytes = wincode::serialize(&packet).unwrap();
-                    let _ = client.send_message(&bytes);
-                    last_sent = std::time::Instant::now();
+                EnqueueStatus::TooLarge => {
+                    println!("[cl] reliable payload too large");
                 }
             }
         }
+
+        if held_reliable.is_none() {
+            while let Ok(outgoing) = rx.try_recv() {
+                match outgoing {
+                    NetSend::Reliable(event) => {
+                        let payload = wincode::serialize(&event).unwrap();
+                        match reliable_chan.enqueue(&payload) {
+                            EnqueueStatus::Queued => {}
+                            EnqueueStatus::Full => {
+                                held_reliable = Some(payload);
+
+                                break;
+                            }
+                            EnqueueStatus::TooLarge => {
+                                println!("[cl] reliable payload too large");
+                            }
+                        }
+                    }
+                    NetSend::Unreliable(event) => {
+                        let payload = wincode::serialize(&event).unwrap();
+                        let packet = PacketType::Unreliable(payload.into());
+                        let bytes = wincode::serialize(&packet).unwrap();
+                        let _ = client.send_message(&bytes);
+                        last_sent = std::time::Instant::now();
+                    }
+                }
+            }
+        }
+
+        reliable_chan.pump(|packet_bytes| {
+            let _ = client.send_message(packet_bytes);
+            last_sent = std::time::Instant::now();
+        });
 
         match client.receive_message() {
             Ok((data, _from)) => {
@@ -280,13 +307,20 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
                                 }
                             }
                         }
-                        PacketType::Fragment { packet_id, fragment_idx, total_fragments, data } => {
+                        PacketType::Fragment { sequence, packet_id, fragment_idx, total_fragments, data } => {
                             if connected {
                                 last_server_seen = std::time::Instant::now();
-                                if let Some(full_payload) = assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec()) {
-                                    if let Ok(event) = wincode::deserialize::<ServerToClient>(&full_payload) {
-                                        let _ = tx.send(event);
-                                        println!("[cl] reassembled and forwarded fragment packet {}", packet_id);
+                                let ack_packet = PacketType::Ack { sequence };
+                                let ack_bytes = wincode::serialize(&ack_packet).unwrap();
+                                let _ = client.send_message(&ack_bytes);
+                                last_sent = std::time::Instant::now();
+
+                                if !reliable_chan.is_duplicate_and_track(sequence) {
+                                    if let Some(full_payload) = assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec()) {
+                                        if let Ok(event) = wincode::deserialize::<ServerToClient>(&full_payload) {
+                                            let _ = tx.send(event);
+                                            println!("[cl] reassembled and forwarded fragment packet {}", packet_id);
+                                        }
                                     }
                                 }
                             }
@@ -320,7 +354,7 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
             }
         }
 
-        reliable_chan.check_resends(|packet_bytes| {
+        reliable_chan.pump(|packet_bytes| {
             let _ = client.send_message(packet_bytes);
             last_sent = std::time::Instant::now();
         });
