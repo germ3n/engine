@@ -7,7 +7,7 @@ use glutin::{
     context::{ContextAttributesBuilder, PossiblyCurrentContext},
     display::GetGlDisplay,
     prelude::*,
-    surface::{SurfaceAttributesBuilder, WindowSurface},
+    surface::{SurfaceAttributesBuilder, SwapInterval, WindowSurface},
 };
 use glutin_winit::DisplayBuilder;
 use raw_window_handle::HasRawWindowHandle;
@@ -66,6 +66,7 @@ impl Window for OpenGLWindow {
             gl_display.create_window_surface(&gl_config, &surface_attributes).unwrap()
         };
         let context = not_current_gl_context.make_current(&surface).unwrap();
+        let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
 
         // 1. Initialize Glow
         let gl = unsafe {

@@ -3,7 +3,7 @@ use std::net::TcpStream;
 use crate::network::wait_socket;
 use crate::state::GameState;
 use crate::network::{ServerToClient, ClientToServer, NetworkClient};
-use crate::ui::{opengl::OpenGLWindow, window::Window};
+use crate::ui::{opengl::OpenGLWindow, window::Window, Color};
 use crate::ui::voxel::FlyCamera;
 use winit::event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -160,7 +160,7 @@ impl SnapshotIngress {
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
     let mut client_window = OpenGLWindow::create_window();
     client_window.set_window_title("Rust Engine - Rendering");
-    client_window.set_size(800, 600);
+    client_window.set_size(1920, 1080);
 
     let event_loop = client_window.event_loop.take().expect("Event loop missing");
 
@@ -170,6 +170,9 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
         .expect("Failed to execute menu.lua");
 
     let mut last_frame = std::time::Instant::now();
+    let mut fps_sample = std::time::Instant::now();
+    let mut fps_frames = 0u32;
+    let mut fps_label = String::from("0 fps");
     let mut accumulated_time = 0.0;
     let mut world_generation = 0u32;
     let mut hold_events = false;
@@ -259,6 +262,18 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         }
                     }
 
+                    fps_frames += 1;
+                    let sample = fps_sample.elapsed().as_secs_f64();
+
+                    if sample >= 0.25 {
+                        let fps = (fps_frames as f64 / sample).round() as u32;
+                        fps_label = format!("{fps} fps");
+                        fps_frames = 0;
+                        fps_sample = std::time::Instant::now();
+                    }
+
+                    client_window.draw_rectangle(8.0, 8.0, 96.0, 24.0, Color::ColorRGBA { r: 0, g: 0, b: 0, a: 160 });
+                    client_window.draw_text("default", &fps_label, 14.0, 10.0, 16.0, Color::ColorRGBA { r: 255, g: 255, b: 255, a: 255 });
                     client_window.render_text();
     
                     client_window.surface.swap_buffers(&client_window.context).unwrap();
