@@ -152,6 +152,7 @@ name = "base"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bitflags 2.13.2",
  "clap",
  "glow",
  "glow_glyph",

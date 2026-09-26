@@ -7,6 +7,6 @@ pub mod usermessage;
 
 pub use client::NetworkClient;
 pub use server::NetworkServer;
-pub use events::{NetworkEvent, NetSend};
+pub use events::{ClientToServer, ServerToClient, NetSend};
 pub use packet::PacketType;
 pub use reliable::ReliableChannel;

@@ -1,6 +1,6 @@
 use std::sync::mpsc::{Receiver, Sender};
-use crate::{GameState};
-use crate::network::{NetworkEvent, NetworkClient};
+use crate::state::GameState;
+use crate::network::{ServerToClient, ClientToServer, NetworkClient};
 use crate::ui::{opengl::OpenGLWindow, window::Window};
 use winit::event::{WindowEvent, Event};
 use glutin::prelude::GlSurface;
@@ -15,8 +15,9 @@ use std::str::FromStr;
 use crate::network::{PacketType, ReliableChannel, NetSend};
 use crate::network::packet::FragmentAssembler;
 use crate::network::usermessage::UserMsgReader;
+use crate::entities::context::FrameInfo;
 
-pub fn client_loop(mut game: GameState) {
+pub fn client_loop(mut game: GameState<ServerToClient, ClientToServer>) {
     let mut client_window = OpenGLWindow::create_window();
     client_window.set_window_title("Rust Engine - Rendering");
     client_window.set_size(800, 600);
@@ -104,7 +105,12 @@ pub fn client_loop(mut game: GameState) {
                     while accumulated_time >= game.tick_interval {
                         accumulated_time -= game.tick_interval;
 
-                        //game.entities.tick_all();
+                        game.entities.set_frame(FrameInfo {
+                            dt: game.tick_interval,
+                            cur_time: game.cur_time(),
+                            tick_count: game.tick_count(),
+                        });
+                        game.entities.tick_all();
 
                         let tc = game.tick_count.load(Ordering::Relaxed);
                         game.tick_count.store(tc + 1, Ordering::Relaxed);
@@ -118,34 +124,35 @@ pub fn client_loop(mut game: GameState) {
 
                 while let Ok(net_event) = game.network_receiver.try_recv() {
                     match net_event {
-                        NetworkEvent::PlayerConnected { handle, name } => {
+                        ServerToClient::PlayerConnected { handle, name } => {
                             game.script_engine.run_hook("PlayerConnected", (handle, name));
                         },
-                        NetworkEvent::PlayerDisconnected { handle } => {
+                        ServerToClient::PlayerDisconnected { handle } => {
                             game.script_engine.run_hook("PlayerDisconnected", handle);
                         },
-                        NetworkEvent::PlayerSpawned { handle } => {
+                        ServerToClient::PlayerSpawned { handle } => {
                             game.script_engine.run_hook("PlayerSpawned", handle);
                         },
-                        NetworkEvent::PlayerDamaged { handle, attacker, inflictor, damage, new_health } => {
+                        ServerToClient::PlayerDamaged { handle, attacker, inflictor, damage, new_health } => {
                             game.script_engine.run_hook("PlayerDamaged", (handle, attacker, inflictor, damage, new_health));
                         },
-                        NetworkEvent::PlayerDied { handle, killer, inflictor } => {
+                        ServerToClient::PlayerDied { handle, killer, inflictor } => {
                             game.script_engine.run_hook("PlayerDied", (handle, killer, inflictor));
                         },
-                        NetworkEvent::ModelChanged { handle, model } => {
+                        ServerToClient::ModelChanged { handle, model } => {
                             game.script_engine.run_hook("ModelChanged", (handle, model));
                         },
-                        NetworkEvent::TransformUpdated { handle, position, angles, velocity } => {
-                            let entity = game.entities.get_mut(handle).expect("Failed to get entity");
-                            if let Some(pos) = position { entity.base_mut().position = pos; }
-                            if let Some(ang) = angles { entity.base_mut().angles = ang; }
-                            if let Some(vel) = velocity { entity.base_mut().velocity = vel; }
+                        ServerToClient::TransformUpdated { handle, position, angles, velocity } => {
+                            if let Some(entity) = game.entities.get_mut(handle) {
+                                if let Some(pos) = position { entity.base_mut().position = pos; }
+                                if let Some(ang) = angles { entity.base_mut().angles = ang; }
+                                if let Some(vel) = velocity { entity.base_mut().velocity = vel; }
+                            }
 
                             game.script_engine.run_hook("TransformUpdated", (handle, position, angles, velocity));
                         },
 
-                        NetworkEvent::UserMessage { hash, data } => {
+                        ServerToClient::UserMessage { hash, data } => {
                             game.script_engine.run_usermessage(hash, UserMsgReader::new(data));
                         },
 
@@ -161,7 +168,7 @@ pub fn client_loop(mut game: GameState) {
 }
 
 #[cfg(feature = "client")]
-pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
+pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, rx: Receiver<NetSend<ClientToServer>>) {
     let local_addr = if server_addr.is_ipv6() {
         "[::]:0"
     } else {
@@ -209,7 +216,7 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx
 
                             // Forward event
                             if !reliable_chan.is_duplicate_and_track(sequence) {
-                                if let Ok(event) = wincode::deserialize::<NetworkEvent>(&payload) {
+                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                                     let _ = tx.send(event);
                                     println!("[cl] deserialized and forwarded {}", sequence);
                                 }
@@ -222,7 +229,7 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx
                         }
                         PacketType::Unreliable(payload) => {
                             connected = true;
-                            if let Ok(event) = wincode::deserialize::<NetworkEvent>(&payload) {
+                            if let Ok(event) = wincode::deserialize::<ServerToClient>(&payload) {
                                 let _ = tx.send(event);
                                 println!("[cl] unreliable");
                             }
@@ -230,7 +237,7 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<NetworkEvent>, rx
                         PacketType::Fragment { packet_id, fragment_idx, total_fragments, data } => {
                             connected = true;
                             if let Some(full_payload) = assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec()) {
-                                if let Ok(event) = wincode::deserialize::<NetworkEvent>(&full_payload) {
+                                if let Ok(event) = wincode::deserialize::<ServerToClient>(&full_payload) {
                                     let _ = tx.send(event);
                                     println!("[cl] reassembled and forwarded fragment packet {}", packet_id);
                                 }

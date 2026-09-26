@@ -5,7 +5,7 @@ use crate::r#enum::{InputButtons, EntityFlags};
 use crate::entities::EntityHandle;
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
-pub enum NetworkEvent {
+pub enum ServerToClient {
     MapChange { map_name: String },
     GameStateChanged { state: u16 },
     ConVarReplicated { name: String, value: String },
@@ -26,25 +26,36 @@ pub enum NetworkEvent {
     PlaySound { sound_hash: u32, entity_handle: Option<EntityHandle>, position: Vector3, volume: f32, pitch: f32 },
     PlayEffect { effect_hash: u32, position: Vector3, normal: Vector3 },
     AnimationTriggered { handle: EntityHandle, sequence_id: u16, playback_rate: f32 },
+
+    // SERVER<->CLIENT Events
+    UserMessage { hash: u32, data: Vec<u8> },
+    ChatMessage { sender_handle: EntityHandle, team_only: bool, text: String },
+    VoiceChunk { sender_handle: EntityHandle, data: Vec<u8> },
+
+    Pong { client_time: u64, server_time: u64 },
+    ServerTick { tick: u64 },
+
+    WeaponFired { entity_handle: EntityHandle, weapon_handle: EntityHandle },
+    WeaponReloaded { entity_handle: EntityHandle },
+    ItemEquipped { entity_handle: EntityHandle, slot: u8, item_handle: EntityHandle },
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub enum ClientToServer {
     // SERVER<->CLIENT Events
     UserMessage { hash: u32, data: Vec<u8> },
     ChatMessage { sender_handle: EntityHandle, team_only: bool, text: String },
     VoiceChunk { sender_handle: EntityHandle, data: Vec<u8> },
 
     Ping { client_time: u64 },
-    Pong { client_time: u64, server_time: u64 },
-    ServerTick { tick: u64 },
     ClientReady { tick: u64 },
 
-    WeaponFired { entity_handle: EntityHandle, weapon_handle: EntityHandle },
-    WeaponReloaded { entity_handle: EntityHandle },
-    ItemEquipped { entity_handle: EntityHandle, slot: u8, item_handle: EntityHandle },
     // CLIENT->SERVER Events
     PlayerInput { tick: u64, buttons: InputButtons, movement: Vector3, viewangles: Angle3 },
 }
 
 #[derive(Clone, Debug)]
-pub enum NetSend {
-    Unreliable(NetworkEvent),
-    Reliable(NetworkEvent),
+pub enum NetSend<E> {
+    Unreliable(E),
+    Reliable(E),
 }

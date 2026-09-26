@@ -1,8 +1,7 @@
-
 use r#macro::Networkable;
 use crate::entities::{base::Networkable, base::BaseEntity, base::BaseEntityData};
 use crate::entities::EntityHandle;
-use crate::entities::list::EntityList;
+use crate::entities::context::TickContext;
 
 #[Networkable]
 pub struct Player {
@@ -21,10 +20,8 @@ impl Default for Player {
 }
 
 impl Player {
-    pub fn new(networked_id: Option<u32>) -> Self {
-        let mut player = Self::default();
-        player.base.handle = EntityHandle::new(networked_id.unwrap_or(0) as u32, 0);
-        player
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -37,11 +34,15 @@ impl BaseEntity for Player {
         &mut self.base
     }
 
-    fn on_spawn(&mut self, _list: &mut EntityList) {
+    fn on_spawn(&mut self, _ctx: &mut TickContext) {
 
     }
 
-    fn tick(&mut self, _list: &mut EntityList) {
+    fn tick(&mut self, _ctx: &mut TickContext) {
 
+    }
+
+    fn wants_think(&self) -> bool {
+        true
     }
 }

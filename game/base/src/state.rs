@@ -1,29 +1,29 @@
 use crate::entities::EntityList;
-use crate::network::{NetworkEvent, NetSend};
+use crate::network::NetSend;
 use crate::console::{ConVar, ConVarValue};
 use std::sync::mpsc::{Receiver, Sender};
 use std::collections::HashMap;
 use crate::script::{ScriptEngine, Realm};
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
-pub struct GameState {
+pub struct GameState<In, Out> {
     pub realm: Realm,
     pub entities: EntityList,
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub tick_interval: f64,
-    pub network_receiver: Receiver<NetworkEvent>,
-    pub network_sender: Sender<NetSend>,
+    pub network_receiver: Receiver<In>,
+    pub network_sender: Sender<NetSend<Out>>,
     pub script_engine: ScriptEngine,
     pub cur_time: Arc<AtomicU64>,
     pub frame_time: Arc<AtomicU64>,
     pub tick_count: Arc<AtomicU64>,
 }
 
-impl GameState {
+impl<In, Out> GameState<In, Out> {
     pub fn new(
         realm: Realm,
-        network_receiver: Receiver<NetworkEvent>,
-        network_sender: Sender<NetSend>,
+        network_receiver: Receiver<In>,
+        network_sender: Sender<NetSend<Out>>,
         tick_interval: f64
     ) -> Self {
         let mut cvars = HashMap::new();
@@ -72,11 +72,11 @@ impl GameState {
         self.tick_count.load(Ordering::Relaxed)
     }
 
-    pub fn send_reliable(&self, event: NetworkEvent) {
+    pub fn send_reliable(&self, event: Out) {
         let _ = self.network_sender.send(NetSend::Reliable(event));
     }
 
-    pub fn send_unreliable(&self, event: NetworkEvent) {
+    pub fn send_unreliable(&self, event: Out) {
         let _ = self.network_sender.send(NetSend::Unreliable(event));
     }
 }

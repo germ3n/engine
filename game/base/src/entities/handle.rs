@@ -1,5 +1,6 @@
 use wincode::{SchemaRead, SchemaWrite};
-use mlua::{Error, FromLua, IntoLua, Lua, Result, Value};
+use mlua::{Error, FromLua, Lua, Result, UserData, UserDataMethods, Value};
+use mlua::MetaMethod;
 
 const INDEX_BITS: u32 = 21;
 const GENERATION_BITS: u32 = 11;
@@ -45,23 +46,42 @@ impl EntityHandle {
     }
 }
 
-impl IntoLua for EntityHandle {
-    fn into_lua(self, _lua: &Lua) -> Result<Value> {
-        Ok(Value::Integer(self.0 as mlua::Integer))
-    }
-}
-
 impl FromLua for EntityHandle {
     fn from_lua(value: Value, _lua: &Lua) -> Result<Self> {
         match value {
             Value::Nil => Ok(Self::NULL),
+            Value::UserData(ud) => Ok(*ud.borrow::<Self>()?),
             Value::Integer(raw) => Ok(Self(raw as u32)),
             Value::Number(raw) => Ok(Self(raw as u32)),
             other => Err(Error::FromLuaConversionError {
                 from: other.type_name(),
                 to: "EntityHandle".to_string(),
-                message: Some("expected an entity handle integer or nil".to_string()),
+                message: Some("expected an EntityHandle, integer, or nil".to_string()),
             }),
         }
+    }
+}
+
+impl UserData for EntityHandle {
+    fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
+        methods.add_method("index", |_, this, ()| Ok(this.index()));
+        methods.add_method("generation", |_, this, ()| Ok(this.generation()));
+        methods.add_method("raw", |_, this, ()| Ok(this.0));
+        methods.add_method("is_null", |_, this, ()| Ok(this.is_null()));
+        methods.add_meta_method(MetaMethod::Eq, |_, this, other: Self| {
+            Ok(this.0 == other.0)
+        });
+        methods.add_meta_method(MetaMethod::Lt, |_, this, other: Self| {
+            Ok(this.0 < other.0)
+        });
+        methods.add_meta_method(MetaMethod::Le, |_, this, other: Self| {
+            Ok(this.0 <= other.0)
+        });
+        methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
+            if this.is_null() {
+                return Ok("EntityHandle[null]".to_string());
+            }
+            Ok(format!("EntityHandle[{}:{}]", this.index(), this.generation()))
+        });
     }
 }

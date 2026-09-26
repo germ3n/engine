@@ -1,14 +1,15 @@
 use std::sync::mpsc::{Sender, Receiver};
-use crate::network::NetworkEvent;
-use crate::GameState;
+use crate::network::{ClientToServer, ServerToClient};
+use crate::state::GameState;
 use std::time::{Instant, Duration};
 use std::sync::atomic::Ordering;
 use crate::network::server::NetworkServer;
 use crate::network::{PacketType, NetSend};
 use crate::network::usermessage::hash_usermessage_name;
+use crate::entities::context::FrameInfo;
 
 #[cfg(feature = "server")]
-pub fn server_loop(game: GameState) {
+pub fn server_loop(mut game: GameState<ClientToServer, ServerToClient>) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
     let mut tick_idx = 0; 
@@ -24,14 +25,23 @@ pub fn server_loop(game: GameState) {
         while accumulated_time >= game.tick_interval {
             accumulated_time -= game.tick_interval;
 
-            //game.entities.tick_all();
+            let ct = game.cur_time() + game.tick_interval;
+            game.cur_time.store(ct.to_bits(), Ordering::Relaxed);
+            game.frame_time.store(game.tick_interval.to_bits(), Ordering::Relaxed);
+
+            game.entities.set_frame(FrameInfo {
+                dt: game.tick_interval,
+                cur_time: game.cur_time(),
+                tick_count: game.tick_count(),
+            });
+            game.entities.tick_all();
 
             let tc = game.tick_count.load(Ordering::Relaxed);
             game.tick_count.store(tc + 1, Ordering::Relaxed);
             
             if tick_idx % 100 == 0 {
                 let hash = hash_usermessage_name("Test");
-                let _ = game.network_sender.send(NetSend::Reliable(NetworkEvent::UserMessage {
+                let _ = game.network_sender.send(NetSend::Reliable(ServerToClient::UserMessage {
                     hash,
                     data: [128; 256].to_vec(),
                 }));
@@ -43,7 +53,7 @@ pub fn server_loop(game: GameState) {
 
         while let Ok(net_event) = game.network_receiver.try_recv() {
             match net_event {
-                NetworkEvent::UserMessage { hash, data } => {
+                ClientToServer::UserMessage { hash, data } => {
                     game.script_engine.run_usermessage(hash, data);
                 }
                 _ => {}
@@ -57,7 +67,7 @@ pub fn server_loop(game: GameState) {
 }
 
 #[cfg(feature = "server")]
-pub fn server_network_loop(tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
+pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<ServerToClient>>) {
     let mut server = NetworkServer::new(25400, 128);
 
     loop {
@@ -99,7 +109,7 @@ pub fn server_network_loop(tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
                             };
 
                             if !duplicate {
-                                if let Ok(event) = wincode::deserialize::<NetworkEvent>(&payload) {
+                                if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
                                     let _ = tx.send(event);
                                     println!("[sv] deserialized and forwarded {}", sequence);
                                 }
@@ -112,7 +122,7 @@ pub fn server_network_loop(tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
                             println!("[sv] ack {}", sequence);
                         }
                         PacketType::Unreliable(payload) => {
-                            if let Ok(event) = wincode::deserialize::<NetworkEvent>(&payload) {
+                            if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
                                 let _ = tx.send(event);
                                 println!("[sv] unreliable");
                             }
@@ -124,7 +134,7 @@ pub fn server_network_loop(tx: Sender<NetworkEvent>, rx: Receiver<NetSend>) {
                             };
 
                             if let Some(full_payload) = full_payload_opt {
-                                if let Ok(event) = wincode::deserialize::<NetworkEvent>(&full_payload) {
+                                if let Ok(event) = wincode::deserialize::<ClientToServer>(&full_payload) {
                                     let _ = tx.send(event);
                                     println!("[sv] reassembled and forwarded fragment packet {}", packet_id);
                                 }

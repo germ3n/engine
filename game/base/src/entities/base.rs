@@ -1,7 +1,7 @@
 use crate::script::libs::vector3::Vector3;
 use crate::script::libs::angle3::Angle3;
 use crate::entities::handle::EntityHandle;
-use crate::entities::list::EntityList;
+use crate::entities::context::TickContext;
 
 pub trait Networkable {
     fn handle(&self) -> EntityHandle;
@@ -31,6 +31,7 @@ pub type DynEntity = dyn BaseEntity + Send;
 pub trait BaseEntity: Networkable {
     fn base(&self) -> &BaseEntityData;
     fn base_mut(&mut self) -> &mut BaseEntityData;
-    fn on_spawn(&mut self, list: &mut EntityList);
-    fn tick(&mut self, list: &mut EntityList);
+    fn on_spawn(&mut self, ctx: &mut TickContext);
+    fn tick(&mut self, ctx: &mut TickContext);
+    fn wants_think(&self) -> bool;
 }
