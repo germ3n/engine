@@ -117,9 +117,9 @@ pub fn client_loop(mut game: GameState<ServerToClient, ClientToServer>) {
                         ticked = true;
                     }
 
-                    if !ticked {
+                    /*if !ticked {
                         std::thread::sleep(Duration::from_millis(1));
-                    }
+                    }*/
                 }
 
                 while let Ok(net_event) = game.network_receiver.try_recv() {
@@ -182,6 +182,8 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
 
     let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
     let _ = client.send_message(&connect_bytes);
+    let mut challenge_response_bytes: Option<Vec<u8>> = None;
+    let mut last_keepalive = std::time::Instant::now();
 
     loop {
         while let Ok(outgoing) = rx.try_recv() {
@@ -206,7 +208,20 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
                     match packet {
                         PacketType::Connect => {
                             connected = true;
+                            challenge_response_bytes = None;
+                            last_keepalive = std::time::Instant::now();
                             println!("[cl] connected");
+                        }
+                        PacketType::Challenge { token } => {
+                            if !connected {
+                                let bytes = wincode::serialize(&PacketType::ChallengeResponse { token }).unwrap();
+                                challenge_response_bytes = Some(bytes.clone());
+                                let _ = client.send_message(&bytes);
+                                println!("[cl] challenge {token}");
+                            }
+                        }
+                        PacketType::ChallengeResponse { .. } => {
+                            println!("[cl] challenge response");
                         }
                         PacketType::Reliable { sequence, payload } => {
                             connected = true;
@@ -249,8 +264,16 @@ pub fn client_network_loop(server_addr: SocketAddr, tx: Sender<ServerToClient>, 
             Err(_) => {
                 if !connected {
                     let _ = client.send_message(&connect_bytes);
+                    if let Some(ref bytes) = challenge_response_bytes {
+                        let _ = client.send_message(bytes);
+                    }
                 }
             }
+        }
+
+        if connected && last_keepalive.elapsed() >= Duration::from_secs(2) {
+            let _ = client.send_message(&connect_bytes);
+            last_keepalive = std::time::Instant::now();
         }
 
         reliable_chan.check_resends(|packet_bytes| {

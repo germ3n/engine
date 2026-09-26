@@ -2,13 +2,19 @@ use crate::network::reliable::ReliableChannel;
 use crate::network::PacketType;
 use std::net::{SocketAddr, UdpSocket};
 use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::hash_map::{DefaultHasher, RandomState};
+use std::hash::{BuildHasher, Hash, Hasher};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::network::packet::FragmentAssembler;
 use std::sync::Arc;
+
+const CHALLENGE_WINDOW_SECS: u64 = 5;
+const CLIENT_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct ConnectedClient {
     pub reliable: ReliableChannel,
     pub assembler: FragmentAssembler,
+    pub last_seen: Instant,
 }
 
 pub struct NetworkServer {
@@ -16,6 +22,7 @@ pub struct NetworkServer {
     pub max_clients: u32,
     pub clients: HashMap<SocketAddr, ConnectedClient>,
     pub socket: UdpSocket,
+    challenge_secret: u64,
 }
 
 impl NetworkServer {
@@ -28,7 +35,49 @@ impl NetworkServer {
             max_clients,
             clients: HashMap::new(),
             socket,
+            challenge_secret: random_secret(),
         }
+    }
+
+    pub fn is_connected(&self, addr: SocketAddr) -> bool {
+        self.clients.contains_key(&addr)
+    }
+
+    pub fn challenge_for(&self, addr: SocketAddr) -> u64 {
+        self.compute_challenge(addr, challenge_bucket())
+    }
+
+    pub fn verify_challenge(&self, addr: SocketAddr, token: u64) -> bool {
+        let bucket = challenge_bucket();
+        token == self.compute_challenge(addr, bucket)
+            || token == self.compute_challenge(addr, bucket.wrapping_sub(1))
+    }
+
+    fn compute_challenge(&self, addr: SocketAddr, bucket: u64) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.challenge_secret.hash(&mut hasher);
+        addr.hash(&mut hasher);
+        bucket.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn touch_client(&mut self, addr: SocketAddr) {
+        if let Some(client) = self.clients.get_mut(&addr) {
+            client.last_seen = Instant::now();
+        }
+    }
+
+    pub fn drop_idle_clients(&mut self) {
+        let timeout = CLIENT_IDLE_TIMEOUT;
+        self.clients.retain(|addr, client| {
+            client.assembler.evict_stale();
+            if client.last_seen.elapsed() >= timeout {
+                println!("[sv] timeout {}", addr);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn receive_message(&self) -> Result<(Vec<u8>, SocketAddr), String> {
@@ -48,7 +97,8 @@ impl NetworkServer {
 
         self.clients.insert(addr, ConnectedClient {
             reliable: ReliableChannel::new(),
-            assembler: FragmentAssembler::new()
+            assembler: FragmentAssembler::new(),
+            last_seen: Instant::now(),
         });
 
         true
@@ -105,4 +155,23 @@ impl NetworkServer {
             }
         }
     }
+}
+
+fn random_secret() -> u64 {
+    let state = RandomState::new();
+    let mut hasher = state.build_hasher();
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn challenge_bucket() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / CHALLENGE_WINDOW_SECS
 }

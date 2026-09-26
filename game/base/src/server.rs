@@ -61,7 +61,10 @@ pub fn server_loop(mut game: GameState<ClientToServer, ServerToClient>) {
         }
 
         if !ticked {
-            std::thread::sleep(Duration::from_millis(1));
+            let remaining = game.tick_interval - accumulated_time;
+            if remaining > 0.0 {
+                std::thread::sleep(Duration::from_secs_f64(remaining));
+            }
         }
     }
 }
@@ -87,56 +90,96 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
         // Use match instead of unwrap to handle the timeout gracefully
         match server.receive_message() {
             Ok((data, from)) => {
-                if !server.add_client(from) {
-                    continue;
-                }
-
                 if let Ok(packet) = wincode::deserialize::<PacketType>(&data) {
                     match packet {
                         PacketType::Connect => {
-                            let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
-                            let _ = server.send_to(from, &connect_bytes);
-                            println!("[sv] connect {}", from);
+                            println!("[sv] connect");
+                            if server.is_connected(from) {
+                                server.touch_client(from);
+                                let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
+                                let _ = server.send_to(from, &connect_bytes);
+                            } else {
+                                let token = server.challenge_for(from);
+                                let challenge_bytes = wincode::serialize(&PacketType::Challenge { token }).unwrap();
+                                let _ = server.send_to(from, &challenge_bytes);
+                            }
+                        }
+                        PacketType::ChallengeResponse { token } => {
+                            println!("[sv] challenge response");
+                            if server.is_connected(from) {
+                                server.touch_client(from);
+                                let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
+                                let _ = server.send_to(from, &connect_bytes);
+                            } else if server.verify_challenge(from, token) {
+                                if server.add_client(from) {
+                                    let connect_bytes = wincode::serialize(&PacketType::Connect).unwrap();
+                                    let _ = server.send_to(from, &connect_bytes);
+                                    println!("[sv] connect {}", from);
+                                }
+                            } else {
+                                let token = server.challenge_for(from);
+                                let challenge_bytes = wincode::serialize(&PacketType::Challenge { token }).unwrap();
+                                let _ = server.send_to(from, &challenge_bytes);
+                            }
+                        }
+                        PacketType::Challenge { .. } => {
+                            println!("[sv] challenge");
                         }
                         PacketType::Reliable { sequence, payload } => {
-                            let ack_packet = PacketType::Ack { sequence };
-                            let ack_bytes = wincode::serialize(&ack_packet).unwrap();
-                            let _ = server.send_to(from, &ack_bytes);
+                            if server.is_connected(from) {
+                                server.touch_client(from);
 
-                            let duplicate = {
-                                let client = server.clients.get_mut(&from).unwrap();
-                                client.reliable.is_duplicate_and_track(sequence)
-                            };
+                                let ack_packet = PacketType::Ack { sequence };
+                                let ack_bytes = wincode::serialize(&ack_packet).unwrap();
+                                let _ = server.send_to(from, &ack_bytes);
 
-                            if !duplicate {
-                                if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
-                                    let _ = tx.send(event);
-                                    println!("[sv] deserialized and forwarded {}", sequence);
+                                let duplicate = {
+                                    let client = server.clients.get_mut(&from).unwrap();
+                                    client.reliable.is_duplicate_and_track(sequence)
+                                };
+
+                                if !duplicate {
+                                    if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
+                                        let _ = tx.send(event);
+                                        println!("[sv] deserialized and forwarded {}", sequence);
+                                    }
                                 }
                             }
                         }
                         PacketType::Ack { sequence } => {
-                            if let Some(client) = server.clients.get_mut(&from) {
-                                client.reliable.handle_ack(sequence);
+                            if server.is_connected(from) {
+                                server.touch_client(from);
+
+                                if let Some(client) = server.clients.get_mut(&from) {
+                                    client.reliable.handle_ack(sequence);
+                                }
+                                println!("[sv] ack {}", sequence);
                             }
-                            println!("[sv] ack {}", sequence);
                         }
                         PacketType::Unreliable(payload) => {
-                            if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
-                                let _ = tx.send(event);
-                                println!("[sv] unreliable");
+                            if server.is_connected(from) {
+                                server.touch_client(from);
+
+                                if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
+                                    let _ = tx.send(event);
+                                    println!("[sv] unreliable");
+                                }
                             }
                         }
                         PacketType::Fragment { packet_id, fragment_idx, total_fragments, data } => {
-                            let full_payload_opt = {
-                                let client = server.clients.get_mut(&from).unwrap();
-                                client.assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec())
-                            };
+                            if server.is_connected(from) {
+                                server.touch_client(from);
 
-                            if let Some(full_payload) = full_payload_opt {
-                                if let Ok(event) = wincode::deserialize::<ClientToServer>(&full_payload) {
-                                    let _ = tx.send(event);
-                                    println!("[sv] reassembled and forwarded fragment packet {}", packet_id);
+                                let full_payload_opt = {
+                                    let client = server.clients.get_mut(&from).unwrap();
+                                    client.assembler.insert(packet_id, fragment_idx, total_fragments, data.to_vec())
+                                };
+
+                                if let Some(full_payload) = full_payload_opt {
+                                    if let Ok(event) = wincode::deserialize::<ClientToServer>(&full_payload) {
+                                        let _ = tx.send(event);
+                                        println!("[sv] reassembled and forwarded fragment packet {}", packet_id);
+                                    }
                                 }
                             }
                         }
@@ -148,6 +191,8 @@ pub fn server_network_loop(tx: Sender<ClientToServer>, rx: Receiver<NetSend<Serv
                 // Leaving this empty allows the loop to continue to check_resends().
             }
         }
+
+        server.drop_idle_clients();
 
         // Periodically check and resend unacknowledged reliable packets
         server.check_resends();
