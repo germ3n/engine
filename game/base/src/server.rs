@@ -481,22 +481,22 @@ fn take_client_unreliable(
 
 #[cfg(feature = "server")]
 fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
-    game.send_state_to(addr, ServerToClient::VoxelScale { scale: game.world.scale() });
+    game.send_state_to(addr, ServerToClient::VoxelScale { scale: game.voxel_world.scale() });
 
-    for update in game.world.baseline() {
+    for update in game.voxel_world.baseline() {
         game.send_state_to(addr, ServerToClient::VoxelChunk(update));
     }
 }
 
 #[cfg(feature = "server")]
 fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
-    if let Some(scale) = game.world.take_scale() {
+    if let Some(scale) = game.voxel_world.take_scale() {
         for addr in peers {
             game.send_state_to(*addr, ServerToClient::VoxelScale { scale });
         }
     }
 
-    let updates = game.world.take_dirty();
+    let updates = game.voxel_world.take_dirty();
 
     for update in updates {
         for addr in peers {

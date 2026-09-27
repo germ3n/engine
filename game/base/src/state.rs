@@ -12,8 +12,8 @@ use std::sync::Arc;
 pub struct GameState<In, Out> {
     pub realm: Realm,
     pub entities: EntityList,
-    pub world: VoxelWorld,
-    pub brushes: BrushMap,
+    pub voxel_world: VoxelWorld,
+    pub brush_world: BrushMap,
     pub map_name: String,
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub tick_interval: f64,
@@ -50,8 +50,8 @@ impl<In, Out> GameState<In, Out> {
         Self {
             realm,
             entities: EntityList::new(),
-            world: VoxelWorld::new(),
-            brushes: BrushMap::new(),
+            voxel_world: VoxelWorld::new(),
+            brush_world: BrushMap::new(),
             map_name: String::new(),
             cvars,
             tick_interval,

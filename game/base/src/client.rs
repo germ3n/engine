@@ -218,12 +218,12 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 WindowEvent::RedrawRequested => {
                     let size = client_window.winit_window().inner_size();
                     let aspect = size.width as f32 / size.height.max(1) as f32;
-                    let world_revision = game.world.revision();
-                    let brush_revision = game.brushes.revision();
+                    let world_revision = game.voxel_world.revision();
+                    let brush_revision = game.brush_world.revision();
 
                     if scene_world != world_revision || scene_brushes != brush_revision {
-                        scene_mesh = game.world.mesh();
-                        scene_mesh.extend(game.brushes.mesh());
+                        scene_mesh = game.voxel_world.mesh();
+                        scene_mesh.extend(game.brush_world.mesh());
                         scene_world = world_revision;
                         scene_brushes = brush_revision;
                         scene_revision = scene_revision.wrapping_add(1);
@@ -233,7 +233,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     client_window.draw_colored_mesh(
                         &scene_mesh,
                         scene_revision,
-                        &camera.scene(aspect, game.world.scale() as f32),
+                        &camera.scene(aspect, game.voxel_world.scale() as f32),
                     );
                     draw_menu(&mut client_window, &mut game);
 
@@ -291,7 +291,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 let dt = now.duration_since(last_frame).as_secs_f64();
                 last_frame = now;
                 let frame_dt = (dt as f32).min(0.1);
-                let speed = game.world.scale() as f32 * 14.0;
+                let speed = game.voxel_world.scale() as f32 * 14.0;
                 let forward = held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS);
                 let right = held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA);
                 let up = held_key(&keys, KeyCode::Space) - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
@@ -334,7 +334,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
-                                game.world.clear();
+                                game.voxel_world.clear();
                                 hold_events = true;
                                 held.clear();
                                 snapshot_ingress = SnapshotIngress::new();
@@ -454,17 +454,17 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                         ServerToClient::WorldSnapshot { .. } => {
                         },
                         ServerToClient::VoxelScale { scale } => {
-                            if !game.world.apply_scale(scale) {
+                            if !game.voxel_world.apply_scale(scale) {
                                 println!("[cl] bad voxel scale {scale}");
                             }
                         },
                         ServerToClient::VoxelChunk(update) => {
-                            if !game.world.apply(&update) {
+                            if !game.voxel_world.apply(&update) {
                                 println!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
                             }
                         },
                         ServerToClient::MapChange { map_name } => {
-                            if let Err(err) = game.brushes.load_file(&map_name) {
+                            if let Err(err) = game.brush_world.load_file(&map_name) {
                                 println!("[map] {err}");
                             }
                         },

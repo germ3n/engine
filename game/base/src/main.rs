@@ -44,12 +44,12 @@ fn main() {
             tick_interval,
             NetWake::new(server_wake_write),
         );
-        server_game.world.fill(
+        server_game.voxel_world.fill(
             crate::world::BlockPos::new(-12, -12, 0),
             crate::world::BlockPos::new(12, 12, 1),
             crate::world::Block(1),
         );
-        server_game.world.fill(
+        server_game.voxel_world.fill(
             crate::world::BlockPos::new(-2, -2, 1),
             crate::world::BlockPos::new(3, 3, 4),
             crate::world::Block(2),
@@ -57,7 +57,7 @@ fn main() {
         let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
         server_game.map_name = map_name.clone();
 
-        if let Err(err) = server_game.brushes.load_file(&map_name) {
+        if let Err(err) = server_game.brush_world.load_file(&map_name) {
             println!("[map] {err}");
         } else {
             println!("[map] {map_name}");
@@ -104,7 +104,7 @@ fn main() {
         let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
         client_game.map_name = map_name.clone();
 
-        if let Err(err) = client_game.brushes.load_file(&map_name) {
+        if let Err(err) = client_game.brush_world.load_file(&map_name) {
             println!("[map] {err}");
         } else {
             println!("[map] {map_name}");
