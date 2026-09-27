@@ -198,6 +198,14 @@ impl BrushMap {
         Ok(())
     }
 
+    pub fn load_document(&mut self, map: &CompiledMap) -> Result<(), String> {
+        let mut loaded = brush_map_from_compiled(map.clone())?;
+        loaded.revision = self.revision.wrapping_add(1);
+        *self = loaded;
+
+        Ok(())
+    }
+
     pub fn push(&mut self, brush: Brush) -> bool {
         if self.brushes.len() >= MAX_BRUSHES {
             return false;
@@ -219,6 +227,14 @@ impl BrushMap {
     }
 
     pub fn mesh(&self) -> Vec<f32> {
+        self.build_mesh(None)
+    }
+
+    pub fn mesh_highlight(&self, selected: usize) -> Vec<f32> {
+        self.build_mesh(Some(selected))
+    }
+
+    fn build_mesh(&self, selected: Option<usize>) -> Vec<f32> {
         let mut vertices = Vec::new();
 
         for (idx, brush) in self.brushes.iter().enumerate() {
@@ -227,7 +243,11 @@ impl BrushMap {
                     continue;
                 }
 
-                push_poly(&mut vertices, &poly);
+                if selected == Some(idx) {
+                    push_poly_color(&mut vertices, &poly, [1.0, 0.86, 0.28]);
+                } else {
+                    push_poly(&mut vertices, &poly);
+                }
             }
         }
 
@@ -308,17 +328,7 @@ pub fn compile_map(name: &str) -> Result<PathBuf, String> {
 }
 
 fn find_map(name: &str) -> Option<PathBuf> {
-    let mut dirs = Vec::new();
-
-    if let Ok(cwd) = std::env::current_dir() {
-        dirs.push(cwd.join("maps"));
-        dirs.push(cwd.join("game/base/maps"));
-        dirs.push(cwd);
-    }
-
-    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("maps"));
-
-    resolve_map(name, &dirs)
+    resolve_map(name, &super::content_dirs())
 }
 
 fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
@@ -480,6 +490,288 @@ fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
     }
 
     Ok(map)
+}
+
+impl CompiledMap {
+    pub fn worldspawn() -> Self {
+        Self {
+            entities: vec![CompiledEntity {
+                keys: vec![CompiledPair { key: "classname".to_string(), value: "worldspawn".to_string() }],
+                brushes: Vec::new(),
+            }],
+        }
+    }
+
+    pub fn open_source(name: &str) -> Result<(PathBuf, Self), String> {
+        let path = find_map(name).ok_or_else(|| format!("map {name} was not found"))?;
+
+        if is_compiled(&path) {
+            let bytes = std::fs::read(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
+            let map = decode_compiled(&bytes)?;
+
+            return Ok((path.with_extension("map"), map));
+        }
+
+        let text = std::fs::read_to_string(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
+        let entities = parse_source(&text)?;
+
+        Ok((path, compile_source(&entities)))
+    }
+
+    pub fn save_source(&self, path: &Path) -> Result<PathBuf, String> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|err| format!("map {}: {err}", parent.display()))?;
+            }
+        }
+
+        let text = map_text(self)?;
+        std::fs::write(path, text).map_err(|err| format!("map {}: {err}", path.display()))?;
+        let text_path = path.to_str().ok_or_else(|| "map path is not utf-8".to_string())?;
+
+        compile_map(text_path)
+    }
+
+    pub fn brush_count(&self) -> usize {
+        let mut count = 0;
+
+        for entity in &self.entities {
+            count += entity.brushes.len();
+        }
+
+        count
+    }
+
+    pub fn add_box(&mut self, min: Vector3, max: Vector3, texture: &str) -> Option<usize> {
+        if self.brush_count() >= MAX_BRUSHES || Brush::aabb(min, max, 1).is_none() || !valid_texture(texture) {
+            return None;
+        }
+
+        let material = texture_material(texture);
+        let texture = texture.to_string();
+        let specs = [
+            (Vector3::new(1.0, 0.0, 0.0), max.x),
+            (Vector3::new(-1.0, 0.0, 0.0), -min.x),
+            (Vector3::new(0.0, 1.0, 0.0), max.y),
+            (Vector3::new(0.0, -1.0, 0.0), -min.y),
+            (Vector3::new(0.0, 0.0, 1.0), max.z),
+            (Vector3::new(0.0, 0.0, -1.0), -min.z),
+        ];
+        let mut faces = Vec::with_capacity(specs.len());
+
+        for (normal, distance) in specs {
+            faces.push(CompiledFace {
+                texture: texture.clone(),
+                normal,
+                distance,
+                material,
+            });
+        }
+
+        let entity_index = self.worldspawn_index();
+        let mut flat = 0;
+        let mut idx = 0;
+
+        while idx < entity_index {
+            flat += self.entities[idx].brushes.len();
+            idx += 1;
+        }
+
+        flat += self.entities[entity_index].brushes.len();
+        self.entities[entity_index].brushes.push(CompiledBrush { faces });
+
+        Some(flat)
+    }
+
+    pub fn remove_brush(&mut self, index: usize) -> bool {
+        let mut cursor = 0;
+
+        for entity in &mut self.entities {
+            if index < cursor + entity.brushes.len() {
+                entity.brushes.remove(index - cursor);
+
+                return true;
+            }
+
+            cursor += entity.brushes.len();
+        }
+
+        false
+    }
+
+    pub fn translate_brush(&mut self, index: usize, delta: Vector3) -> bool {
+        if !finite(delta) {
+            return false;
+        }
+
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+
+        for face in &mut brush.faces {
+            face.distance += face.normal.x * delta.x + face.normal.y * delta.y + face.normal.z * delta.z;
+        }
+
+        true
+    }
+
+    fn worldspawn_index(&mut self) -> usize {
+        let mut idx = 0;
+
+        while idx < self.entities.len() {
+            let mut key = 0;
+
+            while key < self.entities[idx].keys.len() {
+                let pair = &self.entities[idx].keys[key];
+
+                if pair.key == "classname" && pair.value == "worldspawn" {
+                    return idx;
+                }
+
+                key += 1;
+            }
+
+            idx += 1;
+        }
+
+        self.entities.insert(0, CompiledEntity {
+            keys: vec![CompiledPair { key: "classname".to_string(), value: "worldspawn".to_string() }],
+            brushes: Vec::new(),
+        });
+
+        0
+    }
+
+    fn brush_mut(&mut self, index: usize) -> Option<&mut CompiledBrush> {
+        let mut cursor = 0;
+
+        for entity in &mut self.entities {
+            if index < cursor + entity.brushes.len() {
+                return Some(&mut entity.brushes[index - cursor]);
+            }
+
+            cursor += entity.brushes.len();
+        }
+
+        None
+    }
+}
+
+fn map_text(map: &CompiledMap) -> Result<String, String> {
+    let mut out = String::new();
+
+    for entity in &map.entities {
+        out.push_str("{\n");
+
+        for pair in &entity.keys {
+            if !valid_line(&pair.key) || !valid_line(&pair.value) {
+                return Err("entity key cannot span lines".to_string());
+            }
+
+            out.push('"');
+            push_escaped(&mut out, &pair.key);
+            out.push_str("\" \"");
+            push_escaped(&mut out, &pair.value);
+            out.push_str("\"\n");
+        }
+
+        for brush in &entity.brushes {
+            out.push_str("{\n");
+
+            for face in &brush.faces {
+                if !valid_texture(&face.texture) {
+                    return Err(format!("texture {} cannot be written", face.texture));
+                }
+
+                let (p0, p1, p2) = face_points(face.normal, face.distance).ok_or_else(|| "face plane is invalid".to_string())?;
+                out.push_str(&format!(
+                    "( {} {} {} ) ( {} {} {} ) ( {} {} {} ) {} 0 0 0 1 1\n",
+                    format_component(p0.x),
+                    format_component(p0.y),
+                    format_component(p0.z),
+                    format_component(p1.x),
+                    format_component(p1.y),
+                    format_component(p1.z),
+                    format_component(p2.x),
+                    format_component(p2.y),
+                    format_component(p2.z),
+                    face.texture,
+                ));
+            }
+
+            out.push_str("}\n");
+        }
+
+        out.push_str("}\n");
+    }
+
+    Ok(out)
+}
+
+fn face_points(normal: Vector3, distance: f64) -> Option<(Vector3, Vector3, Vector3)> {
+    let len_sq = normal.len_sq();
+
+    if len_sq <= LENGTH_EPS * LENGTH_EPS {
+        return None;
+    }
+
+    let inv = 1.0 / len_sq;
+    let origin = Vector3::new(normal.x * distance * inv, normal.y * distance * inv, normal.z * distance * inv);
+    let len = len_sq.sqrt();
+    let unit_normal = Vector3::new(normal.x / len, normal.y / len, normal.z / len);
+    let (tangent, bitangent) = basis(unit_normal);
+
+    if tangent.len_sq() <= LENGTH_EPS || bitangent.len_sq() <= LENGTH_EPS {
+        return None;
+    }
+
+    Some((
+        origin,
+        Vector3::new(origin.x + tangent.x, origin.y + tangent.y, origin.z + tangent.z),
+        Vector3::new(origin.x + bitangent.x, origin.y + bitangent.y, origin.z + bitangent.z),
+    ))
+}
+
+fn format_component(value: f64) -> String {
+    if !value.is_finite() {
+        return "0".to_string();
+    }
+
+    let rounded = value.round();
+
+    if (value - rounded).abs() < 1e-6 && rounded.abs() < 1.0e15 {
+        return format!("{}", rounded as i64);
+    }
+
+    format!("{value:.17}")
+}
+
+fn valid_texture(texture: &str) -> bool {
+    if texture.is_empty() {
+        return false;
+    }
+
+    for ch in texture.chars() {
+        if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '{' || ch == '}' || ch == '"' {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn valid_line(text: &str) -> bool {
+    !text.chars().any(|ch| ch == '\n' || ch == '\r')
+}
+
+fn push_escaped(out: &mut String, text: &str) {
+    for ch in text.chars() {
+        if ch == '\\' || ch == '"' {
+            out.push('\\');
+        }
+
+        out.push(ch);
+    }
 }
 
 fn parse_source(text: &str) -> Result<Vec<SourceEntity>, String> {
@@ -1025,9 +1317,15 @@ fn buried(points: &[Vector3], owner: usize, brushes: &[Brush]) -> bool {
 fn push_poly(vertices: &mut Vec<f32>, poly: &Poly) {
     let [red, green, blue] = material_rgb(poly.material);
     let shade = 0.42 + 0.58 * ((poly.normal.z as f32 + 1.0) * 0.5);
-    let cr = red * shade;
-    let cg = green * shade;
-    let cb = blue * shade;
+
+    push_fan(vertices, poly, red * shade, green * shade, blue * shade);
+}
+
+fn push_poly_color(vertices: &mut Vec<f32>, poly: &Poly, color: [f32; 3]) {
+    push_fan(vertices, poly, color[0], color[1], color[2]);
+}
+
+fn push_fan(vertices: &mut Vec<f32>, poly: &Poly, red: f32, green: f32, blue: f32) {
     let mut idx = 1;
 
     while idx + 1 < poly.points.len() {
@@ -1036,7 +1334,7 @@ fn push_poly(vertices: &mut Vec<f32>, poly: &Poly) {
         let c = poly.points[idx + 1];
 
         if tri_area(a, b, c) > AREA_EPS {
-            push_tri(vertices, a, b, c, cr, cg, cb);
+            push_tri(vertices, a, b, c, red, green, blue);
         }
 
         idx += 1;
@@ -1444,6 +1742,62 @@ mod tests {
         assert!(near(ramp.position.z, 1.0));
         assert!(near(ramp.normal.unwrap().x, -1.0 / 5.0_f64.sqrt()));
         assert!(near(ramp.normal.unwrap().z, 2.0 / 5.0_f64.sqrt()));
+    }
+
+    #[test]
+    fn source_roundtrip_keeps_hall_planes() {
+        let (path, map) = CompiledMap::open_source("hall").unwrap();
+
+        assert!(path.ends_with("hall.map"));
+        assert_eq!(map.brush_count(), 8);
+
+        let again = compile_source(&parse_source(&map_text(&map).unwrap()).unwrap());
+
+        assert_eq!(again.entities.len(), map.entities.len());
+
+        for (entity, other) in map.entities.iter().zip(&again.entities) {
+            assert_eq!(entity.keys, other.keys);
+            assert_eq!(entity.brushes.len(), other.brushes.len());
+
+            for (brush, other_brush) in entity.brushes.iter().zip(&other.brushes) {
+                assert_eq!(brush.faces.len(), other_brush.faces.len());
+
+                for (face, other_face) in brush.faces.iter().zip(&other_brush.faces) {
+                    assert_eq!(face.texture, other_face.texture);
+                    assert_eq!(face.material, other_face.material);
+                    assert!(near(face.normal.x, other_face.normal.x));
+                    assert!(near(face.normal.y, other_face.normal.y));
+                    assert!(near(face.normal.z, other_face.normal.z));
+                    assert!(near(face.distance, other_face.distance));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn editor_box_saves_and_compiles() {
+        let dir = std::env::temp_dir().join(format!("engine-editor-map-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("box.map");
+        let mut map = CompiledMap::worldspawn();
+
+        assert_eq!(map.add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(2.0, 3.0, 4.0), "crate"), Some(0));
+        assert!(map.translate_brush(0, Vector3::new(5.0, 0.0, 0.0)));
+
+        let compiled = map.save_source(&source).unwrap();
+
+        assert_eq!(compiled, dir.join("box.cmap"));
+
+        let mut brushes = BrushMap::new();
+        brushes.load_file(source.to_str().unwrap()).unwrap();
+        let hit = brushes.trace(Vector3::new(0.0, 1.0, 1.0), Vector3::new(20.0, 1.0, 1.0)).unwrap();
+
+        assert!(near(hit.position.x, 5.0));
+        assert!(map.remove_brush(0));
+        assert_eq!(map.brush_count(), 0);
+        assert!(!map.remove_brush(0));
+        assert!(map.add_box(Vector3::new(1.0, 1.0, 1.0), Vector3::new(1.0, 2.0, 2.0), "crate").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn faces_point_outward(mesh: &[f32], center: [f32; 3]) -> bool {

@@ -1,9 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use wincode::{SchemaRead, SchemaWrite};
 use crate::script::libs::vector3::Vector3;
 
 pub const CHUNK_EDGE: i32 = 16;
 const VOLUME: usize = (CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE) as usize;
+const VOXEL_MAGIC: &[u8; 4] = b"VMAP";
+const VOXEL_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Block(pub u16);
@@ -88,6 +91,12 @@ pub struct TraceHit {
 pub struct ChunkRun {
     pub block: u16,
     pub len: u16,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+struct StoredVoxels {
+    scale: f64,
+    chunks: Vec<ChunkUpdate>,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq, Eq)]
@@ -406,6 +415,49 @@ impl VoxelWorld {
         updates
     }
 
+    pub fn save_file(&self, path: &Path) -> Result<(), String> {
+        let stored = StoredVoxels {
+            scale: self.scale,
+            chunks: self.baseline(),
+        };
+        let bytes = encode_voxels(&stored)?;
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|err| format!("voxels {}: {err}", parent.display()))?;
+            }
+        }
+
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &bytes).map_err(|err| format!("voxels {}: {err}", tmp.display()))?;
+        let _ = std::fs::remove_file(path);
+        std::fs::rename(&tmp, path).map_err(|err| format!("voxels {}: {err}", path.display()))?;
+
+        Ok(())
+    }
+
+    pub fn load_file(&mut self, path: &Path) -> Result<(), String> {
+        let bytes = std::fs::read(path).map_err(|err| format!("voxels {}: {err}", path.display()))?;
+        let stored = decode_voxels(&bytes)?;
+
+        if finite_scale(stored.scale).is_none() {
+            return Err("voxel map scale is invalid".to_string());
+        }
+
+        let mut loaded = VoxelWorld::with_scale(stored.scale);
+
+        for update in &stored.chunks {
+            if !loaded.apply(update) {
+                return Err(format!("voxel chunk {}, {}, {} is invalid", update.x, update.y, update.z));
+            }
+        }
+
+        loaded.revision = self.revision.wrapping_add(1);
+        *self = loaded;
+
+        Ok(())
+    }
+
     pub fn trace(&self, start: Vector3, end: Vector3) -> Option<TraceHit> {
         if !is_finite(start) || !is_finite(end) {
             return None;
@@ -523,6 +575,59 @@ impl VoxelWorld {
 
         ChunkUpdate { x: pos.x, y: pos.y, z: pos.z, runs }
     }
+}
+
+pub fn find_voxel_file(name: &str) -> Option<PathBuf> {
+    let given = PathBuf::from(name);
+
+    if given.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("vmap")) && given.exists() {
+        return Some(given);
+    }
+
+    let stem = voxel_stem(name);
+
+    for dir in super::content_dirs() {
+        let path = dir.join(format!("{stem}.vmap"));
+
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    None
+}
+
+fn voxel_stem(name: &str) -> &str {
+    let file = Path::new(name).file_name().and_then(|file| file.to_str()).unwrap_or(name);
+
+    file.strip_suffix(".vmap")
+        .or_else(|| file.strip_suffix(".map"))
+        .or_else(|| file.strip_suffix(".cmap"))
+        .unwrap_or(file)
+}
+
+fn encode_voxels(stored: &StoredVoxels) -> Result<Vec<u8>, String> {
+    let payload = wincode::serialize(stored).map_err(|err| format!("{err}"))?;
+    let mut bytes = Vec::with_capacity(8 + payload.len());
+    bytes.extend_from_slice(VOXEL_MAGIC);
+    bytes.extend_from_slice(&VOXEL_VERSION.to_le_bytes());
+    bytes.extend(payload);
+
+    Ok(bytes)
+}
+
+fn decode_voxels(bytes: &[u8]) -> Result<StoredVoxels, String> {
+    if bytes.len() < 8 || bytes[..4] != VOXEL_MAGIC[..] {
+        return Err("voxel map header is invalid".to_string());
+    }
+
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+
+    if version != VOXEL_VERSION {
+        return Err(format!("voxel map version {version} is unsupported"));
+    }
+
+    wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))
 }
 
 impl Default for VoxelWorld {
@@ -854,6 +959,32 @@ mod tests {
         solid.fill(BlockPos::new(0, 0, 0), BlockPos::new(3, 3, 3), Block(1));
 
         assert_eq!(solid.mesh().len(), 54 * 6 * 6);
+    }
+
+    #[test]
+    fn voxel_file_roundtrip_keeps_blocks_and_scale() {
+        let dir = std::env::temp_dir().join(format!("engine-vmap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("yard.vmap");
+        let mut world = VoxelWorld::with_scale(2.0);
+        world.set(BlockPos::new(-1, 4, 2), Block(3));
+        world.fill(BlockPos::new(0, 0, 0), BlockPos::new(2, 2, 1), Block(1));
+        world.save_file(&path).unwrap();
+
+        let mut loaded = VoxelWorld::new();
+        loaded.load_file(&path).unwrap();
+
+        assert_eq!(loaded.scale(), 2.0);
+        assert_eq!(loaded.get(BlockPos::new(-1, 4, 2)), Block(3));
+        assert_eq!(loaded.get(BlockPos::new(1, 1, 0)), Block(1));
+        assert_eq!(loaded.get(BlockPos::new(3, 0, 0)), Block::AIR);
+        assert_eq!(find_voxel_file(path.to_str().unwrap()).unwrap(), path);
+
+        let bad = dir.join("bad.vmap");
+        std::fs::write(&bad, b"nope").unwrap();
+
+        assert!(VoxelWorld::new().load_file(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn faces_point_outward(mesh: &[f32], center: f32) -> bool {

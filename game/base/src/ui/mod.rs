@@ -7,5 +7,6 @@ pub mod d3d;
 pub mod color;
 pub mod menu;
 pub mod voxel;
+pub mod editor;
 
 pub use color::Color;

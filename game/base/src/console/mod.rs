@@ -9,6 +9,9 @@ pub struct CliArgs {
     #[arg(long)]
     pub map: Option<String>,
 
+    #[arg(long, default_value_t = false)]
+    pub editor: bool,
+
     #[arg(long = "compile-map", visible_alias = "compile_map", default_value_t = false)]
     pub compile_map: bool,
 
