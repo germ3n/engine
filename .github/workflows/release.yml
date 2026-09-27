@@ -72,6 +72,13 @@ jobs:
         with:
           prefix-key: ${{ matrix.asset_name }}
 
+      - name: Configure Windows ARM MSVC
+        if: matrix.os == 'windows-11-arm'
+        shell: bash
+        run: |
+          echo "VSCMD_ARG_HOST_ARCH=arm64" >> "$GITHUB_ENV"
+          echo "VSCMD_ARG_TGT_ARCH=arm64" >> "$GITHUB_ENV"
+
       - name: Build Release Binaries
         run: cargo build --release --bin base --bin editor
 
