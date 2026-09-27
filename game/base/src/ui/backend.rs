@@ -7,11 +7,17 @@ pub enum GfxWindow {
     OpenGL(OpenGLWindow),
     #[cfg(target_os = "macos")]
     Metal(crate::ui::metal::MetalWindow),
+    #[cfg(windows)]
+    D3D12(crate::ui::d3d::D3D12Window),
+    #[cfg(windows)]
+    D3D11(crate::ui::d3d::D3D11Window),
+    #[cfg(windows)]
+    D3D9(crate::ui::d3d::D3D9Window),
 }
 
 pub fn create() -> GfxWindow {
     #[cfg(target_os = "macos")]
-    {
+    if chosen("metal") {
         match crate::ui::metal::MetalWindow::try_new() {
             Ok(window) => {
                 println!("[gfx] metal");
@@ -24,9 +30,74 @@ pub fn create() -> GfxWindow {
         }
     }
 
+    #[cfg(windows)]
+    if chosen("d3d12") {
+        match crate::ui::d3d::D3D12Window::try_new() {
+            Ok(window) => {
+                println!("[gfx] d3d12");
+
+                return GfxWindow::D3D12(window);
+            }
+            Err(err) => {
+                println!("[gfx] d3d12 failed: {err}");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    if chosen("d3d11") {
+        match crate::ui::d3d::D3D11Window::try_new() {
+            Ok(window) => {
+                println!("[gfx] d3d11");
+
+                return GfxWindow::D3D11(window);
+            }
+            Err(err) => {
+                println!("[gfx] d3d11 failed: {err}");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    if chosen("d3d9") {
+        match crate::ui::d3d::D3D9Window::try_new() {
+            Ok(window) => {
+                println!("[gfx] d3d9");
+
+                return GfxWindow::D3D9(window);
+            }
+            Err(err) => {
+                println!("[gfx] d3d9 failed: {err}");
+            }
+        }
+    }
+
     println!("[gfx] opengl");
 
     GfxWindow::OpenGL(OpenGLWindow::create_window())
+}
+
+fn chosen(name: &str) -> bool {
+    match std::env::var("ENGINE_GFX") {
+        Ok(value) => value.eq_ignore_ascii_case(name),
+        Err(_) => true,
+    }
+}
+
+macro_rules! each_window {
+    ($self:ident, |$window:ident| $body:expr) => {
+        match $self {
+            GfxWindow::OpenGL($window) => $body,
+            #[cfg(target_os = "macos")]
+            GfxWindow::Metal($window) => $body,
+            #[cfg(windows)]
+            GfxWindow::D3D12($window) => $body,
+            #[cfg(windows)]
+            GfxWindow::D3D11($window) => $body,
+            #[cfg(windows)]
+            GfxWindow::D3D9($window) => $body,
+        }
+    };
 }
 
 impl Window for GfxWindow {
@@ -35,90 +106,46 @@ impl Window for GfxWindow {
     }
 
     fn set_window_title(&mut self, title: &str) {
-        match self {
-            GfxWindow::OpenGL(window) => window.set_window_title(title),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.set_window_title(title),
-        }
+        each_window!(self, |window| window.set_window_title(title))
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        match self {
-            GfxWindow::OpenGL(window) => window.set_size(w, h),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.set_size(w, h),
-        }
+        each_window!(self, |window| window.set_size(w, h))
     }
 
     fn winit_window(&self) -> &winit::window::Window {
-        match self {
-            GfxWindow::OpenGL(window) => window.winit_window(),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.winit_window(),
-        }
+        each_window!(self, |window| window.winit_window())
     }
 
     fn take_event_loop(&mut self) -> winit::event_loop::EventLoop<()> {
-        match self {
-            GfxWindow::OpenGL(window) => window.take_event_loop(),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.take_event_loop(),
-        }
+        each_window!(self, |window| window.take_event_loop())
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
-        match self {
-            GfxWindow::OpenGL(window) => window.begin_frame(red, green, blue),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.begin_frame(red, green, blue),
-        }
+        each_window!(self, |window| window.begin_frame(red, green, blue))
     }
 
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
-        match self {
-            GfxWindow::OpenGL(window) => window.draw_colored_mesh(vertices, revision, view),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.draw_colored_mesh(vertices, revision, view),
-        }
+        each_window!(self, |window| window.draw_colored_mesh(vertices, revision, view))
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
-        match self {
-            GfxWindow::OpenGL(window) => window.draw_rectangle(x, y, w, h, color),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.draw_rectangle(x, y, w, h, color),
-        }
+        each_window!(self, |window| window.draw_rectangle(x, y, w, h, color))
     }
 
     fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
-        match self {
-            GfxWindow::OpenGL(window) => window.draw_outlined_rectangle(x, y, w, h, thickness, color),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.draw_outlined_rectangle(x, y, w, h, thickness, color),
-        }
+        each_window!(self, |window| window.draw_outlined_rectangle(x, y, w, h, thickness, color))
     }
 
     fn draw_text(&mut self, font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
-        match self {
-            GfxWindow::OpenGL(window) => window.draw_text(font, text, x, y, scale, color),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.draw_text(font, text, x, y, scale, color),
-        }
+        each_window!(self, |window| window.draw_text(font, text, x, y, scale, color))
     }
 
     fn render_text(&mut self) {
-        match self {
-            GfxWindow::OpenGL(window) => window.render_text(),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.render_text(),
-        }
+        each_window!(self, |window| window.render_text())
     }
 
     fn present(&mut self) {
-        match self {
-            GfxWindow::OpenGL(window) => window.present(),
-            #[cfg(target_os = "macos")]
-            GfxWindow::Metal(window) => window.present(),
-        }
+        each_window!(self, |window| window.present())
     }
 }
