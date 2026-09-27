@@ -179,8 +179,10 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut held: VecDeque<ServerToClient> = VecDeque::new();
     let mut snapshot_ingress = SnapshotIngress::new();
     let mut tick_ingress = TickIngress::new();
-    let mut voxel_mesh = Vec::new();
-    let mut voxel_revision = u64::MAX;
+    let mut scene_mesh = Vec::new();
+    let mut scene_world = u64::MAX;
+    let mut scene_brushes = u64::MAX;
+    let mut scene_revision = 0u64;
     let mut camera = FlyCamera::new();
     let mut captured = false;
     let mut keys = HashSet::new();
@@ -216,17 +218,21 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 WindowEvent::RedrawRequested => {
                     let size = client_window.winit_window().inner_size();
                     let aspect = size.width as f32 / size.height.max(1) as f32;
-                    let revision = game.world.revision();
+                    let world_revision = game.world.revision();
+                    let brush_revision = game.brushes.revision();
 
-                    if voxel_revision != revision {
-                        voxel_mesh = game.world.mesh();
-                        voxel_revision = revision;
+                    if scene_world != world_revision || scene_brushes != brush_revision {
+                        scene_mesh = game.world.mesh();
+                        scene_mesh.extend(game.brushes.mesh());
+                        scene_world = world_revision;
+                        scene_brushes = brush_revision;
+                        scene_revision = scene_revision.wrapping_add(1);
                     }
 
                     client_window.begin_frame(0.53, 0.71, 0.85);
                     client_window.draw_colored_mesh(
-                        &voxel_mesh,
-                        voxel_revision,
+                        &scene_mesh,
+                        scene_revision,
                         &camera.scene(aspect, game.world.scale() as f32),
                     );
                     draw_menu(&mut client_window, &mut game);
@@ -455,6 +461,11 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                         ServerToClient::VoxelChunk(update) => {
                             if !game.world.apply(&update) {
                                 println!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
+                            }
+                        },
+                        ServerToClient::MapChange { map_name } => {
+                            if let Err(err) = game.brushes.load_file(&map_name) {
+                                println!("[map] {err}");
                             }
                         },
                         ServerToClient::TickState { tick, part, parts, transforms } => {

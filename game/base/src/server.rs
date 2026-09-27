@@ -70,6 +70,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
                     emit_snapshot(&game, addr, generation);
                     emit_voxel_baseline(&game, addr);
+                    game.send_state_to(addr, ServerToClient::MapChange { map_name: game.map_name.clone() });
                 }
                 FromClient::Disconnected { addr } => {
                     println!("[sv] peer left {}", addr);

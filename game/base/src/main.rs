@@ -54,6 +54,14 @@ fn main() {
             crate::world::BlockPos::new(3, 3, 4),
             crate::world::Block(2),
         );
+        let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
+        server_game.map_name = map_name.clone();
+
+        if let Err(err) = server_game.brushes.load_file(&map_name) {
+            println!("[map] {err}");
+        } else {
+            println!("[map] {map_name}");
+        }
 
         #[cfg(feature = "client")]
         std::thread::spawn(move || {
@@ -86,13 +94,21 @@ fn main() {
             );
         });
 
-        let client_game = GameState::new(
+        let mut client_game = GameState::new(
             Realm::Client,
             client_rx,
             client_out_tx,
             tick_interval,
             NetWake::new(client_wake_write),
         );
+        let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
+        client_game.map_name = map_name.clone();
+
+        if let Err(err) = client_game.brushes.load_file(&map_name) {
+            println!("[map] {err}");
+        } else {
+            println!("[map] {map_name}");
+        }
         println!("Entering Client loop");
         client::client_loop(client_game, shutdown);
         let _ = net.join();

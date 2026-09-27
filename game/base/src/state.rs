@@ -1,5 +1,5 @@
 use crate::entities::EntityList;
-use crate::world::VoxelWorld;
+use crate::world::{BrushMap, VoxelWorld};
 use crate::network::NetSend;
 use crate::console::{ConVar, ConVarValue};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
@@ -13,6 +13,8 @@ pub struct GameState<In, Out> {
     pub realm: Realm,
     pub entities: EntityList,
     pub world: VoxelWorld,
+    pub brushes: BrushMap,
+    pub map_name: String,
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub tick_interval: f64,
     pub network_receiver: Receiver<In>,
@@ -49,6 +51,8 @@ impl<In, Out> GameState<In, Out> {
             realm,
             entities: EntityList::new(),
             world: VoxelWorld::new(),
+            brushes: BrushMap::new(),
+            map_name: String::new(),
             cvars,
             tick_interval,
             network_receiver,
