@@ -26,7 +26,18 @@ fn main() {
     println!("Tick Rate: {}", cmdargs.tickrate);
     let tick_interval = 1.0 / cmdargs.tickrate as f64;
     println!("Tick Interval: {}", tick_interval);
-    
+
+    if cmdargs.compile_map {
+        let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
+
+        if let Err(err) = crate::world::compile_map(&map_name) {
+            println!("[map] {err}");
+            std::process::exit(1);
+        }
+
+        return;
+    }
+
     #[cfg(feature = "server")]
     {
         println!("Starting server network loop");

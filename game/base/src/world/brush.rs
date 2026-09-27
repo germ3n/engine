@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use wincode::{SchemaRead, SchemaWrite};
 use crate::script::libs::vector3::Vector3;
 
 const MAX_PLANES: usize = 64;
@@ -7,6 +8,8 @@ const PLANE_EPS: f64 = 1e-4;
 const LENGTH_EPS: f64 = 1e-8;
 const RAY_EPS: f64 = 1e-8;
 const AREA_EPS: f64 = 1e-10;
+const COMPILED_MAGIC: &[u8; 4] = b"CMAP";
+const COMPILED_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrushPlane {
@@ -22,10 +25,55 @@ pub struct BrushHit {
     pub normal: Option<Vector3>,
 }
 
+#[derive(Clone, Copy)]
 struct Plane {
     normal: Vector3,
     distance: f64,
     material: u16,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub struct CompiledFace {
+    pub texture: String,
+    pub normal: Vector3,
+    pub distance: f64,
+    pub material: u16,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub struct CompiledBrush {
+    pub faces: Vec<CompiledFace>,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub struct CompiledPair {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub struct CompiledEntity {
+    pub keys: Vec<CompiledPair>,
+    pub brushes: Vec<CompiledBrush>,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub struct CompiledMap {
+    pub entities: Vec<CompiledEntity>,
+}
+
+struct SourceFace {
+    texture: String,
+    plane: Plane,
+}
+
+struct SourceBrush {
+    faces: Vec<SourceFace>,
+}
+
+struct SourceEntity {
+    keys: Vec<(String, String)>,
+    brushes: Vec<SourceBrush>,
 }
 
 struct Poly {
@@ -131,8 +179,19 @@ impl BrushMap {
 
     pub fn load_file(&mut self, name: &str) -> Result<(), String> {
         let path = find_map(name).ok_or_else(|| format!("map {name} was not found"))?;
-        let text = std::fs::read_to_string(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
-        let mut loaded = parse_map(&text)?;
+        let compiled_path = if is_compiled(&path) {
+            path
+        } else {
+            ensure_compiled(&path)?
+        };
+        let bytes = std::fs::read(&compiled_path).map_err(|err| format!("map {}: {err}", compiled_path.display()))?;
+
+        self.install_compiled(&bytes)
+    }
+
+    fn install_compiled(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let compiled = decode_compiled(bytes)?;
+        let mut loaded = brush_map_from_compiled(compiled)?;
         loaded.revision = self.revision.wrapping_add(loaded.revision).wrapping_add(1);
         *self = loaded;
 
@@ -235,84 +294,223 @@ impl Default for BrushMap {
     }
 }
 
+pub fn compile_map(name: &str) -> Result<PathBuf, String> {
+    let path = find_map(name).ok_or_else(|| format!("map {name} was not found"))?;
+
+    if is_compiled(&path) {
+        return Err(format!("map {} is already compiled", path.display()));
+    }
+
+    let dest = compiled_path(&path);
+    write_compiled(&path, &dest)?;
+
+    Ok(dest)
+}
+
 fn find_map(name: &str) -> Option<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd.join("maps"));
+        dirs.push(cwd.join("game/base/maps"));
+        dirs.push(cwd);
+    }
+
+    dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("maps"));
+
+    resolve_map(name, &dirs)
+}
+
+fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let given = PathBuf::from(name);
 
     if given.exists() {
         return Some(given);
     }
 
-    let file = if name.ends_with(".map") {
-        name.to_string()
-    } else {
-        format!("{name}.map")
-    };
-    let mut candidates = Vec::new();
+    let want_compiled = name.ends_with(".cmap");
+    let want_source = name.ends_with(".map");
+    let stem = name.strip_suffix(".map").or_else(|| name.strip_suffix(".cmap")).unwrap_or(name);
 
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("maps").join(&file));
-        candidates.push(cwd.join("game/base/maps").join(&file));
-        candidates.push(cwd.join(&file));
-    }
+    for dir in dirs {
+        if !want_compiled {
+            let source = dir.join(format!("{stem}.map"));
 
-    candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("maps").join(&file));
+            if source.exists() {
+                return Some(source);
+            }
+        }
 
-    for path in candidates {
-        if path.exists() {
-            return Some(path);
+        if !want_source {
+            let compiled = dir.join(format!("{stem}.cmap"));
+
+            if compiled.exists() {
+                return Some(compiled);
+            }
         }
     }
 
     None
 }
 
-fn parse_map(text: &str) -> Result<BrushMap, String> {
+fn is_compiled(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("cmap")
+}
+
+fn compiled_path(source: &Path) -> PathBuf {
+    source.with_extension("cmap")
+}
+
+fn ensure_compiled(source: &Path) -> Result<PathBuf, String> {
+    let dest = compiled_path(source);
+
+    if compiled_is_fresh(source, &dest)? {
+        return Ok(dest);
+    }
+
+    write_compiled(source, &dest)?;
+
+    Ok(dest)
+}
+
+fn compiled_is_fresh(source: &Path, dest: &Path) -> Result<bool, String> {
+    let source_meta = std::fs::metadata(source).map_err(|err| format!("map {}: {err}", source.display()))?;
+    let Ok(dest_meta) = std::fs::metadata(dest) else {
+        return Ok(false);
+    };
+    let source_time = source_meta.modified().map_err(|err| format!("map {}: {err}", source.display()))?;
+    let dest_time = dest_meta.modified().map_err(|err| format!("map {}: {err}", dest.display()))?;
+
+    Ok(dest_time >= source_time)
+}
+
+fn write_compiled(source: &Path, dest: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(source).map_err(|err| format!("map {}: {err}", source.display()))?;
+    let entities = parse_source(&text)?;
+    let bytes = encode_compiled(&compile_source(&entities))?;
+    let tmp = dest.with_extension("tmp");
+    std::fs::write(&tmp, &bytes).map_err(|err| format!("map {}: {err}", tmp.display()))?;
+    let _ = std::fs::remove_file(dest);
+    std::fs::rename(&tmp, dest).map_err(|err| format!("map {}: {err}", dest.display()))?;
+    println!("[map] compiled {}", dest.display());
+
+    Ok(())
+}
+
+fn compile_source(entities: &[SourceEntity]) -> CompiledMap {
+    let mut compiled = Vec::with_capacity(entities.len());
+
+    for entity in entities {
+        let mut keys = Vec::with_capacity(entity.keys.len());
+
+        for (key, value) in &entity.keys {
+            keys.push(CompiledPair { key: key.clone(), value: value.clone() });
+        }
+
+        let mut brushes = Vec::with_capacity(entity.brushes.len());
+
+        for brush in &entity.brushes {
+            let mut faces = Vec::with_capacity(brush.faces.len());
+
+            for face in &brush.faces {
+                faces.push(CompiledFace {
+                    texture: face.texture.clone(),
+                    normal: face.plane.normal,
+                    distance: face.plane.distance,
+                    material: face.plane.material,
+                });
+            }
+
+            brushes.push(CompiledBrush { faces });
+        }
+
+        compiled.push(CompiledEntity { keys, brushes });
+    }
+
+    CompiledMap { entities: compiled }
+}
+
+fn encode_compiled(map: &CompiledMap) -> Result<Vec<u8>, String> {
+    let payload = wincode::serialize(map).map_err(|err| format!("{err}"))?;
+    let mut bytes = Vec::with_capacity(8 + payload.len());
+    bytes.extend_from_slice(COMPILED_MAGIC);
+    bytes.extend_from_slice(&COMPILED_VERSION.to_le_bytes());
+    bytes.extend(payload);
+
+    Ok(bytes)
+}
+
+fn decode_compiled(bytes: &[u8]) -> Result<CompiledMap, String> {
+    if bytes.len() < 8 || bytes[..4] != COMPILED_MAGIC[..] {
+        return Err("compiled map header is invalid".to_string());
+    }
+
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+
+    if version != COMPILED_VERSION {
+        return Err(format!("compiled map version {version} is unsupported"));
+    }
+
+    wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))
+}
+
+fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
+    let mut map = BrushMap::new();
+
+    for entity in compiled.entities {
+        for brush in entity.brushes {
+            let mut planes = Vec::with_capacity(brush.faces.len());
+
+            for face in brush.faces {
+                let Some(plane) = Plane::new(face.normal, face.distance, face.material) else {
+                    return Err("compiled face is invalid".to_string());
+                };
+
+                planes.push(plane);
+            }
+
+            let Some(brush) = Brush::from_planes(planes) else {
+                return Err("compiled brush is not a closed solid".to_string());
+            };
+
+            if !map.push(brush) {
+                return Err("too many brushes".to_string());
+            }
+        }
+    }
+
+    Ok(map)
+}
+
+fn parse_source(text: &str) -> Result<Vec<SourceEntity>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut parser = Parser { text, idx: 0, line: 1 };
-    let mut map = BrushMap::new();
+    let mut entities = Vec::new();
     parser.skip();
 
     while !parser.eof() {
-        parser.expect('{')?;
+        entities.push(parser.entity()?);
         parser.skip();
-        let mut closed = false;
+    }
 
-        while !parser.eof() {
-            parser.skip();
+    Ok(entities)
+}
 
-            if parser.peek() == Some('}') {
-                parser.bump();
-                closed = true;
+fn parse_map(text: &str) -> Result<BrushMap, String> {
+    let entities = parse_source(text)?;
+    let mut map = BrushMap::new();
 
-                break;
+    for entity in entities {
+        for brush in entity.brushes {
+            let planes = brush.faces.into_iter().map(|face| face.plane).collect();
+            let Some(solid) = Brush::from_planes(planes) else {
+                return Err("brush is not a closed solid".to_string());
+            };
+
+            if !map.push(solid) {
+                return Err("too many brushes".to_string());
             }
-
-            if parser.peek() == Some('{') {
-                let brush = parser.brush()?;
-
-                if !map.push(brush) {
-                    return Err(parser.err("too many brushes"));
-                }
-
-                continue;
-            }
-
-            if parser.peek() == Some('"') {
-                parser.string()?;
-                parser.skip();
-                parser.string()?;
-
-                continue;
-            }
-
-            return Err(parser.err("expected a brush or a key"));
         }
-
-        if !closed {
-            return Err(parser.err("unclosed entity"));
-        }
-
-        parser.skip();
     }
 
     Ok(map)
@@ -325,9 +523,50 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    fn brush(&mut self) -> Result<Brush, String> {
+    fn entity(&mut self) -> Result<SourceEntity, String> {
         self.expect('{')?;
-        let mut planes = Vec::new();
+        let mut keys = Vec::new();
+        let mut brushes = Vec::new();
+        let mut closed = false;
+
+        while !self.eof() {
+            self.skip();
+
+            if self.peek() == Some('}') {
+                self.bump();
+                closed = true;
+
+                break;
+            }
+
+            if self.peek() == Some('{') {
+                brushes.push(self.brush()?);
+
+                continue;
+            }
+
+            if self.peek() == Some('"') {
+                let key = self.string()?;
+                self.skip();
+                let value = self.string()?;
+                keys.push((key, value));
+
+                continue;
+            }
+
+            return Err(self.err("expected a brush or a key"));
+        }
+
+        if !closed {
+            return Err(self.err("unclosed entity"));
+        }
+
+        Ok(SourceEntity { keys, brushes })
+    }
+
+    fn brush(&mut self) -> Result<SourceBrush, String> {
+        self.expect('{')?;
+        let mut faces = Vec::new();
 
         loop {
             self.skip();
@@ -341,16 +580,22 @@ impl<'a> Parser<'a> {
             let p0 = self.point()?;
             let p1 = self.point()?;
             let p2 = self.point()?;
-            let name = self.texture()?;
+            let texture = self.texture()?;
             self.skip_line();
-            let Some(plane) = plane_from_points(p0, p1, p2, texture_material(&name)) else {
+            let Some(plane) = plane_from_points(p0, p1, p2, texture_material(&texture)) else {
                 return Err(self.err("face points are colinear"));
             };
 
-            planes.push(plane);
+            faces.push(SourceFace { texture, plane });
         }
 
-        Brush::from_planes(planes).ok_or_else(|| self.err("brush is not a closed solid"))
+        let planes = faces.iter().map(|face| face.plane).collect();
+
+        if Brush::from_planes(planes).is_none() {
+            return Err(self.err("brush is not a closed solid"));
+        }
+
+        Ok(SourceBrush { faces })
     }
 
     fn point(&mut self) -> Result<Vector3, String> {
@@ -1043,6 +1288,115 @@ mod tests {
         assert!(near(hit.position.x, 0.0));
         assert!(near(hit.normal.unwrap().x, -1.0));
         assert!(parse_map("not a map").is_err());
+    }
+
+    #[test]
+    fn compiled_map_keeps_brushes_and_entity_keys() {
+        let text = r#"
+{
+"classname" "worldspawn"
+{
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) city/floor 0 0 0 1 1
+( 0 0 1 ) ( 1 0 1 ) ( 0 1 1 ) city/ceil 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 0 1 0 ) city/west 0 0 0 1 1
+( 1 0 0 ) ( 1 1 0 ) ( 1 0 1 ) city/east 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) city/south 0 0 0 1 1
+( 0 1 0 ) ( 0 1 1 ) ( 1 1 0 ) city/north 0 0 0 1 1
+}
+}
+{
+"classname" "info_player_start"
+"origin" "0 0 1"
+}
+"#;
+        let source = parse_source(text).unwrap();
+        let mut bytes = encode_compiled(&compile_source(&source)).unwrap();
+        let compiled = decode_compiled(&bytes).unwrap();
+
+        assert_eq!(&bytes[..4], b"CMAP");
+        assert_eq!(compiled.entities.len(), 2);
+        assert_eq!(compiled.entities[0].keys[0].key, "classname");
+        assert_eq!(compiled.entities[0].keys[0].value, "worldspawn");
+        assert_eq!(compiled.entities[0].brushes[0].faces[0].texture, "city/floor");
+        assert_eq!(compiled.entities[1].keys[0].value, "info_player_start");
+        assert_eq!(compiled.entities[1].keys[1].value, "0 0 1");
+
+        let mut map = BrushMap::new();
+        map.install_compiled(&bytes).unwrap();
+
+        assert_eq!(map.mesh(), parse_map(text).unwrap().mesh());
+
+        bytes[4] = 99;
+        assert!(decode_compiled(&bytes).is_err());
+        assert!(map.install_compiled(b"nope").is_err());
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn compile_map_writes_beside_the_source() {
+        let dir = std::env::temp_dir().join(format!("engine-map-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("box.map");
+        std::fs::write(
+            &source,
+            r#"
+{
+"classname" "worldspawn"
+{
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) city/floor 0 0 0 1 1
+( 0 0 1 ) ( 1 0 1 ) ( 0 1 1 ) city/ceil 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 0 1 0 ) city/west 0 0 0 1 1
+( 1 0 0 ) ( 1 1 0 ) ( 1 0 1 ) city/east 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) city/south 0 0 0 1 1
+( 0 1 0 ) ( 0 1 1 ) ( 1 1 0 ) city/north 0 0 0 1 1
+}
+}
+"#,
+        ).unwrap();
+        let compiled = compile_map(source.to_str().unwrap()).unwrap();
+
+        assert_eq!(compiled, dir.join("box.cmap"));
+
+        let mut map = BrushMap::new();
+        map.load_file(compiled.to_str().unwrap()).unwrap();
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.mesh().len(), 216);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_file_opens_a_cmap_without_recompiling() {
+        let dir = std::env::temp_dir().join(format!("engine-cmap-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("box.map");
+        let compiled = dir.join("box.cmap");
+        let text = r#"
+{
+"classname" "worldspawn"
+{
+( 0 0 0 ) ( 0 1 0 ) ( 1 0 0 ) city/floor 0 0 0 1 1
+( 0 0 1 ) ( 1 0 1 ) ( 0 1 1 ) city/ceil 0 0 0 1 1
+( 0 0 0 ) ( 0 0 1 ) ( 0 1 0 ) city/west 0 0 0 1 1
+( 1 0 0 ) ( 1 1 0 ) ( 1 0 1 ) city/east 0 0 0 1 1
+( 0 0 0 ) ( 1 0 0 ) ( 0 0 1 ) city/south 0 0 0 1 1
+( 0 1 0 ) ( 0 1 1 ) ( 1 1 0 ) city/north 0 0 0 1 1
+}
+}
+"#;
+        std::fs::write(&source, "not a map").unwrap();
+        let bytes = encode_compiled(&compile_source(&parse_source(text).unwrap())).unwrap();
+        std::fs::write(&compiled, &bytes).unwrap();
+
+        assert_eq!(resolve_map("box.cmap", &[dir.clone()]).unwrap(), compiled);
+
+        let mut map = BrushMap::new();
+        map.load_file(compiled.to_str().unwrap()).unwrap();
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.mesh().len(), 216);
+        assert_eq!(std::fs::read(&source).unwrap(), b"not a map");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
