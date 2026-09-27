@@ -51,6 +51,12 @@ jobs:
             editor_binary: editor
             editor_asset: editor-macos-arm64
             rustflags: -C target-cpu=apple-m1
+          - os: windows-11-arm
+            binary_name: base.exe
+            asset_name: base-windows-arm64.exe
+            editor_binary: editor.exe
+            editor_asset: editor-windows-arm64.exe
+            rustflags: -C target-cpu=generic
 
     steps:
       - name: Checkout Code
