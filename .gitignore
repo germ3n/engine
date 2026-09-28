@@ -1,3 +1,8 @@
 target/
 Cargo.lock
 .DS_Store
+mobile/android/app/src/main/jniLibs/
+mobile/ios/build/
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/build/

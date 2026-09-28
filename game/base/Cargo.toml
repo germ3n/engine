@@ -12,12 +12,8 @@ quote = "1.0"
 proc-macro2 = "1.0"
 macro = { path = "../macro" }
 clap = { version = "4.6.6", features = ["derive"] }
-winit = "=0.29.15"
-glutin = "=0.31.3"
-glutin-winit = "=0.4.2"
+winit = { version = "=0.29.15", features = ["android-native-activity"] }
 raw-window-handle = "=0.5.2"
-glow = "=0.12.3"
-glow_glyph = "0.6.0"
 mlua = { version = "0.12.1", features = ["luajit52", "send", "vendored"] }
 wincode = { version = "0.6.1", features = ["derive"] }
 bitflags = "2.13.2"
@@ -33,7 +29,13 @@ mlua = { version = "0.12.1", features = ["luajit52", "vendored"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+glutin = "=0.31.3"
+glutin-winit = "=0.4.2"
+glow = "=0.12.3"
+glow_glyph = "0.6.0"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 metal = "0.29"
 objc = "0.2"
 glyph_brush = "0.7"

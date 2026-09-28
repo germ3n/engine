@@ -3,6 +3,10 @@ use crate::ui::window::Window;
 use crate::ui::voxel::SceneView;
 use crate::ui::Color;
 use glow::HasContext; // Exposes OpenGL methods
+#[cfg(target_os = "android")]
+use glutin::config::Api;
+#[cfg(target_os = "android")]
+use glutin::context::{ContextApi, Version};
 use glutin::{
     config::{ConfigTemplateBuilder, GlConfig},
     context::{ContextAttributesBuilder, PossiblyCurrentContext},
@@ -14,7 +18,7 @@ use glutin_winit::DisplayBuilder;
 use raw_window_handle::HasRawWindowHandle;
 use std::num::NonZeroU32;
 use winit::{
-    event_loop::EventLoop,
+    event_loop::{EventLoop, EventLoopWindowTarget},
     window::{Window as WinitWindow, WindowBuilder},
 };
 use glow_glyph::{GlyphBrush, GlyphBrushBuilder, Section, Text, ab_glyph::FontArc};
@@ -46,13 +50,28 @@ struct GlEyes {
 }
 
 impl OpenGLWindow {
+    #[cfg(target_os = "android")]
+    pub fn from_target(target: &EventLoopWindowTarget<()>) -> Self {
+        Self::build(target)
+    }
+
     pub fn with_event_loop(event_loop: EventLoop<()>) -> Self {
+        let mut window = Self::build(&event_loop);
+        window.event_loop = Some(event_loop);
+
+        window
+    }
+
+    fn build(target: &EventLoopWindowTarget<()>) -> Self {
         let window_builder = WindowBuilder::new().with_title("Starting...");
+        #[cfg(target_os = "android")]
+        let template = ConfigTemplateBuilder::new().with_depth_size(16).with_api(Api::GLES2 | Api::GLES3);
+        #[cfg(not(target_os = "android"))]
         let template = ConfigTemplateBuilder::new().with_depth_size(24);
         let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
 
         let (window, gl_config) = display_builder
-            .build(&event_loop, template, |configs| {
+            .build(target, template, |configs| {
                 configs.reduce(|accum, config| {
                     if config.num_samples() > accum.num_samples() { config } else { accum }
                 }).unwrap()
@@ -62,7 +81,10 @@ impl OpenGLWindow {
         let raw_window_handle = window.raw_window_handle();
         let gl_display = gl_config.display();
 
-        let context_attributes = ContextAttributesBuilder::new().build(Some(raw_window_handle));
+        let attributes = ContextAttributesBuilder::new();
+        #[cfg(target_os = "android")]
+        let attributes = attributes.with_context_api(ContextApi::Gles(Some(Version::new(3, 0))));
+        let context_attributes = attributes.build(Some(raw_window_handle));
         let not_current_gl_context = unsafe {
             gl_display.create_context(&gl_config, &context_attributes).expect("Failed to create OpenGL context")
         };
@@ -92,36 +114,31 @@ impl OpenGLWindow {
         let (shader_program, vao, vbo) = unsafe {
             // Vertex Shader: Converts pixel coordinates to screen space (-1.0 to 1.0)
             let vs = gl.create_shader(glow::VERTEX_SHADER).unwrap();
-            gl.shader_source(vs, r#"
-                #version 330 core
-                in vec2 aPos;
-                uniform vec2 uResolution;
-                void main() {
-                    vec2 zeroToOne = aPos / uResolution;
-                    vec2 zeroToTwo = zeroToOne * 2.0;
-                    vec2 clipSpace = zeroToTwo - 1.0;
-                    gl_Position = vec4(clipSpace.x, -clipSpace.y, 0.0, 1.0); // Flip Y so 0 is at top
-                }
-            "#);
+            gl.shader_source(vs, UI_VERT);
             gl.compile_shader(vs);
+
+            if !gl.get_shader_compile_status(vs) {
+                println!("[gl] ui vert {}", gl.get_shader_info_log(vs));
+            }
 
             // Fragment Shader: Applies the color
             let fs = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
-            gl.shader_source(fs, r#"
-                #version 330 core
-                out vec4 FragColor;
-                uniform vec4 uColor;
-                void main() {
-                    FragColor = uColor;
-                }
-            "#);
+            gl.shader_source(fs, UI_FRAG);
             gl.compile_shader(fs);
+
+            if !gl.get_shader_compile_status(fs) {
+                println!("[gl] ui frag {}", gl.get_shader_info_log(fs));
+            }
 
             // Link program
             let program = gl.create_program().unwrap();
             gl.attach_shader(program, vs);
             gl.attach_shader(program, fs);
             gl.link_program(program);
+
+            if !gl.get_program_link_status(program) {
+                println!("[gl] ui link {}", gl.get_program_info_log(program));
+            }
 
             // Create VAO and VBO
             let vao = gl.create_vertex_array().unwrap();
@@ -143,7 +160,7 @@ impl OpenGLWindow {
             window, 
             context, 
             surface, 
-            event_loop: Some(event_loop),
+            event_loop: None,
             gl, 
             shader_program, 
             vao, 
@@ -417,6 +434,55 @@ impl Drop for OpenGLWindow {
     }
 }
 
+#[cfg(not(target_os = "android"))]
+const UI_VERT: &str = r#"
+#version 330 core
+in vec2 aPos;
+uniform vec2 uResolution;
+void main() {
+    vec2 zeroToOne = aPos / uResolution;
+    vec2 zeroToTwo = zeroToOne * 2.0;
+    vec2 clipSpace = zeroToTwo - 1.0;
+    gl_Position = vec4(clipSpace.x, -clipSpace.y, 0.0, 1.0);
+}
+"#;
+
+#[cfg(target_os = "android")]
+const UI_VERT: &str = r#"
+#version 300 es
+precision highp float;
+in vec2 aPos;
+uniform vec2 uResolution;
+void main() {
+    vec2 zeroToOne = aPos / uResolution;
+    vec2 zeroToTwo = zeroToOne * 2.0;
+    vec2 clipSpace = zeroToTwo - 1.0;
+    gl_Position = vec4(clipSpace.x, -clipSpace.y, 0.0, 1.0);
+}
+"#;
+
+#[cfg(not(target_os = "android"))]
+const UI_FRAG: &str = r#"
+#version 330 core
+out vec4 FragColor;
+uniform vec4 uColor;
+void main() {
+    FragColor = uColor;
+}
+"#;
+
+#[cfg(target_os = "android")]
+const UI_FRAG: &str = r#"
+#version 300 es
+precision highp float;
+out vec4 FragColor;
+uniform vec4 uColor;
+void main() {
+    FragColor = uColor;
+}
+"#;
+
+#[cfg(not(target_os = "android"))]
 const MESH_VERT: &str = r#"
 #version 330 core
 layout(location = 0) in vec3 aPos;
@@ -429,8 +495,34 @@ void main() {
 }
 "#;
 
+#[cfg(target_os = "android")]
+const MESH_VERT: &str = r#"
+#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aColor;
+uniform mat4 uViewProj;
+out vec3 vColor;
+void main() {
+    gl_Position = uViewProj * vec4(aPos, 1.0);
+    vColor = aColor;
+}
+"#;
+
+#[cfg(not(target_os = "android"))]
 const MESH_FRAG: &str = r#"
 #version 330 core
+in vec3 vColor;
+out vec4 FragColor;
+void main() {
+    FragColor = vec4(vColor, 1.0);
+}
+"#;
+
+#[cfg(target_os = "android")]
+const MESH_FRAG: &str = r#"
+#version 300 es
+precision highp float;
 in vec3 vColor;
 out vec4 FragColor;
 void main() {

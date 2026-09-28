@@ -1,12 +1,15 @@
+#[cfg(not(target_os = "ios"))]
 use crate::ui::opengl::OpenGLWindow;
+#[cfg(not(target_os = "ios"))]
 use crate::ui::vulkan::VulkanWindow;
 use crate::ui::window::Window;
 use crate::ui::Color;
 use crate::ui::voxel::SceneView;
 
 pub enum GfxWindow {
+    #[cfg(not(target_os = "ios"))]
     OpenGL(OpenGLWindow),
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     Metal(crate::ui::metal::MetalWindow),
     #[cfg(windows)]
     D3D12(crate::ui::d3d::D3D12Window),
@@ -14,10 +17,18 @@ pub enum GfxWindow {
     D3D11(crate::ui::d3d::D3D11Window),
     #[cfg(windows)]
     D3D9(crate::ui::d3d::D3D9Window),
+    #[cfg(not(target_os = "ios"))]
     Vulkan(VulkanWindow),
 }
 
 pub fn create() -> GfxWindow {
+    #[cfg(target_os = "ios")]
+    {
+        println!("[gfx] metal");
+
+        return GfxWindow::Metal(crate::ui::metal::MetalWindow::try_new().expect("metal"));
+    }
+
     #[cfg(target_os = "macos")]
     if chosen("metal") {
         match crate::ui::metal::MetalWindow::try_new() {
@@ -74,6 +85,7 @@ pub fn create() -> GfxWindow {
         }
     }
 
+    #[cfg(not(target_os = "ios"))]
     if chosen("vulkan") {
         match VulkanWindow::try_new() {
             Ok(window) => {
@@ -93,9 +105,22 @@ pub fn create() -> GfxWindow {
         }
     }
 
-    println!("[gfx] opengl");
+    #[cfg(not(target_os = "ios"))]
+    {
+        println!("[gfx] opengl");
 
-    GfxWindow::OpenGL(OpenGLWindow::create_window())
+        return GfxWindow::OpenGL(OpenGLWindow::create_window());
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn android_window(target: &winit::event_loop::EventLoopWindowTarget<()>) -> GfxWindow {
+    println!("[gfx] opengl es");
+    let mut window = OpenGLWindow::from_target(target);
+    window.enable_vr();
+    window.set_window_title("Rust Engine - Rendering");
+
+    GfxWindow::OpenGL(window)
 }
 
 fn chosen(name: &str) -> bool {
@@ -108,8 +133,9 @@ fn chosen(name: &str) -> bool {
 macro_rules! each_window {
     ($self:ident, |$window:ident| $body:expr) => {
         match $self {
+            #[cfg(not(target_os = "ios"))]
             GfxWindow::OpenGL($window) => $body,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
             GfxWindow::Metal($window) => $body,
             #[cfg(windows)]
             GfxWindow::D3D12($window) => $body,
@@ -117,6 +143,7 @@ macro_rules! each_window {
             GfxWindow::D3D11($window) => $body,
             #[cfg(windows)]
             GfxWindow::D3D9($window) => $body,
+            #[cfg(not(target_os = "ios"))]
             GfxWindow::Vulkan($window) => $body,
         }
     };
