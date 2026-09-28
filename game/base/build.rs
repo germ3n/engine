@@ -1,11 +1,37 @@
 fn main() {
     compile_bundled_lua();
 
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+
+    if target_os == "android" || target_os == "ios" {
+        cc::Build::new()
+            .file("src/ui/vr_stub.c")
+            .compile("vr_stub");
+
+        if target_os == "android" {
+            println!("cargo:rustc-link-lib=log");
+            println!("cargo:rustc-link-lib=android");
+            println!("cargo:rustc-link-lib=EGL");
+            println!("cargo:rustc-link-lib=GLESv3");
+        }
+
+        if target_os == "ios" {
+            cc::Build::new()
+                .file("src/ui/metal_ios.m")
+                .compile("metal_ios");
+            println!("cargo:rustc-link-lib=framework=UIKit");
+            println!("cargo:rustc-link-lib=framework=QuartzCore");
+            println!("cargo:rustc-link-lib=framework=Foundation");
+            println!("cargo:rustc-link-lib=framework=CoreGraphics");
+            println!("cargo:rustc-link-lib=framework=Metal");
+        }
+
+        return;
+    }
+
     cc::Build::new()
         .file("src/ui/vr_openvr.c")
         .compile("vr_openvr");
-
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let pointer_width = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap();
     let mut openvr = cc::Build::new();
     openvr
