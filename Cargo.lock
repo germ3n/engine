@@ -153,6 +153,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bitflags 2.13.2",
+ "cc",
  "clap",
  "core-graphics-types",
  "glow",
@@ -161,6 +162,7 @@ dependencies = [
  "glutin-winit",
  "glyph_brush",
  "libc",
+ "libloading",
  "log",
  "macro",
  "metal",

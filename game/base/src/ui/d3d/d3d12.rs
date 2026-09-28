@@ -13,6 +13,7 @@ use winit::window::Window as WinitWindow;
 use crate::ui::d3d::draw::{bytes_of, open_desktop, push_outline, push_rect, Desktop, TextFrame};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes, blob_text};
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::voxel::SceneView;
 use crate::ui::window::Window;
 use crate::ui::Color;
@@ -67,6 +68,23 @@ pub struct D3D12Window {
     mesh_ready: bool,
     view: [f32; 16],
     draw_mesh: bool,
+    vr: Option<Headset>,
+    vr_failed: bool,
+    vr_enable: bool,
+    eyes: Option<Eyes12>,
+    eye_views: Option<EyeViews>,
+}
+
+struct Eyes12 {
+    width: u32,
+    height: u32,
+    color: [ID3D12Resource; 2],
+    depth: [ID3D12Resource; 2],
+    rtv_heap: ID3D12DescriptorHeap,
+    dsv_heap: ID3D12DescriptorHeap,
+    rtv_stride: usize,
+    dsv_stride: usize,
+    as_shader: bool,
 }
 
 impl D3D12Window {
@@ -169,6 +187,11 @@ impl D3D12Window {
             mesh_ready: false,
             view: [0.0; 16],
             draw_mesh: false,
+            vr: None,
+            vr_failed: false,
+            vr_enable: false,
+            eyes: None,
+            eye_views: None,
         };
         window.create_targets()?;
         window.create_depth(width, height)?;
@@ -279,6 +302,7 @@ impl D3D12Window {
             self.allocator.Reset().map_err(|err| err.to_string())?;
             self.commands.Reset(&self.allocator, &self.mesh_pso).map_err(|err| err.to_string())?;
         }
+        self.encode_eyes()?;
         let encoded = self.encode();
         unsafe { self.commands.Close().map_err(|err| err.to_string())?; }
         encoded?;
@@ -291,9 +315,160 @@ impl D3D12Window {
         let list: ID3D12CommandList = self.commands.cast().map_err(|err| err.to_string())?;
         unsafe { self.queue.ExecuteCommandLists(&[Some(list)]); }
         self.signal();
+
+        if self.eye_views.is_some() {
+            if let Some(eyes) = self.eyes.as_mut() {
+                eyes.as_shader = true;
+            }
+        }
+
+        self.submit_eyes();
         let _ = unsafe { self.swap.Present(self.present_interval, self.present_flags) };
 
+        if let Some(headset) = self.vr.as_mut() {
+            headset.handoff();
+        }
+
         Ok(())
+    }
+
+    fn ensure_eyes(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if let Some(eyes) = &self.eyes {
+            if eyes.width == width && eyes.height == height {
+                return Ok(());
+            }
+        }
+
+        let rtv_heap = descriptor_heap(&self.device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 2, D3D12_DESCRIPTOR_HEAP_FLAGS(0))?;
+        let dsv_heap = descriptor_heap(&self.device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 2, D3D12_DESCRIPTOR_HEAP_FLAGS(0))?;
+        let rtv_stride = unsafe { self.device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV) } as usize;
+        let dsv_stride = unsafe { self.device.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV) } as usize;
+        let color_desc = texture_desc(width, height, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        let depth_desc = texture_desc(width, height, DXGI_FORMAT_D32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+        let clear = depth_clear();
+        let color0 = committed(&self.device, &heap(D3D12_HEAP_TYPE_DEFAULT), &color_desc, D3D12_RESOURCE_STATE_RENDER_TARGET, None)?;
+        let color1 = committed(&self.device, &heap(D3D12_HEAP_TYPE_DEFAULT), &color_desc, D3D12_RESOURCE_STATE_RENDER_TARGET, None)?;
+        let depth0 = committed(&self.device, &heap(D3D12_HEAP_TYPE_DEFAULT), &depth_desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, Some(&clear))?;
+        let depth1 = committed(&self.device, &heap(D3D12_HEAP_TYPE_DEFAULT), &depth_desc, D3D12_RESOURCE_STATE_DEPTH_WRITE, Some(&clear))?;
+        let rtv_start = unsafe { rtv_heap.GetCPUDescriptorHandleForHeapStart() };
+        let dsv_start = unsafe { dsv_heap.GetCPUDescriptorHandleForHeapStart() };
+        unsafe {
+            self.device.CreateRenderTargetView(&color0, None, rtv_start);
+            self.device.CreateRenderTargetView(&color1, None, D3D12_CPU_DESCRIPTOR_HANDLE { ptr: rtv_start.ptr + rtv_stride });
+            self.device.CreateDepthStencilView(&depth0, None, dsv_start);
+            self.device.CreateDepthStencilView(&depth1, None, D3D12_CPU_DESCRIPTOR_HANDLE { ptr: dsv_start.ptr + dsv_stride });
+        }
+        self.eyes = Some(Eyes12 {
+            width,
+            height,
+            color: [color0, color1],
+            depth: [depth0, depth1],
+            rtv_heap,
+            dsv_heap,
+            rtv_stride,
+            dsv_stride,
+            as_shader: false,
+        });
+
+        Ok(())
+    }
+
+    fn encode_eyes(&mut self) -> Result<(), String> {
+        let Some(frame) = self.eye_views else {
+            return Ok(());
+        };
+        let Some(eyes) = self.eyes.as_ref() else {
+            return Ok(());
+        };
+        let colors = [eyes.color[0].clone(), eyes.color[1].clone()];
+        let from_shader = eyes.as_shader;
+        let mesh = self.mesh.clone();
+        let vertices = self.mesh_vertices;
+        let draw_mesh = self.draw_mesh;
+        let pso = self.mesh_pso.clone();
+        let root = self.plain_root.clone();
+        let clear = self.clear;
+        unsafe { self.commands.SetDescriptorHeaps(&[Some(self.srv_heap.clone())]); }
+        let mut idx = 0;
+
+        while idx < 2 {
+            let rtv = self.eye_rtv(idx);
+            let dsv = self.eye_dsv(idx);
+            unsafe {
+                if from_shader {
+                    self.commands.ResourceBarrier(&[transition(&colors[idx], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET)]);
+                }
+
+                self.commands.RSSetViewports(&[D3D12_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: frame.width as f32,
+                    Height: frame.height as f32,
+                    MinDepth: D3D12_MIN_DEPTH,
+                    MaxDepth: D3D12_MAX_DEPTH,
+                }]);
+                self.commands.RSSetScissorRects(&[RECT {
+                    left: 0,
+                    top: 0,
+                    right: frame.width as i32,
+                    bottom: frame.height as i32,
+                }]);
+                self.commands.OMSetRenderTargets(1, Some(&rtv), false, Some(&dsv));
+                self.commands.ClearRenderTargetView(rtv, &clear, None);
+                self.commands.ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, None);
+                self.commands.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            }
+
+            if draw_mesh {
+                if let Some(buffer) = mesh.as_ref() {
+                    let matrix = view_proj(&frame.views[idx]);
+                    self.draw(buffer, 24, vertices, &pso, &root, &matrix, false);
+                }
+            }
+
+            unsafe {
+                self.commands.ResourceBarrier(&[transition(&colors[idx], D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)]);
+            }
+            idx += 1;
+        }
+
+        Ok(())
+    }
+
+    fn submit_eyes(&mut self) {
+        if self.eye_views.is_none() {
+            return;
+        }
+
+        let (color, queue) = {
+            let Some(eyes) = self.eyes.as_ref() else {
+                return;
+            };
+
+            ([eyes.color[0].clone(), eyes.color[1].clone()], self.queue.clone())
+        };
+        let Some(headset) = self.vr.as_mut() else {
+            return;
+        };
+        headset.submit_d3d12(0, color[0].as_raw(), queue.as_raw());
+        headset.submit_d3d12(1, color[1].as_raw(), queue.as_raw());
+    }
+
+    fn eye_rtv(&self, index: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        let eyes = self.eyes.as_ref().unwrap();
+        let start = unsafe { eyes.rtv_heap.GetCPUDescriptorHandleForHeapStart() };
+
+        D3D12_CPU_DESCRIPTOR_HANDLE { ptr: start.ptr + index * eyes.rtv_stride }
+    }
+
+    fn eye_dsv(&self, index: usize) -> D3D12_CPU_DESCRIPTOR_HANDLE {
+        let eyes = self.eyes.as_ref().unwrap();
+        let start = unsafe { eyes.dsv_heap.GetCPUDescriptorHandleForHeapStart() };
+
+        D3D12_CPU_DESCRIPTOR_HANDLE { ptr: start.ptr + index * eyes.dsv_stride }
     }
 
     fn encode(&self) -> Result<(), String> {
@@ -432,6 +607,17 @@ impl Window for D3D12Window {
 
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
         self.view = view_proj(view);
+        self.eye_views = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
+
+        if let Some(frame) = self.eye_views {
+            self.view = view_proj(&frame.views[0]);
+
+            if let Err(err) = self.ensure_eyes(frame.width, frame.height) {
+                println!("[vr] eyes {err}");
+                self.eye_views = None;
+                self.view = view_proj(view);
+            }
+        }
 
         if !self.mesh_ready || self.mesh_revision != revision {
             if vertices.is_empty() {
@@ -464,6 +650,17 @@ impl Window for D3D12Window {
         self.text.build();
     }
 
+    fn enable_vr(&mut self) {
+        self.vr_enable = true;
+    }
+
+    fn vr_input(&self) -> VrInput {
+        match self.vr.as_ref() {
+            Some(headset) => headset.input(),
+            None => VrInput::default(),
+        }
+    }
+
     fn present(&mut self) {
         if self.width == 0 || self.height == 0 {
             return;
@@ -478,6 +675,7 @@ impl Window for D3D12Window {
 impl Drop for D3D12Window {
     fn drop(&mut self) {
         self.wait();
+        self.vr.take();
         unsafe {
             let _ = CloseHandle(self.fence_event);
         }

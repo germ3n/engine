@@ -9,6 +9,7 @@ use winit::{
     event_loop::EventLoop,
     window::{Window as WinitWindow, WindowBuilder},
 };
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::voxel::SceneView;
 use crate::ui::Color;
@@ -122,6 +123,18 @@ pub struct MetalWindow {
     atlas: Texture,
     atlas_size: (u32, u32),
     clear: [f64; 4],
+    vr: Option<Headset>,
+    vr_failed: bool,
+    vr_enable: bool,
+    eyes: Option<MetalEyes>,
+    eye_views: Option<EyeViews>,
+}
+
+struct MetalEyes {
+    width: u64,
+    height: u64,
+    color: [Texture; 2],
+    depth: [Texture; 2],
 }
 
 impl MetalWindow {
@@ -214,6 +227,11 @@ impl MetalWindow {
             atlas,
             atlas_size: (512, 512),
             clear: [0.0, 0.0, 0.0, 1.0],
+            vr: None,
+            vr_failed: false,
+            vr_enable: false,
+            eyes: None,
+            eye_views: None,
         })
     }
 }
@@ -256,6 +274,12 @@ impl Window for MetalWindow {
         }
 
         self.view_proj = metal_view_proj(view);
+        self.eye_views = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
+
+        if let Some(eyes) = self.eye_views {
+            self.view_proj = metal_view_proj(&eyes.views[0]);
+        }
+
         self.draw_mesh = self.mesh_vertices > 0;
     }
 
@@ -280,6 +304,17 @@ impl Window for MetalWindow {
                 )
                 .with_screen_position((x, y)),
         );
+    }
+
+    fn enable_vr(&mut self) {
+        self.vr_enable = true;
+    }
+
+    fn vr_input(&self) -> VrInput {
+        match self.vr.as_ref() {
+            Some(headset) => headset.input(),
+            None => VrInput::default(),
+        }
     }
 
     fn render_text(&mut self) {
@@ -337,6 +372,7 @@ impl Window for MetalWindow {
             return;
         }
 
+        self.render_headset();
         self.ensure_depth(width, height);
         objc::rc::autoreleasepool(|| {
             let Some(drawable) = self.layer.next_drawable() else {
@@ -403,6 +439,10 @@ impl Window for MetalWindow {
             command.present_drawable(drawable);
             command.commit();
         });
+
+        if let Some(headset) = self.vr.as_mut() {
+            headset.handoff();
+        }
     }
 }
 
@@ -421,6 +461,102 @@ impl MetalWindow {
         desc.set_storage_mode(MTLStorageMode::Private);
         self.depth = Some(self.device.new_texture(&desc));
         self.depth_size = (width, height);
+    }
+
+    fn render_headset(&mut self) {
+        let Some(frame) = self.eye_views else {
+            return;
+        };
+
+        if !self.ensure_metal_eyes(frame.width as u64, frame.height as u64) {
+            return;
+        }
+
+        let (color, depth, width, height) = {
+            let Some(eyes) = &self.eyes else {
+                return;
+            };
+
+            ([eyes.color[0].clone(), eyes.color[1].clone()], [eyes.depth[0].clone(), eyes.depth[1].clone()], eyes.width, eyes.height)
+        };
+        let command = self.queue.new_command_buffer();
+        objc::rc::autoreleasepool(|| {
+            let mut idx = 0;
+
+            while idx < 2 {
+                let matrix = metal_view_proj(&frame.views[idx]);
+                let pass = RenderPassDescriptor::new();
+                let attachment = pass.color_attachments().object_at(0).unwrap();
+                attachment.set_texture(Some(&color[idx]));
+                attachment.set_load_action(MTLLoadAction::Clear);
+                attachment.set_store_action(MTLStoreAction::Store);
+                attachment.set_clear_color(MTLClearColor::new(self.clear[0], self.clear[1], self.clear[2], self.clear[3]));
+                let depth_attachment = pass.depth_attachment().unwrap();
+                depth_attachment.set_texture(Some(&depth[idx]));
+                depth_attachment.set_load_action(MTLLoadAction::Clear);
+                depth_attachment.set_store_action(MTLStoreAction::DontCare);
+                depth_attachment.set_clear_depth(1.0);
+                pass.set_depth_attachment(Some(depth_attachment));
+                let encoder = command.new_render_command_encoder(pass);
+                encoder.set_viewport(MTLViewport {
+                    originX: 0.0,
+                    originY: 0.0,
+                    width: width as f64,
+                    height: height as f64,
+                    znear: 0.0,
+                    zfar: 1.0,
+                });
+
+                if self.draw_mesh {
+                    if let Some(mesh) = self.mesh.as_ref() {
+                        encoder.set_render_pipeline_state(&self.mesh_pipeline);
+                        encoder.set_depth_stencil_state(&self.depth_write);
+                        encoder.set_cull_mode(MTLCullMode::Back);
+                        encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
+                        encoder.set_vertex_buffer(0, Some(mesh), 0);
+                        encoder.set_vertex_bytes(1, std::mem::size_of::<[f32; 16]>() as u64, matrix.as_ptr() as *const _);
+                        encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, self.mesh_vertices);
+                    }
+                }
+
+                encoder.end_encoding();
+                idx += 1;
+            }
+        });
+
+        command.commit();
+        command.wait_until_completed();
+
+        if let Some(headset) = self.vr.as_mut() {
+            headset.submit_metal(0, color[0].as_ptr() as *mut std::ffi::c_void);
+            headset.submit_metal(1, color[1].as_ptr() as *mut std::ffi::c_void);
+        }
+    }
+
+    fn ensure_metal_eyes(&mut self, width: u64, height: u64) -> bool {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if let Some(eyes) = &self.eyes {
+            if eyes.width == width && eyes.height == height {
+                return true;
+            }
+        }
+
+        self.eyes = Some(MetalEyes {
+            width,
+            height,
+            color: [eye_color(&self.device, width, height), eye_color(&self.device, width, height)],
+            depth: [eye_depth(&self.device, width, height), eye_depth(&self.device, width, height)],
+        });
+
+        true
+    }
+}
+
+impl Drop for MetalWindow {
+    fn drop(&mut self) {
+        self.vr.take();
     }
 }
 
@@ -649,89 +785,33 @@ fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
 }
 
 fn metal_view_proj(view: &SceneView) -> [f32; 16] {
-    let view_matrix = look_forward(view.eye, view.forward, view.up);
-    let proj = metal_perspective(view.fov_y, view.aspect, view.near, view.far);
-
-    mul(proj, view_matrix)
+    vr::view_proj(view, true)
 }
 
-fn metal_perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
-    let focal = 1.0 / (fov_y * 0.5).tan();
-    let nf = 1.0 / (near - far);
-    let mut matrix = [
-        focal / aspect, 0.0, 0.0, 0.0,
-        0.0, focal, 0.0, 0.0,
-        0.0, 0.0, (far + near) * nf, -1.0,
-        0.0, 0.0, (2.0 * far * near) * nf, 0.0,
-    ];
+fn eye_color(device: &Device, width: u64, height: u64) -> Texture {
+    let desc = TextureDescriptor::new();
+    desc.set_texture_type(MTLTextureType::D2);
+    desc.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+    desc.set_width(width);
+    desc.set_height(height);
+    desc.set_usage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+    #[cfg(target_arch = "aarch64")]
+    desc.set_storage_mode(MTLStorageMode::Shared);
+    #[cfg(not(target_arch = "aarch64"))]
+    desc.set_storage_mode(MTLStorageMode::Managed);
 
-    for col in 0..4 {
-        let z = matrix[col * 4 + 2];
-        let w = matrix[col * 4 + 3];
-        matrix[col * 4 + 2] = z * 0.5 + w * 0.5;
-    }
-
-    matrix
+    device.new_texture(&desc)
 }
 
-fn look_forward(eye: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> [f32; 16] {
-    let f = normalize(forward);
-    let zaxis = [-f[0], -f[1], -f[2]];
-    let xaxis = normalize(cross(up, zaxis));
-    let yaxis = cross(zaxis, xaxis);
+fn eye_depth(device: &Device, width: u64, height: u64) -> Texture {
+    let desc = TextureDescriptor::new();
+    desc.set_texture_type(MTLTextureType::D2);
+    desc.set_pixel_format(MTLPixelFormat::Depth32Float);
+    desc.set_width(width);
+    desc.set_height(height);
+    desc.set_usage(MTLTextureUsage::RenderTarget);
+    desc.set_storage_mode(MTLStorageMode::Private);
 
-    [
-        xaxis[0], yaxis[0], zaxis[0], 0.0,
-        xaxis[1], yaxis[1], zaxis[1], 0.0,
-        xaxis[2], yaxis[2], zaxis[2], 0.0,
-        -dot(xaxis, eye), -dot(yaxis, eye), -dot(zaxis, eye), 1.0,
-    ]
+    device.new_texture(&desc)
 }
 
-fn mul(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
-    let mut out = [0.0; 16];
-    let mut col = 0;
-
-    while col < 4 {
-        let mut row = 0;
-
-        while row < 4 {
-            let mut sum = 0.0;
-            let mut idx = 0;
-
-            while idx < 4 {
-                sum += a[idx * 4 + row] * b[col * 4 + idx];
-                idx += 1;
-            }
-
-            out[col * 4 + row] = sum;
-            row += 1;
-        }
-
-        col += 1;
-    }
-
-    out
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = dot(v, v).sqrt();
-
-    if len <= 0.0 {
-        return [0.0, 0.0, 0.0];
-    }
-
-    [v[0] / len, v[1] / len, v[2] / len]
-}

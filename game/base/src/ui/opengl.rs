@@ -1,3 +1,4 @@
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::voxel::SceneView;
 use crate::ui::Color;
@@ -29,6 +30,19 @@ pub struct OpenGLWindow {
     pub vbo: glow::Buffer,
     pub glyph_brushes: HashMap<String, GlyphBrush>,
     colored_mesh: ColoredMesh,
+    vr: Option<Headset>,
+    vr_failed: bool,
+    vr_enable: bool,
+    eyes: Option<GlEyes>,
+    clear: [f32; 4],
+}
+
+struct GlEyes {
+    width: i32,
+    height: i32,
+    color: [glow::NativeTexture; 2],
+    depth: [glow::NativeRenderbuffer; 2],
+    frame: [glow::NativeFramebuffer; 2],
 }
 
 impl Window for OpenGLWindow {
@@ -138,6 +152,11 @@ impl Window for OpenGLWindow {
             vbo,
             glyph_brushes: HashMap::new(),
             colored_mesh,
+            vr: None,
+            vr_failed: false,
+            vr_enable: false,
+            eyes: None,
+            clear: [0.0, 0.0, 0.0, 1.0],
         };
 
         let font_default_bytes = include_bytes!("font_default.ttf");
@@ -161,9 +180,14 @@ impl Window for OpenGLWindow {
 
     fn present(&mut self) {
         self.surface.swap_buffers(&self.context).unwrap();
+
+        if let Some(headset) = self.vr.as_mut() {
+            headset.handoff();
+        }
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
+        self.clear = [red, green, blue, 1.0];
         unsafe {
             self.gl.depth_mask(true);
             self.gl.clear_color(red, green, blue, 1.0);
@@ -173,8 +197,11 @@ impl Window for OpenGLWindow {
 
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
         self.colored_mesh.sync(&self.gl, vertices, revision);
+        let eyes = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
 
-        if self.colored_mesh.vertex_count > 0 {
+        if let Some(eyes) = eyes {
+            self.draw_headset(eyes);
+        } else if self.colored_mesh.vertex_count > 0 {
             let view_proj = gl_view_proj(view);
             self.colored_mesh.draw(&self.gl, &view_proj);
         }
@@ -269,6 +296,17 @@ impl Window for OpenGLWindow {
         });
     }
 
+    fn enable_vr(&mut self) {
+        self.vr_enable = true;
+    }
+
+    fn vr_input(&self) -> VrInput {
+        match self.vr.as_ref() {
+            Some(headset) => headset.input(),
+            None => VrInput::default(),
+        }
+    }
+
     fn render_text(&mut self) {
         let size = self.window.inner_size();
         
@@ -281,6 +319,97 @@ impl Window for OpenGLWindow {
         for (_, glyph_brush) in self.glyph_brushes.iter_mut() {
             glyph_brush.draw_queued(&self.gl, size.width, size.height).expect("Failed to draw text");
         }
+    }
+}
+
+impl OpenGLWindow {
+    fn draw_headset(&mut self, eyes: EyeViews) {
+        if !self.ensure_gl_eyes(eyes.width, eyes.height) {
+            return;
+        }
+
+        let (color, frame, width, height) = {
+            let Some(targets) = &self.eyes else {
+                return;
+            };
+
+            (targets.color, targets.frame, targets.width, targets.height)
+        };
+        let mut idx = 0;
+
+        while idx < 2 {
+            unsafe {
+                self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(frame[idx]));
+                self.gl.viewport(0, 0, width, height);
+                self.gl.depth_mask(true);
+                self.gl.clear_color(self.clear[0], self.clear[1], self.clear[2], self.clear[3]);
+                self.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            }
+
+            if self.colored_mesh.vertex_count > 0 {
+                let matrix = gl_view_proj(&eyes.views[idx]);
+                self.colored_mesh.draw(&self.gl, &matrix);
+            }
+
+            unsafe { self.gl.flush(); }
+
+            if let Some(headset) = self.vr.as_mut() {
+                headset.submit_gl(idx, color[idx].0.get());
+            }
+
+            idx += 1;
+        }
+
+        let size = self.window.inner_size();
+        unsafe {
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            self.gl.viewport(0, 0, size.width.max(1) as i32, size.height.max(1) as i32);
+        }
+
+        if self.colored_mesh.vertex_count > 0 {
+            let matrix = gl_view_proj(&eyes.views[0]);
+            self.colored_mesh.draw(&self.gl, &matrix);
+        }
+    }
+
+    fn ensure_gl_eyes(&mut self, width: u32, height: u32) -> bool {
+        let width = width.max(1) as i32;
+        let height = height.max(1) as i32;
+
+        if let Some(eyes) = &self.eyes {
+            if eyes.width == width && eyes.height == height {
+                return true;
+            }
+        }
+
+        self.destroy_gl_eyes();
+        self.eyes = GlEyes::create(&self.gl, width, height);
+
+        self.eyes.is_some()
+    }
+
+    fn destroy_gl_eyes(&mut self) {
+        let Some(eyes) = self.eyes.take() else {
+            return;
+        };
+        let mut idx = 0;
+
+        while idx < 2 {
+            unsafe {
+                self.gl.delete_framebuffer(eyes.frame[idx]);
+                self.gl.delete_renderbuffer(eyes.depth[idx]);
+                self.gl.delete_texture(eyes.color[idx]);
+            }
+
+            idx += 1;
+        }
+    }
+}
+
+impl Drop for OpenGLWindow {
+    fn drop(&mut self) {
+        self.destroy_gl_eyes();
+        self.vr.take();
     }
 }
 
@@ -374,84 +503,55 @@ impl ColoredMesh {
 }
 
 fn gl_view_proj(view: &SceneView) -> [f32; 16] {
-    let view_matrix = look_forward(view.eye, view.forward, view.up);
-    let proj = perspective(view.fov_y, view.aspect, view.near, view.far);
-
-    mul(proj, view_matrix)
+    vr::view_proj(view, false)
 }
 
-fn look_forward(eye: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> [f32; 16] {
-    let f = normalize(forward);
-    let zaxis = [-f[0], -f[1], -f[2]];
-    let xaxis = normalize(cross(up, zaxis));
-    let yaxis = cross(zaxis, xaxis);
+impl GlEyes {
+    fn create(gl: &glow::Context, width: i32, height: i32) -> Option<Self> {
+        let mut color = [None, None];
+        let mut depth = [None, None];
+        let mut frame = [None, None];
+        let mut idx = 0;
 
-    [
-        xaxis[0], yaxis[0], zaxis[0], 0.0,
-        xaxis[1], yaxis[1], zaxis[1], 0.0,
-        xaxis[2], yaxis[2], zaxis[2], 0.0,
-        -dot(xaxis, eye), -dot(yaxis, eye), -dot(zaxis, eye), 1.0,
-    ]
-}
+        while idx < 2 {
+            let texture = unsafe { gl.create_texture().ok()? };
+            let render = unsafe { gl.create_renderbuffer().ok()? };
+            let buffer = unsafe { gl.create_framebuffer().ok()? };
+            unsafe {
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, width, height, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                gl.bind_renderbuffer(glow::RENDERBUFFER, Some(render));
+                gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, width, height);
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(buffer));
+                gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(texture), 0);
+                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(render));
+                let complete = gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
+                gl.bind_framebuffer(glow::FRAMEBUFFER, None);
 
-fn perspective(fov_y: f32, aspect: f32, near: f32, far: f32) -> [f32; 16] {
-    let focal = 1.0 / (fov_y * 0.5).tan();
-    let nf = 1.0 / (near - far);
+                if !complete {
+                    gl.delete_framebuffer(buffer);
+                    gl.delete_renderbuffer(render);
+                    gl.delete_texture(texture);
 
-    [
-        focal / aspect, 0.0, 0.0, 0.0,
-        0.0, focal, 0.0, 0.0,
-        0.0, 0.0, (far + near) * nf, -1.0,
-        0.0, 0.0, (2.0 * far * near) * nf, 0.0,
-    ]
-}
-
-fn mul(a: [f32; 16], b: [f32; 16]) -> [f32; 16] {
-    let mut out = [0.0; 16];
-    let mut col = 0;
-
-    while col < 4 {
-        let mut row = 0;
-
-        while row < 4 {
-            let mut sum = 0.0;
-            let mut idx = 0;
-
-            while idx < 4 {
-                sum += a[idx * 4 + row] * b[col * 4 + idx];
-                idx += 1;
+                    return None;
+                }
             }
-
-            out[col * 4 + row] = sum;
-            row += 1;
+            color[idx] = Some(texture);
+            depth[idx] = Some(render);
+            frame[idx] = Some(buffer);
+            idx += 1;
         }
 
-        col += 1;
+        Some(Self {
+            width,
+            height,
+            color: [color[0]?, color[1]?],
+            depth: [depth[0]?, depth[1]?],
+            frame: [frame[0]?, frame[1]?],
+        })
     }
-
-    out
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = dot(v, v).sqrt();
-
-    if len <= 0.0 {
-        return [0.0, 0.0, 0.0];
-    }
-
-    [v[0] / len, v[1] / len, v[2] / len]
 }
 
 fn link_mesh_program(gl: &glow::Context) -> glow::Program {

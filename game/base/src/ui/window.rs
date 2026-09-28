@@ -1,5 +1,6 @@
 use crate::ui::Color;
 use crate::ui::voxel::SceneView;
+use crate::ui::vr::VrInput;
 
 pub trait Window {
     fn create_window() -> Self where Self: Sized;
@@ -14,4 +15,6 @@ pub trait Window {
     fn draw_text(&mut self, font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color);
     fn render_text(&mut self);
     fn present(&mut self);
+    fn enable_vr(&mut self);
+    fn vr_input(&self) -> VrInput;
 }

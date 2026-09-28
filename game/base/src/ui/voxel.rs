@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub struct SceneView {
     pub eye: [f32; 3],
     pub forward: [f32; 3],
@@ -6,6 +7,8 @@ pub struct SceneView {
     pub aspect: f32,
     pub near: f32,
     pub far: f32,
+    pub tangents: Option<[f32; 4]>,
+    pub scale: f32,
 }
 
 pub struct FlyCamera {
@@ -60,7 +63,20 @@ impl FlyCamera {
             aspect: aspect.max(0.01),
             near: (scale * 0.05).max(0.01),
             far: (scale * 4000.0).max(200.0),
+            tangents: None,
+            scale: scale.max(0.001),
         }
+    }
+
+    pub fn fly_facing(&mut self, yaw: f32, wish_forward: f32, wish_right: f32, wish_up: f32, dt: f32, speed: f32) {
+        let fx = yaw.cos();
+        let fy = yaw.sin();
+        let rx = fy;
+        let ry = -fx;
+        let step = speed * dt;
+        self.x += (fx * wish_forward + rx * wish_right) * step;
+        self.y += (fy * wish_forward + ry * wish_right) * step;
+        self.z += wish_up * step;
     }
 
     fn forward(&self) -> (f32, f32, f32) {

@@ -159,6 +159,7 @@ impl SnapshotIngress {
 
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
     let mut client_window = backend::create();
+    client_window.enable_vr();
     client_window.set_window_title("Rust Engine - Rendering");
     client_window.set_size(1920, 1080);
 
@@ -282,7 +283,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 _ => (),
             },
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
-                if captured {
+                if captured && !client_window.vr_input().active {
                     camera.look(delta.0 as f32, delta.1 as f32);
                 }
             }
@@ -295,7 +296,14 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 let forward = held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS);
                 let right = held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA);
                 let up = held_key(&keys, KeyCode::Space) - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
-                camera.fly(forward, right, up, frame_dt, speed);
+                let vr = client_window.vr_input();
+
+                if vr.active {
+                    camera.yaw -= vr.turn * frame_dt * 1.5;
+                    camera.fly_facing(camera.yaw + vr.yaw, forward + vr.move_y, right + vr.move_x, up, frame_dt, speed);
+                } else {
+                    camera.fly(forward, right, up, frame_dt, speed);
+                }
 
                 {
                     accumulated_time += dt;

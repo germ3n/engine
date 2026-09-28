@@ -1,4 +1,4 @@
-use windows::core::s;
+use windows::core::{s, Interface};
 use windows::Win32::Foundation::{HMODULE, HWND};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
@@ -10,6 +10,7 @@ use winit::window::Window as WinitWindow;
 use crate::ui::d3d::draw::{bytes_of, grow, open_desktop, push_outline, push_rect, Desktop, TextFrame};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::voxel::SceneView;
 use crate::ui::window::Window;
 use crate::ui::Color;
@@ -56,8 +57,23 @@ pub struct D3D11Window {
     mesh_ready: bool,
     view: [f32; 16],
     draw_mesh: bool,
+    vr: Option<Headset>,
+    vr_failed: bool,
+    vr_enable: bool,
+    eyes: Option<Eyes11>,
+    eye_views: Option<EyeViews>,
 }
 
+struct Eyes11 {
+    width: u32,
+    height: u32,
+    color: [ID3D11Texture2D; 2],
+    rtv: [ID3D11RenderTargetView; 2],
+    depth: [ID3D11Texture2D; 2],
+    dsv: [ID3D11DepthStencilView; 2],
+}
+
+#[derive(Clone)]
 struct DynBuf {
     buffer: ID3D11Buffer,
     capacity: u32,
@@ -140,6 +156,11 @@ impl D3D11Window {
             mesh_ready: false,
             view: [0.0; 16],
             draw_mesh: false,
+            vr: None,
+            vr_failed: false,
+            vr_enable: false,
+            eyes: None,
+            eye_views: None,
         })
     }
 
@@ -248,6 +269,11 @@ impl Window for D3D11Window {
 
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
         self.view = view_proj(view);
+        self.eye_views = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
+
+        if let Some(eyes) = self.eye_views {
+            self.view = view_proj(&eyes.views[0]);
+        }
 
         if !self.mesh_ready || self.mesh_revision != revision {
             if vertices.is_empty() {
@@ -280,10 +306,23 @@ impl Window for D3D11Window {
         self.text.build();
     }
 
+    fn enable_vr(&mut self) {
+        self.vr_enable = true;
+    }
+
+    fn vr_input(&self) -> VrInput {
+        match self.vr.as_ref() {
+            Some(headset) => headset.input(),
+            None => VrInput::default(),
+        }
+    }
+
     fn present(&mut self) {
         if self.width == 0 || self.height == 0 {
             return;
         }
+
+        self.render_eyes();
 
         let Some(rtv) = self.rtv.clone() else {
             return;
@@ -371,10 +410,123 @@ impl Window for D3D11Window {
         }
 
         let _ = unsafe { self.swap.Present(0, DXGI_PRESENT(0)) };
+
+        if let Some(headset) = self.vr.as_mut() {
+            headset.handoff();
+        }
     }
 }
 
 impl D3D11Window {
+    fn render_eyes(&mut self) {
+        let Some(frame) = self.eye_views else {
+            return;
+        };
+
+        if self.ensure_eyes(frame.width, frame.height).is_err() {
+            return;
+        }
+
+        let (color, rtv, dsv, width, height) = {
+            let Some(eyes) = &self.eyes else {
+                return;
+            };
+
+            (
+                [eyes.color[0].clone(), eyes.color[1].clone()],
+                [eyes.rtv[0].clone(), eyes.rtv[1].clone()],
+                [eyes.dsv[0].clone(), eyes.dsv[1].clone()],
+                eyes.width,
+                eyes.height,
+            )
+        };
+        let mesh = self.mesh.clone();
+        let mut idx = 0;
+
+        while idx < 2 {
+            let matrix = view_proj(&frame.views[idx]);
+            let _ = write_constants(&self.context, &self.view_cb, &matrix);
+            unsafe {
+                self.context.OMSetRenderTargets(Some(&[Some(rtv[idx].clone())]), &dsv[idx]);
+                self.context.ClearRenderTargetView(&rtv[idx], &self.clear);
+                self.context.ClearDepthStencilView(&dsv[idx], D3D11_CLEAR_DEPTH.0, 1.0, 0);
+                self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: width as f32,
+                    Height: height as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                }]));
+                self.context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            }
+
+            if self.draw_mesh {
+                if let Some(buffer) = mesh.as_ref() {
+                    self.draw_buffer(
+                        &self.mesh_vs,
+                        &self.mesh_ps,
+                        &self.mesh_layout,
+                        &self.view_cb,
+                        buffer,
+                        self.mesh_vertices,
+                        &self.depth_on,
+                        &self.blend_off,
+                        &self.cull_back,
+                        None,
+                    );
+                }
+            }
+
+            idx += 1;
+        }
+
+        unsafe { self.context.Flush(); }
+
+        if let Some(headset) = self.vr.as_mut() {
+            headset.submit_d3d11(0, color[0].as_raw());
+            headset.submit_d3d11(1, color[1].as_raw());
+        }
+    }
+
+    fn ensure_eyes(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        if let Some(eyes) = &self.eyes {
+            if eyes.width == width && eyes.height == height {
+                return Ok(());
+            }
+        }
+
+        let mut color = Vec::new();
+        let mut rtv = Vec::new();
+        let mut depth = Vec::new();
+        let mut dsv = Vec::new();
+        let mut idx = 0;
+
+        while idx < 2 {
+            let (texture, view) = eye_color(&self.device, width, height)?;
+            let (depth_tex, depth_view) = eye_depth(&self.device, width, height)?;
+            color.push(texture);
+            rtv.push(view);
+            depth.push(depth_tex);
+            dsv.push(depth_view);
+            idx += 1;
+        }
+
+        self.eyes = Some(Eyes11 {
+            width,
+            height,
+            color: [color.remove(0), color.remove(0)],
+            rtv: [rtv.remove(0), rtv.remove(0)],
+            depth: [depth.remove(0), depth.remove(0)],
+            dsv: [dsv.remove(0), dsv.remove(0)],
+        });
+
+        Ok(())
+    }
+
     fn draw_buffer(
         &self,
         vs: &ID3D11VertexShader,
@@ -478,6 +630,58 @@ fn swap_desc(hwnd: HWND, width: u32, height: u32) -> DXGI_SWAP_CHAIN_DESC {
         SwapEffect: DXGI_SWAP_EFFECT_DISCARD,
         Flags: 0,
     }
+}
+
+impl Drop for D3D11Window {
+    fn drop(&mut self) {
+        self.vr.take();
+    }
+}
+
+fn eye_color(device: &ID3D11Device, width: u32, height: u32) -> Result<(ID3D11Texture2D, ID3D11RenderTargetView), String> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: D3D11_RESOURCE_MISC_SHARED.0 as u32,
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)).map_err(|err| err.to_string())?; }
+    let texture = texture.ok_or_else(|| "vr color".to_string())?;
+    let mut view = None;
+    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut view)).map_err(|err| err.to_string())?; }
+    let view = view.ok_or_else(|| "vr color view".to_string())?;
+
+    Ok((texture, view))
+}
+
+fn eye_depth(device: &ID3D11Device, width: u32, height: u32) -> Result<(ID3D11Texture2D, ID3D11DepthStencilView), String> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_D32_FLOAT,
+        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_DEPTH_STENCIL.0 as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let mut texture = None;
+    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)).map_err(|err| err.to_string())?; }
+    let texture = texture.ok_or_else(|| "vr depth".to_string())?;
+    let mut view = None;
+    unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view)).map_err(|err| err.to_string())?; }
+    let view = view.ok_or_else(|| "vr depth view".to_string())?;
+
+    Ok((texture, view))
 }
 
 fn targets(

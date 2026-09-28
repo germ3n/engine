@@ -1,4 +1,5 @@
 pub mod window;
+pub mod vr;
 pub mod backend;
 pub mod opengl;
 #[cfg(target_os = "macos")]

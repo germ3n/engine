@@ -148,4 +148,12 @@ impl Window for GfxWindow {
     fn present(&mut self) {
         each_window!(self, |window| window.present())
     }
+
+    fn enable_vr(&mut self) {
+        each_window!(self, |window| window.enable_vr())
+    }
+
+    fn vr_input(&self) -> crate::ui::vr::VrInput {
+        each_window!(self, |window| window.vr_input())
+    }
 }
