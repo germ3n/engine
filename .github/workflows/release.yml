@@ -84,6 +84,10 @@ jobs:
           echo "VSCMD_ARG_HOST_ARCH=arm64" >> "$GITHUB_ENV"
           echo "VSCMD_ARG_TGT_ARCH=arm64" >> "$GITHUB_ENV"
 
+      - name: Install Linux gamepad libraries
+        if: runner.os == 'Linux' && matrix.kind != 'android'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
+
       - name: Setup Java
         if: matrix.kind == 'android'
         uses: actions/setup-java@v4
