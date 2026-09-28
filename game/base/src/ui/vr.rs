@@ -59,7 +59,9 @@ pub fn connect(slot: &mut Option<Headset>, failed: &mut bool, enabled: bool, vie
     }
 
     if slot.is_none() && !*failed {
-        if !hmd_present() {
+        if !runtime_installed() || !hmd_present() {
+            *failed = true;
+
             return None;
         }
 
@@ -285,6 +287,41 @@ impl Drop for Headset {
 
 fn hmd_present() -> bool {
     unsafe { VR_IsHmdPresent() != 0 }
+}
+
+fn runtime_installed() -> bool {
+    let Some(path) = registry_path() else {
+        return false;
+    };
+
+    path.is_file()
+}
+
+fn registry_path() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let local = std::env::var_os("LOCALAPPDATA")?;
+
+        return Some(std::path::PathBuf::from(local).join("openvr/openvrpaths.vrpath"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")?;
+
+        return Some(std::path::PathBuf::from(home).join("Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath"));
+    }
+
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let home = std::env::var_os("HOME")?;
+        let config = match std::env::var_os("XDG_CONFIG_HOME") {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::path::PathBuf::from(home).join(".config"),
+        };
+
+        return Some(config.join("openvr/openvrpaths.vrpath"));
+    }
 }
 
 fn required(value: Option<*mut c_void>) -> Option<*mut c_void> {
