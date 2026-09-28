@@ -10,6 +10,18 @@ use crate::network::packet::{bundle_part, pack_bundles, split_unreliable, Bundle
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
 
+fn bind_port(port: u16) -> UdpSocket {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        return UdpSocket::bind(format!("0.0.0.0:{port}")).unwrap();
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        UdpSocket::bind(format!("[::]:{port}")).unwrap()
+    }
+}
+
 pub struct ConnectedClient {
     pub reliable: ReliableChannel,
     pub state: ReliableChannel,
@@ -44,7 +56,7 @@ pub struct NetworkServer {
 impl NetworkServer {
     pub fn new(port: u16, max_clients: u32) -> Self {
         //let socket = UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap();
-        let socket = UdpSocket::bind(format!("[::]:{}", port)).unwrap();
+        let socket = bind_port(port);
         socket.set_nonblocking(true).unwrap();
         Self {
             port,

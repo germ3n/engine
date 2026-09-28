@@ -7,7 +7,7 @@ use crate::ui::backend;
 use crate::ui::window::Window;
 use crate::ui::Color;
 use crate::ui::voxel::FlyCamera;
-use winit::event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, Event, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::CursorGrabMode;
 use winit::event_loop::ControlFlow;
@@ -158,12 +158,7 @@ impl SnapshotIngress {
 }
 
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
-    let mut client_window = backend::create();
-    client_window.enable_vr();
-    client_window.set_window_title("Rust Engine - Rendering");
-    client_window.set_size(1920, 1080);
-
-    let event_loop = client_window.take_event_loop();
+    let (event_loop, mut held_window) = client_surface();
 
     crate::script::bundle::load_bytecode(&game.script_engine.lua, "menu.lua", crate::script::bundle::MENU)
         .exec()
@@ -186,9 +181,31 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut camera = FlyCamera::new();
     let mut captured = false;
     let mut keys = HashSet::new();
+    let mut touches = Vec::new();
 
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
+
+        #[cfg(target_os = "android")]
+        {
+            if let Event::Resumed = &event {
+                if held_window.is_none() {
+                    held_window = Some(backend::android_window(window_target));
+                }
+            }
+
+            if let Event::Suspended = &event {
+                held_window = None;
+
+                return;
+            }
+
+            if held_window.is_none() {
+                return;
+            }
+        }
+
+        let client_window = held_window.as_mut().unwrap();
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -215,6 +232,10 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     captured = true;
                     set_capture(client_window.winit_window(), true);
                 }
+                WindowEvent::Touch(touch) => {
+                    let width = client_window.winit_window().inner_size().width.max(1) as f64;
+                    apply_touch(&mut touches, &touch, width, &mut camera);
+                }
                 WindowEvent::RedrawRequested => {
                     let size = client_window.winit_window().inner_size();
                     let aspect = size.width as f32 / size.height.max(1) as f32;
@@ -235,7 +256,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         scene_revision,
                         &camera.scene(aspect, game.voxel_world.scale() as f32),
                     );
-                    draw_menu(&mut client_window, &mut game);
+                    draw_menu(client_window, &mut game);
 
                     let draw_commands = {
                         let mut q = game.script_engine.render_queue.lock().unwrap();
@@ -292,8 +313,9 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 last_frame = now;
                 let frame_dt = (dt as f32).min(0.1);
                 let speed = game.voxel_world.scale() as f32 * 14.0;
-                let forward = held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS);
-                let right = held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA);
+                let (touch_forward, touch_right) = touch_wish(&touches);
+                let forward = (held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS) + touch_forward).clamp(-1.0, 1.0);
+                let right = (held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA) + touch_right).clamp(-1.0, 1.0);
                 let up = held_key(&keys, KeyCode::Space) - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
                 let vr = client_window.vr_input();
 
@@ -400,6 +422,97 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
             _ => (),
         }
     }).unwrap();
+}
+
+fn client_surface() -> (winit::event_loop::EventLoop<()>, Option<backend::GfxWindow>) {
+    #[cfg(target_os = "android")]
+    {
+        return (crate::platform::event_loop(), None);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut window = backend::create();
+        window.enable_vr();
+        window.set_window_title("Rust Engine - Rendering");
+        #[cfg(not(target_os = "ios"))]
+        window.set_size(1920, 1080);
+        let event_loop = window.take_event_loop();
+
+        (event_loop, Some(window))
+    }
+}
+
+struct TouchPoint {
+    id: u64,
+    origin_x: f64,
+    origin_y: f64,
+    x: f64,
+    y: f64,
+    last_x: f64,
+    last_y: f64,
+    look: bool,
+}
+
+fn apply_touch(points: &mut Vec<TouchPoint>, touch: &winit::event::Touch, width: f64, camera: &mut FlyCamera) {
+    match touch.phase {
+        TouchPhase::Started => {
+            points.push(TouchPoint {
+                id: touch.id,
+                origin_x: touch.location.x,
+                origin_y: touch.location.y,
+                x: touch.location.x,
+                y: touch.location.y,
+                last_x: touch.location.x,
+                last_y: touch.location.y,
+                look: touch.location.x >= width * 0.5,
+            });
+        }
+        TouchPhase::Moved => {
+            let mut idx = 0;
+
+            while idx < points.len() {
+                if points[idx].id == touch.id {
+                    let dx = touch.location.x - points[idx].last_x;
+                    let dy = touch.location.y - points[idx].last_y;
+                    points[idx].x = touch.location.x;
+                    points[idx].y = touch.location.y;
+                    points[idx].last_x = touch.location.x;
+                    points[idx].last_y = touch.location.y;
+
+                    if points[idx].look {
+                        camera.look(dx as f32, dy as f32);
+                    }
+
+                    break;
+                }
+
+                idx += 1;
+            }
+        }
+        TouchPhase::Ended | TouchPhase::Cancelled => {
+            points.retain(|point| point.id != touch.id);
+        }
+    }
+}
+
+fn touch_wish(points: &[TouchPoint]) -> (f32, f32) {
+    let mut forward = 0.0;
+    let mut right = 0.0;
+    let mut idx = 0;
+
+    while idx < points.len() {
+        let point = &points[idx];
+
+        if !point.look {
+            right += ((point.x - point.origin_x) / 90.0).clamp(-1.0, 1.0) as f32;
+            forward -= ((point.y - point.origin_y) / 90.0).clamp(-1.0, 1.0) as f32;
+        }
+
+        idx += 1;
+    }
+
+    (forward.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0))
 }
 
 fn held_key(keys: &HashSet<KeyCode>, code: KeyCode) -> f32 {
