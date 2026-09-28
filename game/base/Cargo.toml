@@ -21,6 +21,10 @@ glow_glyph = "0.6.0"
 mlua = { version = "0.12.1", features = ["luajit52", "send", "vendored"] }
 wincode = { version = "0.6.1", features = ["derive"] }
 bitflags = "2.13.2"
+ash = "0.38.0"
+ash-window = "0.13.0"
+naga = { version = "30.0.1", features = ["glsl-in", "spv-out", "wgsl-in"] }
+glyph_brush = { version = "0.7", default-features = false }
 
 [build-dependencies]
 cc = "1"

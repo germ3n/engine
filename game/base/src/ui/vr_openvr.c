@@ -170,3 +170,19 @@ void vr_handoff(void *fn) {
     fn_copy(&call, fn);
     call();
 }
+
+uint32_t vr_vulkan_instance_extensions(void *fn, char *value, uint32_t size) {
+    typedef uint32_t (VR_CALL *Fn)(char *value, uint32_t size);
+    Fn call;
+    fn_copy(&call, fn);
+
+    return call(value, size);
+}
+
+uint32_t vr_vulkan_device_extensions(void *fn, void *physical, char *value, uint32_t size) {
+    typedef uint32_t (VR_CALL *Fn)(void *physical, char *value, uint32_t size);
+    Fn call;
+    fn_copy(&call, fn);
+
+    return call(physical, value, size);
+}

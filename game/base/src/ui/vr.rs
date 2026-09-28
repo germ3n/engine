@@ -3,6 +3,7 @@ use std::ffi::c_void;
 
 const TEX_D3D11: i32 = 0;
 const TEX_GL: i32 = 1;
+const TEX_VULKAN: i32 = 2;
 const TEX_SHARED: i32 = 5;
 const TEX_METAL: i32 = 6;
 const ROLE_LEFT: i32 = 1;
@@ -118,6 +119,10 @@ impl Headset {
     #[cfg(windows)]
     pub fn submit_shared(&mut self, eye: usize, handle: *mut c_void) {
         self.finish_submit(eye, handle, TEX_SHARED);
+    }
+
+    pub fn submit_vulkan(&mut self, eye: usize, data: *mut c_void) {
+        self.finish_submit(eye, data, TEX_VULKAN);
     }
 
     fn start() -> Option<Self> {
@@ -332,6 +337,65 @@ fn required(value: Option<*mut c_void>) -> Option<*mut c_void> {
     value
 }
 
+pub fn vulkan_instance_extensions() -> Vec<String> {
+    let Some(table) = compositor_table() else {
+        return Vec::new();
+    };
+    let Some(func) = slot(table, 41) else {
+        unsafe { VR_ShutdownInternal() };
+
+        return Vec::new();
+    };
+    let names = read_vulkan_extensions(|buf, len| unsafe { vr_vulkan_instance_extensions(func, buf, len) });
+    unsafe { VR_ShutdownInternal() };
+
+    names
+}
+
+pub fn vulkan_device_extensions(physical: *mut c_void) -> Vec<String> {
+    let Some(table) = compositor_table() else {
+        return Vec::new();
+    };
+    let Some(func) = slot(table, 42) else {
+        unsafe { VR_ShutdownInternal() };
+
+        return Vec::new();
+    };
+    let names = read_vulkan_extensions(|buf, len| unsafe { vr_vulkan_device_extensions(func, physical, buf, len) });
+    unsafe { VR_ShutdownInternal() };
+
+    names
+}
+
+fn compositor_table() -> Option<*mut c_void> {
+    if !runtime_installed() {
+        return None;
+    }
+
+    let mut err = 0i32;
+    unsafe { VR_InitInternal(&mut err, 1) };
+
+    if err != 0 {
+        return None;
+    }
+
+    interface(b"FnTable:IVRCompositor_029\0")
+}
+
+fn read_vulkan_extensions(query: impl FnOnce(*mut i8, u32) -> u32) -> Vec<String> {
+    let mut buf = vec![0u8; 4096];
+    let _needed = query(buf.as_mut_ptr() as *mut i8, buf.len() as u32);
+    let end = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
+
+    if end == 0 {
+        return Vec::new();
+    }
+
+    let text = String::from_utf8_lossy(&buf[..end]);
+
+    text.split_whitespace().map(|name| name.to_string()).collect()
+}
+
 fn interface(name: &[u8]) -> Option<*mut c_void> {
     let mut err = 0i32;
     let table = unsafe { VR_GetGenericInterface(name.as_ptr() as *const i8, &mut err) };
@@ -529,6 +593,8 @@ extern "C" {
     fn vr_submit(func: *mut c_void, eye: i32, handle: *mut c_void, kind: i32) -> i32;
     fn vr_submit_d3d12(func: *mut c_void, eye: i32, resource: *mut c_void, queue: *mut c_void) -> i32;
     fn vr_handoff(func: *mut c_void);
+    fn vr_vulkan_instance_extensions(func: *mut c_void, value: *mut i8, size: u32) -> u32;
+    fn vr_vulkan_device_extensions(func: *mut c_void, physical: *mut c_void, value: *mut i8, size: u32) -> u32;
     fn VR_InitInternal(error: *mut i32, app_type: i32) -> u32;
     fn VR_ShutdownInternal();
     fn VR_GetGenericInterface(name: *const i8, error: *mut i32) -> *mut c_void;

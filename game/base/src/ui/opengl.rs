@@ -45,11 +45,9 @@ struct GlEyes {
     frame: [glow::NativeFramebuffer; 2],
 }
 
-impl Window for OpenGLWindow {
-    fn create_window() -> Self {
-        let event_loop = EventLoop::new().unwrap();
+impl OpenGLWindow {
+    pub fn with_event_loop(event_loop: EventLoop<()>) -> Self {
         let window_builder = WindowBuilder::new().with_title("Starting...");
-
         let template = ConfigTemplateBuilder::new().with_depth_size(24);
         let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
 
@@ -164,6 +162,12 @@ impl Window for OpenGLWindow {
         let glyph_brush_default = GlyphBrushBuilder::using_font(font_default).build(&opengl_window.gl);
         opengl_window.glyph_brushes.insert("default".to_string(), glyph_brush_default);
         opengl_window
+    }
+}
+
+impl Window for OpenGLWindow {
+    fn create_window() -> Self {
+        Self::with_event_loop(EventLoop::new().unwrap())
     }
 
     fn set_window_title(&mut self, title: &str) {

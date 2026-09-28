@@ -1,4 +1,5 @@
 use crate::ui::opengl::OpenGLWindow;
+use crate::ui::vulkan::VulkanWindow;
 use crate::ui::window::Window;
 use crate::ui::Color;
 use crate::ui::voxel::SceneView;
@@ -13,6 +14,7 @@ pub enum GfxWindow {
     D3D11(crate::ui::d3d::D3D11Window),
     #[cfg(windows)]
     D3D9(crate::ui::d3d::D3D9Window),
+    Vulkan(VulkanWindow),
 }
 
 pub fn create() -> GfxWindow {
@@ -72,6 +74,25 @@ pub fn create() -> GfxWindow {
         }
     }
 
+    if chosen("vulkan") {
+        match VulkanWindow::try_new() {
+            Ok(window) => {
+                println!("[gfx] vulkan");
+
+                return GfxWindow::Vulkan(window);
+            }
+            Err((event_loop, err)) => {
+                println!("[gfx] vulkan failed: {err}");
+
+                if let Some(event_loop) = event_loop {
+                    println!("[gfx] opengl");
+
+                    return GfxWindow::OpenGL(OpenGLWindow::with_event_loop(event_loop));
+                }
+            }
+        }
+    }
+
     println!("[gfx] opengl");
 
     GfxWindow::OpenGL(OpenGLWindow::create_window())
@@ -96,6 +117,7 @@ macro_rules! each_window {
             GfxWindow::D3D11($window) => $body,
             #[cfg(windows)]
             GfxWindow::D3D9($window) => $body,
+            GfxWindow::Vulkan($window) => $body,
         }
     };
 }
