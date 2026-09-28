@@ -44,6 +44,8 @@ fn main() {
     }
 
     if target_os == "windows" {
+        openvr.define("WIN32", None);
+
         if pointer_width == "64" {
             openvr.define("WIN64", None);
         }
