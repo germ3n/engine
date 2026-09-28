@@ -52,10 +52,17 @@ if [ "$MODE" = "lib" ]; then
 fi
 
 NATIVE="$(printf '%s\n' "$NOTES" | sed -n 's/.*native-static-libs: //p' | tail -1)"
+export SDKROOT
+export IPHONEOS_DEPLOYMENT_TARGET=14.0
+if [ "$SDK" = "iphonesimulator" ]; then
+    CLANG_TARGET="${ARCH}-apple-ios14.0-simulator"
+else
+    CLANG_TARGET="${ARCH}-apple-ios14.0"
+fi
 xcrun -sdk "$SDK" clang \
-    -arch "$ARCH" \
+    -target "$CLANG_TARGET" \
     -isysroot "$SDKROOT" \
-    -mios-version-min=14.0 \
+    -F"$SDKROOT/System/Library/Frameworks" \
     -fobjc-arc \
     "$IOS/Engine/main.m" \
     -force_load "$IOS/build/libbase.a" \
