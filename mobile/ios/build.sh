@@ -27,7 +27,8 @@ else
 fi
 
 export PATH="$IOS/bin:$PATH"
-export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-14.0}"
+unset IPHONEOS_DEPLOYMENT_TARGET
+unset SDKROOT
 
 if ! xcrun --sdk "$SDK" --show-sdk-path >/dev/null 2>&1; then
     echo "The $SDK SDK is not installed. Install Xcode, then run this script again."

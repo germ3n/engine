@@ -1,6 +1,8 @@
 #!/bin/sh
-if [ "$CARGO_CFG_TARGET_OS" = "ios" ]; then
-    export TARGET_SYS=iOS
-    unset MACOSX_DEPLOYMENT_TARGET
-fi
+case "${TARGET-}" in
+    *apple-ios*)
+        export TARGET_SYS=iOS
+        unset MACOSX_DEPLOYMENT_TARGET
+        ;;
+esac
 exec /usr/bin/make "$@"
