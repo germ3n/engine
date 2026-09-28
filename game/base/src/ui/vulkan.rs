@@ -1584,7 +1584,7 @@ fn push_name(list: &mut Vec<CString>, name: &str) {
     }
 }
 
-fn name_ptrs(list: &[CString]) -> Vec<*const i8> {
+fn name_ptrs(list: &[CString]) -> Vec<*const std::ffi::c_char> {
     list.iter().map(|name| name.as_ptr()).collect()
 }
 

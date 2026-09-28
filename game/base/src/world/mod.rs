@@ -3,8 +3,8 @@ mod voxel;
 
 use std::path::PathBuf;
 
-pub use brush::{compile_map, Brush, BrushHit, BrushMap, BrushPlane, CompiledMap};
-pub use voxel::{find_voxel_file, Block, BlockPos, ChunkPos, ChunkRun, ChunkUpdate, Face, TraceHit, VoxelWorld};
+pub use brush::{compile_map, BrushHit, BrushMap, CompiledMap};
+pub use voxel::{find_voxel_file, Block, BlockPos, ChunkUpdate, Face, TraceHit, VoxelWorld};
 
 pub(crate) fn content_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();

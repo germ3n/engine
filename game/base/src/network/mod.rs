@@ -10,7 +10,6 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::Mutex;
 
 pub use client::NetworkClient;
-pub use server::NetworkServer;
 
 pub struct NetWake {
     writer: Mutex<TcpStream>,
@@ -100,7 +99,7 @@ fn wait_ready(socket: &UdpSocket, wake: &TcpStream) -> bool {
 }
 pub use events::{ClientToServer, ServerToClient, NetSend, FromClient, FromServer};
 pub use packet::PacketType;
-pub use reliable::{EnqueueStatus, ReliableChannel, ReliableBody, SelectiveAck, UnreliableAssembly, UnreliableInbox, accept_unreliable, take_unreliable};
+pub use reliable::{EnqueueStatus, ReliableChannel, ReliableBody, UnreliableAssembly, UnreliableInbox, take_unreliable};
 
 pub const OUTBOUND_CAP: usize = 1024;
 pub const RECV_BUDGET: usize = 64;
