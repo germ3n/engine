@@ -11,6 +11,7 @@ mod server;
 mod console;
 mod ui;
 mod script;
+pub mod plugin;
 mod r#enum;
 
 use crate::state::GameState;
