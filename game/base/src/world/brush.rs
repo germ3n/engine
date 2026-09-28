@@ -178,15 +178,22 @@ impl BrushMap {
     }
 
     pub fn load_file(&mut self, name: &str) -> Result<(), String> {
-        let path = find_map(name).ok_or_else(|| format!("map {name} was not found"))?;
-        let compiled_path = if is_compiled(&path) {
-            path
-        } else {
-            ensure_compiled(&path)?
-        };
-        let bytes = std::fs::read(&compiled_path).map_err(|err| format!("map {}: {err}", compiled_path.display()))?;
+        if let Some(path) = find_map(name) {
+            let compiled_path = if is_compiled(&path) {
+                path
+            } else {
+                ensure_compiled(&path)?
+            };
+            let bytes = std::fs::read(&compiled_path).map_err(|err| format!("map {}: {err}", compiled_path.display()))?;
 
-        self.install_compiled(&bytes)
+            return self.install_compiled(&bytes);
+        }
+
+        if let Some(bytes) = bundled_map(name) {
+            return self.install_compiled(bytes);
+        }
+
+        Err(format!("map {name} was not found"))
     }
 
     fn install_compiled(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -329,6 +336,16 @@ pub fn compile_map(name: &str) -> Result<PathBuf, String> {
 
 fn find_map(name: &str) -> Option<PathBuf> {
     resolve_map(name, &super::content_dirs())
+}
+
+fn bundled_map(name: &str) -> Option<&'static [u8]> {
+    let stem = Path::new(name).file_stem().and_then(|stem| stem.to_str()).unwrap_or(name);
+
+    if stem.eq_ignore_ascii_case("hall") {
+        return Some(include_bytes!("../../maps/hall.cmap"));
+    }
+
+    None
 }
 
 fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {

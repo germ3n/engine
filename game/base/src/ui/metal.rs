@@ -1,8 +1,12 @@
 use core_graphics_types::geometry::CGSize;
+#[cfg(target_os = "ios")]
+use std::ffi::c_void;
 use foreign_types::ForeignType;
 use glyph_brush::{ab_glyph::FontArc, BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text};
 use metal::*;
-use objc::runtime::{NO, Object, YES};
+#[cfg(target_os = "macos")]
+use objc::runtime::NO;
+use objc::runtime::{Object, YES};
 use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 use winit::{
@@ -188,10 +192,13 @@ impl MetalWindow {
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
         layer.set_framebuffer_only(true);
         layer.set_presents_with_transaction(false);
-        layer.set_display_sync_enabled(false);
         layer.set_maximum_drawable_count(3);
-        unsafe {
-            let _: () = msg_send![layer.as_ptr(), setAllowsNextDrawableTimeout: NO];
+        #[cfg(target_os = "macos")]
+        {
+            layer.set_display_sync_enabled(false);
+            unsafe {
+                let _: () = msg_send![layer.as_ptr(), setAllowsNextDrawableTimeout: NO];
+            }
         }
         attach_layer(&window, &layer)?;
         resize_layer(&window, &layer);
@@ -563,21 +570,48 @@ impl Drop for MetalWindow {
 #[allow(unexpected_cfgs)]
 fn attach_layer(window: &WinitWindow, layer: &MetalLayer) -> Result<(), String> {
     let handle = window.raw_window_handle();
-    let RawWindowHandle::AppKit(appkit) = handle else {
-        return Err("window is not appkit".to_string());
-    };
 
-    if appkit.ns_view.is_null() {
-        return Err("missing ns view".to_string());
+    match handle {
+        RawWindowHandle::AppKit(appkit) => {
+            if appkit.ns_view.is_null() {
+                return Err("missing ns view".to_string());
+            }
+
+            unsafe {
+                let view = appkit.ns_view as *mut Object;
+                let _: () = msg_send![view, setWantsLayer: YES];
+                let _: () = msg_send![view, setLayer: layer.as_ptr()];
+            }
+
+            Ok(())
+        }
+        #[cfg(target_os = "ios")]
+        RawWindowHandle::UiKit(uikit) => {
+            if uikit.ui_view.is_null() {
+                return Err("missing ui view".to_string());
+            }
+
+            let size = window.inner_size();
+            let scale = window.scale_factor().max(1.0);
+            unsafe {
+                engine_attach_metal_layer(
+                    uikit.ui_view,
+                    layer.as_ptr() as *mut c_void,
+                    size.width as f64 / scale,
+                    size.height as f64 / scale,
+                );
+            }
+
+            Ok(())
+        }
+        _ => Err("window is not appkit".to_string()),
     }
+}
 
-    unsafe {
-        let view = appkit.ns_view as *mut Object;
-        let _: () = msg_send![view, setWantsLayer: YES];
-        let _: () = msg_send![view, setLayer: layer.as_ptr()];
-    }
-
-    Ok(())
+#[cfg(target_os = "ios")]
+extern "C" {
+    fn engine_attach_metal_layer(view: *mut c_void, layer: *mut c_void, width: f64, height: f64);
+    fn engine_resize_metal_layer(layer: *mut c_void, width: f64, height: f64);
 }
 
 fn resize_layer(window: &WinitWindow, layer: &MetalLayer) {
@@ -597,6 +631,14 @@ fn sync_layer(window: &WinitWindow, layer: &MetalLayer) {
 
     layer.set_contents_scale(scale);
     layer.set_drawable_size(CGSize::new(size.width as f64, size.height as f64));
+    #[cfg(target_os = "ios")]
+    unsafe {
+        engine_resize_metal_layer(
+            layer.as_ptr() as *mut c_void,
+            size.width as f64 / scale.max(1.0),
+            size.height as f64 / scale.max(1.0),
+        );
+    }
 }
 
 fn bind_bytes(
@@ -795,10 +837,10 @@ fn eye_color(device: &Device, width: u64, height: u64) -> Texture {
     desc.set_width(width);
     desc.set_height(height);
     desc.set_usage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
-    #[cfg(target_arch = "aarch64")]
-    desc.set_storage_mode(MTLStorageMode::Shared);
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
     desc.set_storage_mode(MTLStorageMode::Managed);
+    #[cfg(not(all(target_os = "macos", not(target_arch = "aarch64"))))]
+    desc.set_storage_mode(MTLStorageMode::Shared);
 
     device.new_texture(&desc)
 }
