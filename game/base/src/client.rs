@@ -17,13 +17,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use core::net::SocketAddr;
 use std::str::FromStr;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP, RECV_BUDGET};
 use crate::network::packet::{bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
 use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::entities::{EntityHandle, Player};
-use crate::movement::{self, Prediction, UserCommand};
+use crate::movement::{self, NetPose, Prediction, UserCommand};
 use crate::r#enum::InputButtons;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
@@ -186,6 +186,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut scene_revision = 0u64;
     let mut camera = FlyCamera::new();
     let mut prediction = Prediction::new();
+    let mut remotes: HashMap<EntityHandle, VecDeque<NetPose>> = HashMap::new();
+    let session_start = Instant::now();
     let mut captured = false;
     let mut attack = false;
     let mut keys = HashSet::new();
@@ -348,6 +350,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 world_generation = generation;
                                 game.entities.clear();
                                 prediction.clear();
+                                remotes.clear();
                                 game.voxel_world.clear();
                                 hold_events = true;
                                 held.clear();
@@ -368,15 +371,19 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                         if built.reset {
                                             game.entities.clear();
                                             prediction.clear();
+                                            remotes.clear();
                                         }
 
+                                        let now = session_start.elapsed().as_secs_f64();
+                                        let interval = game.tick_interval;
+
                                         for entity in built.entities {
-                                            apply_spawn(&mut game, entity);
+                                            apply_spawn(&mut game, &mut remotes, now, interval, entity);
                                         }
 
                                         hold_events = false;
                                         while let Some(waiting) = held.pop_front() {
-                                            apply_server_event(&mut game, &mut tick_ingress, &mut prediction, waiting);
+                                            apply_server_event(&mut game, &mut tick_ingress, &mut prediction, &mut remotes, session_start.elapsed().as_secs_f64(), waiting);
                                         }
                                     } else {
                                         hold_events = true;
@@ -392,7 +399,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 continue;
                             }
 
-                            apply_server_event(&mut game, &mut tick_ingress, &mut prediction, message);
+                            apply_server_event(&mut game, &mut tick_ingress, &mut prediction, &mut remotes, session_start.elapsed().as_secs_f64(), message);
 
                             continue;
                         }
@@ -461,11 +468,21 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
 
                 if possessed {
-                    if let Some(origin) = body_origin(&game, prediction.local) {
-                        let buttons = command_buttons(&keys, attack);
+                    let buttons = command_buttons(&keys, attack);
+                    let alpha = if game.tick_interval > 0.0 {
+                        (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    let origin = prediction.view_origin(alpha).or_else(|| body_origin(&game, prediction.local));
+
+                    if let Some(origin) = origin {
                         place_camera(&mut camera, origin, prediction.look, movement::eye_height(buttons));
                     }
                 }
+
+                let interval = game.tick_interval;
+                present_remotes(&mut game, &mut remotes, prediction.local, session_start.elapsed().as_secs_f64(), interval);
 
                 client_window.winit_window().request_redraw();
             },
@@ -669,9 +686,11 @@ fn predict_tick(
         view: command_view(prediction.look, vr_yaw),
     };
     let prev = prediction.previous();
+    let from = position;
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
     movement::step(&mut position, &mut velocity, &mut angles, &cmd, prev, dt, gravity, &game.brush_world, &game.voxel_world);
+    prediction.note_step(from, position);
     prediction.push(cmd.clone());
 
     if let Some(entity) = game.entities.get_mut(prediction.local) {
@@ -708,13 +727,66 @@ fn reconcile_player(game: &mut GameState<FromServer, ClientToServer>, prediction
         base.angles = angles;
     }
 
+    prediction.snap_view(position);
+
     game.run_hook(
         "TransformUpdated",
         (transform.handle, Some(position), Some(angles), Some(velocity)),
     );
 }
 
-fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ingress: &mut TickIngress, prediction: &mut Prediction, message: ServerToClient) {
+fn note_remote(remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>, handle: EntityHandle, pose: NetPose, interval: f64) {
+    let samples = remotes.entry(handle).or_default();
+    movement::remember_pose(samples, pose, interval);
+}
+
+fn present_remotes(
+    game: &mut GameState<FromServer, ClientToServer>,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    local: EntityHandle,
+    now: f64,
+    interval: f64,
+) {
+    let delay = interval.max(0.0) * 2.0;
+    let render_time = now - delay;
+    let mut visual = Vec::new();
+
+    for (handle, samples) in remotes.iter_mut() {
+        if *handle == local {
+            continue;
+        }
+
+        if let Some(pose) = movement::blend_poses(samples, render_time, interval) {
+            visual.push((*handle, pose));
+        }
+
+        movement::forget_old_poses(samples, render_time);
+    }
+
+    let mut idx = 0;
+
+    while idx < visual.len() {
+        let (handle, pose) = visual[idx];
+
+        if let Some(entity) = game.entities.get_mut(handle) {
+            let base = entity.base_mut();
+            base.position = pose.position;
+            base.angles = pose.angles;
+            base.velocity = pose.velocity;
+        }
+
+        idx += 1;
+    }
+}
+
+fn apply_server_event(
+    game: &mut GameState<FromServer, ClientToServer>,
+    tick_ingress: &mut TickIngress,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    now: f64,
+    message: ServerToClient,
+) {
     match message {
                         ServerToClient::PlayerConnected { handle, name } => {
                             game.run_hook("PlayerConnected", (handle, name));
@@ -724,6 +796,7 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                         },
                         ServerToClient::PlayerSpawned { handle } => {
                             prediction.possess(handle);
+                            remotes.remove(&handle);
                             game.run_hook("PlayerSpawned", handle);
                         },
                         ServerToClient::PlayerDamaged { handle, attacker, inflictor, damage, new_health } => {
@@ -736,10 +809,18 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                             game.run_hook("ModelChanged", (handle, model));
                         },
                         ServerToClient::TransformUpdated { handle, position, angles, velocity } => {
-                            if let Some(entity) = game.entities.get_mut(handle) {
-                                if let Some(pos) = position { entity.base_mut().position = pos; }
-                                if let Some(ang) = angles { entity.base_mut().angles = ang; }
-                                if let Some(vel) = velocity { entity.base_mut().velocity = vel; }
+                            if handle != prediction.local {
+                                if let Some(entity) = game.entities.get(handle) {
+                                    let base = entity.base();
+                                    let tick = remotes.get(&handle).and_then(|samples| samples.back()).map(|pose| pose.tick.saturating_add(1)).unwrap_or(1);
+                                    note_remote(remotes, handle, NetPose {
+                                        tick,
+                                        time: now,
+                                        position: position.unwrap_or(base.position),
+                                        angles: angles.unwrap_or(base.angles),
+                                        velocity: velocity.unwrap_or(base.velocity),
+                                    }, game.tick_interval);
+                                }
                             }
 
                             game.run_hook("TransformUpdated", (handle, position, angles, velocity));
@@ -770,10 +851,18 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                                 let mut player = Player::new();
                                 player.base.position = position;
                                 game.entities.insert_at(handle, Box::new(player));
+                                note_remote(remotes, handle, NetPose {
+                                    tick: 0,
+                                    time: now,
+                                    position,
+                                    angles: Angle3::new(0.0, 0.0, 0.0),
+                                    velocity: Vector3::new(0.0, 0.0, 0.0),
+                                }, game.tick_interval);
                             }
                         },
                         ServerToClient::EntityDespawned { handle } => {
                             game.entities.remove(handle);
+                            remotes.remove(&handle);
 
                             if prediction.local == handle {
                                 prediction.clear();
@@ -788,12 +877,13 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                                         continue;
                                     }
 
-                                    if let Some(entity) = game.entities.get_mut(transform.handle) {
-                                        let base = entity.base_mut();
-                                        base.position = transform.position;
-                                        base.angles = transform.angles;
-                                        base.velocity = transform.velocity;
-                                    }
+                                    note_remote(remotes, transform.handle, NetPose {
+                                        tick,
+                                        time: now,
+                                        position: transform.position,
+                                        angles: transform.angles,
+                                        velocity: transform.velocity,
+                                    }, game.tick_interval);
 
                                     game.run_hook(
                                         "TransformUpdated",
@@ -1378,7 +1468,13 @@ fn apply_client_part(
     }
 }
 
-fn apply_spawn(game: &mut GameState<FromServer, ClientToServer>, entity: EntitySnapshot) {
+fn apply_spawn(
+    game: &mut GameState<FromServer, ClientToServer>,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    now: f64,
+    interval: f64,
+    entity: EntitySnapshot,
+) {
     if entity.class_hash != Player::CLASS_HASH {
         println!("[cl] unknown class {}", entity.class_hash);
 
@@ -1391,4 +1487,11 @@ fn apply_spawn(game: &mut GameState<FromServer, ClientToServer>, entity: EntityS
     player.base.angles = entity.angles;
     player.base.velocity = entity.velocity;
     game.entities.insert_at(entity.handle, Box::new(player));
+    note_remote(remotes, entity.handle, NetPose {
+        tick: 0,
+        time: now,
+        position: entity.position,
+        angles: entity.angles,
+        velocity: entity.velocity,
+    }, interval);
 }

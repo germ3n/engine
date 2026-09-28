@@ -43,7 +43,7 @@ mod tests
         let mut cvars = HashMap::new();
         cvars.insert(
             "sv_gravity".to_string(),
-            Arc::new(ConVar::new("sv_gravity", ConVarValue::Float(800.0), "World gravity", Some(false), Some(true))),
+            Arc::new(ConVar::new("sv_gravity", ConVarValue::Float(24.0), "World gravity", Some(false), Some(true))),
         );
         let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars));
         let len: f64 = engine.lua.load("return Vector3(3, 4, 0):len()").eval().unwrap();

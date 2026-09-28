@@ -39,6 +39,18 @@ pub struct Prediction {
     prev_buttons: InputButtons,
     pub look: Angle3,
     pub arm_look: bool,
+    span_from: Vector3,
+    span_to: Vector3,
+    span_ready: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NetPose {
+    pub tick: u64,
+    pub time: f64,
+    pub position: Vector3,
+    pub angles: Angle3,
+    pub velocity: Vector3,
 }
 
 struct SweepHit {
@@ -56,6 +68,9 @@ impl Prediction {
             prev_buttons: InputButtons::NONE,
             look: Angle3::new(0.0, 0.0, 0.0),
             arm_look: false,
+            span_from: Vector3::new(0.0, 0.0, 0.0),
+            span_to: Vector3::new(0.0, 0.0, 0.0),
+            span_ready: false,
         }
     }
 
@@ -65,6 +80,7 @@ impl Prediction {
         self.ack = 0;
         self.prev_buttons = InputButtons::NONE;
         self.arm_look = false;
+        self.span_ready = false;
     }
 
     pub fn possess(&mut self, handle: EntityHandle) {
@@ -77,6 +93,27 @@ impl Prediction {
         self.ack = 0;
         self.prev_buttons = InputButtons::NONE;
         self.arm_look = true;
+        self.span_ready = false;
+    }
+
+    pub fn note_step(&mut self, from: Vector3, to: Vector3) {
+        self.span_from = from;
+        self.span_to = to;
+        self.span_ready = true;
+    }
+
+    pub fn snap_view(&mut self, position: Vector3) {
+        self.span_from = position;
+        self.span_to = position;
+        self.span_ready = true;
+    }
+
+    pub fn view_origin(&self, alpha: f64) -> Option<Vector3> {
+        if !self.span_ready {
+            return None;
+        }
+
+        Some(lerp_vec(self.span_from, self.span_to, alpha.clamp(0.0, 1.0)))
     }
 
     pub fn previous(&self) -> InputButtons {
@@ -149,6 +186,83 @@ pub fn gravity(cvars: &HashMap<String, Arc<ConVar>>) -> f64 {
         ConVarValue::Integer(value) => (*value as f64).max(0.0),
         _ => 24.0,
     }
+}
+
+pub fn remember_pose(samples: &mut VecDeque<NetPose>, mut pose: NetPose, interval: f64) {
+    if let Some(last) = samples.back() {
+        if pose.tick <= last.tick {
+            return;
+        }
+
+        if pose.time <= last.time {
+            pose.time = last.time + interval.max(1e-4);
+        }
+    }
+
+    samples.push_back(pose);
+
+    while samples.len() > 32 {
+        samples.pop_front();
+    }
+}
+
+pub fn forget_old_poses(samples: &mut VecDeque<NetPose>, time: f64) {
+    while samples.len() > 2 {
+        let Some(next) = samples.get(1) else {
+            break;
+        };
+
+        if next.time >= time {
+            break;
+        }
+
+        samples.pop_front();
+    }
+}
+
+pub fn blend_poses(samples: &VecDeque<NetPose>, time: f64, extra_limit: f64) -> Option<NetPose> {
+    let Some(first) = samples.front() else {
+        return None;
+    };
+
+    if samples.len() == 1 || time <= first.time {
+        return Some(*first);
+    }
+
+    let last_idx = samples.len() - 1;
+    let last = samples[last_idx];
+
+    if time >= last.time {
+        let extra = (time - last.time).max(0.0).min(extra_limit.max(0.0));
+        let mut pose = last;
+        pose.position = add(last.position, mul(last.velocity, extra));
+        pose.time = time;
+
+        return Some(pose);
+    }
+
+    let mut idx = 0;
+
+    while idx + 1 < samples.len() && samples[idx + 1].time < time {
+        idx += 1;
+    }
+
+    let from = samples[idx];
+    let to = samples[idx + 1];
+    let span = to.time - from.time;
+    let alpha = if span > 1e-8 {
+        ((time - from.time) / span).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+
+    Some(NetPose {
+        tick: to.tick,
+        time,
+        position: lerp_vec(from.position, to.position, alpha),
+        angles: lerp_angles(from.angles, to.angles, alpha as f32),
+        velocity: lerp_vec(from.velocity, to.velocity, alpha),
+    })
 }
 
 pub fn eye_height(buttons: InputButtons) -> f64 {
@@ -385,6 +499,32 @@ fn clip_velocity(velocity: Vector3, normal: Vector3) -> Vector3 {
     }
 
     out
+}
+
+fn lerp_vec(from: Vector3, to: Vector3, alpha: f64) -> Vector3 {
+    Vector3::new(
+        from.x + (to.x - from.x) * alpha,
+        from.y + (to.y - from.y) * alpha,
+        from.z + (to.z - from.z) * alpha,
+    )
+}
+
+fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
+    let mut delta = (to - from) % 360.0;
+
+    if delta > 180.0 {
+        delta -= 360.0;
+    }
+
+    if delta < -180.0 {
+        delta += 360.0;
+    }
+
+    from + delta * alpha
+}
+
+fn lerp_angles(from: Angle3, to: Angle3, alpha: f32) -> Angle3 {
+    Angle3::new(lerp_angle(from.p, to.p, alpha), lerp_angle(from.y, to.y, alpha), lerp_angle(from.r, to.r, alpha))
 }
 
 fn add(a: Vector3, b: Vector3) -> Vector3 {
@@ -776,5 +916,47 @@ mod tests {
         assert!(near(replay_pos.z, server_pos.z), "z {} {}", replay_pos.z, server_pos.z);
         assert!(near(replay_vel.x, server_vel.x), "vx {} {}", replay_vel.x, server_vel.x);
         assert!(near(replay_vel.z, server_vel.z), "vz {} {}", replay_vel.z, server_vel.z);
+    }
+
+    #[test]
+    fn view_origin_blends_the_last_predicted_step() {
+        let mut prediction = Prediction::new();
+        prediction.note_step(Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0));
+        let mid = prediction.view_origin(0.5).unwrap();
+
+        assert!(near(mid.x, 5.0));
+        assert!(prediction.view_origin(-1.0).unwrap().x.abs() < 1e-6);
+        assert!(near(prediction.view_origin(2.0).unwrap().x, 10.0));
+    }
+
+    #[test]
+    fn remote_poses_blend_across_the_gap_and_wrap_yaw() {
+        let mut samples = VecDeque::new();
+        remember_pose(&mut samples, NetPose {
+            tick: 1,
+            time: 1.0,
+            position: Vector3::new(0.0, 0.0, 0.0),
+            angles: Angle3::new(0.0, 350.0, 0.0),
+            velocity: Vector3::new(0.0, 0.0, 0.0),
+        }, 0.1);
+        remember_pose(&mut samples, NetPose {
+            tick: 2,
+            time: 1.0,
+            position: Vector3::new(10.0, 0.0, 0.0),
+            angles: Angle3::new(0.0, 10.0, 0.0),
+            velocity: Vector3::new(4.0, 0.0, 0.0),
+        }, 0.1);
+
+        assert!((samples[1].time - 1.1).abs() < 1e-6);
+        let mid = blend_poses(&samples, 1.05, 0.1).unwrap();
+        let yaw = (mid.angles.y + 180.0).rem_euclid(360.0) - 180.0;
+
+        assert!(near(mid.position.x, 5.0));
+        assert!(yaw.abs() < 0.01, "yaw {}", mid.angles.y);
+
+        let ahead = blend_poses(&samples, 1.4, 0.05).unwrap();
+
+        assert!(near(ahead.position.x, 10.2));
+        assert!(blend_poses(&samples, 0.0, 0.1).unwrap().position.x.abs() < 1e-6);
     }
 }
