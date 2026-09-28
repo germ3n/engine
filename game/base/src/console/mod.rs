@@ -23,13 +23,27 @@ pub struct CliArgs {
 }
 
 pub fn get_cmdline_args() -> CliArgs {
-    let processed_args = std::env::args().map(|arg| {
-        if arg.starts_with('+') {
-            format!("--{}", &arg[1..])
-        } else {
-            arg
-        }
-    });
+    #[cfg(target_os = "android")]
+    {
+        return CliArgs {
+            map: None,
+            editor: false,
+            compile_map: false,
+            dedicated: false,
+            tickrate: 60,
+        };
+    }
 
-    CliArgs::parse_from(processed_args)
+    #[cfg(not(target_os = "android"))]
+    {
+        let processed_args = std::env::args().map(|arg| {
+            if arg.starts_with('+') {
+                format!("--{}", &arg[1..])
+            } else {
+                arg
+            }
+        });
+
+        return CliArgs::parse_from(processed_args);
+    }
 }

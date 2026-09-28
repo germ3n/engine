@@ -17,12 +17,10 @@ on:
 
 jobs:
   build-and-release:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.asset_name }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-    env:
-      RUSTFLAGS: ${{ matrix.rustflags }}
 
     strategy:
       matrix:
@@ -57,6 +55,12 @@ jobs:
             editor_binary: editor.exe
             editor_asset: editor-windows-arm64.exe
             rustflags: -C target-cpu=generic
+          - os: ubuntu-latest
+            kind: android
+            asset_name: base-android-arm64.apk
+          - os: macos-latest
+            kind: ios
+            asset_name: base-ios-arm64.zip
 
     steps:
       - name: Checkout Code
@@ -79,8 +83,47 @@ jobs:
           echo "VSCMD_ARG_HOST_ARCH=arm64" >> "$GITHUB_ENV"
           echo "VSCMD_ARG_TGT_ARCH=arm64" >> "$GITHUB_ENV"
 
+      - name: Setup Java
+        if: matrix.kind == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android NDK
+        if: matrix.kind == 'android'
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
+          NDK="$(ls -d "$SDK/ndk"/* | sort -V | tail -1)"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+
+      - name: Setup Gradle
+        if: matrix.kind == 'android'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
       - name: Build Release Binaries
+        if: matrix.kind != 'android' && matrix.kind != 'ios'
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --release --bin base --bin editor
+
+      - name: Build Android
+        if: matrix.kind == 'android'
+        env:
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: -C link-arg=-Wl,-u,ANativeActivity_onCreate
+        run: sh mobile/android/build.sh
+
+      - name: Build iOS
+        if: matrix.kind == 'ios'
+        run: sh mobile/ios/build.sh
 
       - name: Determine Release Tag
         id: tag
@@ -97,19 +140,30 @@ jobs:
           echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
 
       - name: Prepare Asset
+        if: matrix.kind != 'android' && matrix.kind != 'ios'
         shell: bash
         run: |
           mkdir -p dist
           cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
           cp target/release/${{ matrix.editor_binary }} dist/${{ matrix.editor_asset }}
 
+      - name: Prepare Android Asset
+        if: matrix.kind == 'android'
+        run: |
+          mkdir -p dist
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk dist/${{ matrix.asset_name }}
+
+      - name: Prepare iOS Asset
+        if: matrix.kind == 'ios'
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent mobile/ios/build/Engine.app "dist/${{ matrix.asset_name }}"
+
       - name: Upload Asset to Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
-          files: |
-            dist/${{ matrix.asset_name }}
-            dist/${{ matrix.editor_asset }}
+          files: dist/*
           draft: false
           prerelease: false
         env:

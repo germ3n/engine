@@ -111,7 +111,7 @@ impl Headset {
         self.note(err);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub fn submit_metal(&mut self, eye: usize, texture: *mut c_void) {
         self.finish_submit(eye, texture, TEX_METAL);
     }

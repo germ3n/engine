@@ -1,0 +1,2 @@
+OTHER_LDFLAGS = -force_load $(SRCROOT)/build/libbase.a -framework UIKit -framework Metal -framework QuartzCore -framework Foundation -framework CoreGraphics -framework CoreFoundation -framework Security -liconv -lc++ -lm
+ENABLE_USER_SCRIPT_SANDBOXING = NO

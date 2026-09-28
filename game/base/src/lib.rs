@@ -1,3 +1,6 @@
+#[cfg(target_os = "android")]
+mod platform;
+
 mod entities;
 mod world;
 mod network;
@@ -18,6 +21,20 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "client")]
 use std::sync::Arc;
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    crate::platform::remember(app);
+    crate::platform::redirect_stdio();
+    run();
+}
+
+#[cfg(target_os = "ios")]
+#[no_mangle]
+pub extern "C" fn engine_main() {
+    run();
+}
 
 pub fn editor(map_name: &str) {
     ui::editor::run(map_name);
