@@ -29,8 +29,11 @@ use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::network::usermessage::UserMsgReader;
 use crate::entities::context::FrameInfo;
+use gilrs::{Axis, Button, Gilrs};
 
 const LOOK_SPEED: f32 = 0.0025 * (180.0 / std::f32::consts::PI);
+const PAD_DEADZONE: f32 = 0.15;
+const PAD_LOOK: f32 = 2.2;
 
 struct TickIngress {
     tick: u64,
@@ -192,6 +195,15 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut attack = false;
     let mut keys = HashSet::new();
     let mut touches = Vec::new();
+    let mut pads = match Gilrs::new() {
+        Ok(pads) => Some(pads),
+        Err(err) => {
+            println!("[pad] {err}");
+
+            None
+        }
+    };
+    let mut active_pad = None;
 
     event_loop.run(move |event, window_target| {
         window_target.set_control_flow(ControlFlow::Poll);
@@ -437,6 +449,24 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     right += vr.move_x;
                 }
 
+                let pad = sample_pad(pads.as_mut(), &mut active_pad);
+
+                if !vr.active {
+                    let yaw = pad.look_x * PAD_LOOK * frame_dt;
+                    let pitch = pad.look_y * PAD_LOOK * frame_dt;
+
+                    if prediction.local.is_null() {
+                        camera.yaw += yaw;
+                        camera.pitch = (camera.pitch + pitch).clamp(-1.5, 1.5);
+                    } else {
+                        prediction.look.y += yaw.to_degrees();
+                        prediction.look.p = (prediction.look.p + pitch.to_degrees()).clamp(-89.0, 89.0);
+                    }
+                }
+
+                forward += pad.forward;
+                right += pad.right;
+
                 forward = forward.clamp(-1.0, 1.0);
                 right = right.clamp(-1.0, 1.0);
 
@@ -463,12 +493,12 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     game.entities.tick_all();
 
                     if possessed {
-                        predict_tick(&mut game, &mut prediction, &keys, attack, forward, right, vr.yaw);
+                        predict_tick(&mut game, &mut prediction, &keys, attack, forward, right, vr.yaw, pad.buttons);
                     }
                 }
 
                 if possessed {
-                    let buttons = command_buttons(&keys, attack);
+                    let buttons = command_buttons(&keys, attack, pad.buttons);
                     let alpha = if game.tick_interval > 0.0 {
                         (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
                     } else {
@@ -611,8 +641,8 @@ fn set_capture(window: &winit::window::Window, captured: bool) {
     window.set_cursor_visible(true);
 }
 
-fn command_buttons(keys: &HashSet<KeyCode>, attack: bool) -> InputButtons {
-    let mut buttons = InputButtons::NONE;
+fn command_buttons(keys: &HashSet<KeyCode>, attack: bool, pad: InputButtons) -> InputButtons {
+    let mut buttons = pad;
 
     if attack {
         buttons |= InputButtons::IN_ATTACK;
@@ -632,6 +662,118 @@ fn command_buttons(keys: &HashSet<KeyCode>, attack: bool) -> InputButtons {
 
     if keys.contains(&KeyCode::AltLeft) || keys.contains(&KeyCode::AltRight) {
         buttons |= InputButtons::IN_WALK;
+    }
+
+    buttons
+}
+
+struct Pad {
+    forward: f32,
+    right: f32,
+    look_x: f32,
+    look_y: f32,
+    buttons: InputButtons,
+}
+
+fn sample_pad(pads: Option<&mut Gilrs>, active: &mut Option<gilrs::GamepadId>) -> Pad {
+    let Some(pads) = pads else {
+        return idle_pad();
+    };
+
+    while let Some(gilrs::Event { id, .. }) = pads.next_event() {
+        *active = Some(id);
+    }
+
+    let chosen = match *active {
+        Some(id) if pads.connected_gamepad(id).is_some() => Some(id),
+        _ => pads.gamepads().next().map(|(id, _)| id),
+    };
+    let Some(id) = chosen else {
+        return idle_pad();
+    };
+    let Some(pad) = pads.connected_gamepad(id) else {
+        return idle_pad();
+    };
+
+    let mut forward = stick(pad.value(Axis::LeftStickY));
+    let mut right = stick(pad.value(Axis::LeftStickX));
+
+    if pad.is_pressed(Button::DPadUp) {
+        forward += 1.0;
+    }
+
+    if pad.is_pressed(Button::DPadDown) {
+        forward -= 1.0;
+    }
+
+    if pad.is_pressed(Button::DPadRight) {
+        right += 1.0;
+    }
+
+    if pad.is_pressed(Button::DPadLeft) {
+        right -= 1.0;
+    }
+
+    Pad {
+        forward: forward.clamp(-1.0, 1.0),
+        right: right.clamp(-1.0, 1.0),
+        look_x: stick(pad.value(Axis::RightStickX)),
+        look_y: stick(pad.value(Axis::RightStickY)),
+        buttons: pad_buttons(&pad),
+    }
+}
+
+fn idle_pad() -> Pad {
+    Pad {
+        forward: 0.0,
+        right: 0.0,
+        look_x: 0.0,
+        look_y: 0.0,
+        buttons: InputButtons::NONE,
+    }
+}
+
+fn stick(value: f32) -> f32 {
+    if value.abs() <= PAD_DEADZONE {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn pad_buttons(pad: &gilrs::Gamepad) -> InputButtons {
+    let mut buttons = InputButtons::NONE;
+
+    if pad.is_pressed(Button::RightTrigger2) {
+        buttons |= InputButtons::IN_ATTACK;
+    }
+
+    if pad.is_pressed(Button::LeftTrigger2) {
+        buttons |= InputButtons::IN_ATTACK2;
+    }
+
+    if pad.is_pressed(Button::West) {
+        buttons |= InputButtons::IN_USE;
+    }
+
+    if pad.is_pressed(Button::RightTrigger) {
+        buttons |= InputButtons::IN_SPRINT;
+    }
+
+    if pad.is_pressed(Button::LeftTrigger) {
+        buttons |= InputButtons::IN_WALK;
+    }
+
+    if pad.is_pressed(Button::LeftThumb) {
+        buttons |= InputButtons::IN_DUCK;
+    }
+
+    if pad.is_pressed(Button::South) {
+        buttons |= InputButtons::IN_JUMP;
+    }
+
+    if pad.is_pressed(Button::East) {
+        buttons |= InputButtons::IN_RELOAD;
     }
 
     buttons
@@ -665,6 +807,7 @@ fn predict_tick(
     forward: f32,
     right: f32,
     vr_yaw: f32,
+    pad: InputButtons,
 ) {
     if !game.entities.is_valid(prediction.local) {
         return;
@@ -681,7 +824,7 @@ fn predict_tick(
     };
     let cmd = UserCommand {
         tick: game.tick_count,
-        buttons: command_buttons(keys, attack),
+        buttons: command_buttons(keys, attack, pad),
         wish: Vector3::new(forward as f64, right as f64, 0.0),
         view: command_view(prediction.look, vr_yaw),
     };
@@ -1494,4 +1637,17 @@ fn apply_spawn(
         angles: entity.angles,
         velocity: entity.velocity,
     }, interval);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stick;
+
+    #[test]
+    fn stick_deadzone_drops_a_resting_axis() {
+        assert_eq!(stick(0.1), 0.0);
+        assert_eq!(stick(-0.15), 0.0);
+        assert_eq!(stick(0.5), 0.5);
+        assert_eq!(stick(-1.0), -1.0);
+    }
 }

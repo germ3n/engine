@@ -26,6 +26,7 @@ naga = { version = "30.0.1", features = ["glsl-in", "spv-out", "wgsl-in"] }
 glyph_brush = { version = "0.7", default-features = false }
 zstd = "0.14.0"
 memmap2 = "0.9.11"
+gilrs = "0.11.2"
 
 [build-dependencies]
 cc = "1"

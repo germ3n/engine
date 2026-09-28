@@ -700,7 +700,7 @@ choices, and otherwise the license printed for that crate. r-efi offers
 LGPL-2.1-or-later as one option; that option is not used. unicode-ident is
 MIT plus the Unicode License V3, and both apply.
 
-284 crates.
+295 crates.
 
 ab_glyph 0.2.32
   Apache-2.0
@@ -983,6 +983,10 @@ find-msvc-tools 0.1.12
   MIT OR Apache-2.0
   Copyright (c) 2014 Alex Crichton
 
+fnv 1.0.7
+  Apache-2.0 / MIT
+  Copyright (c) 2017 Contributors
+
 foldhash 0.2.0
   Zlib
   Copyright (c) 2024 Orson Peters
@@ -1014,6 +1018,14 @@ futures-util 0.3.34
 gethostname 1.1.0
   Apache-2.0
   copyright notice that is included in or attached to the work; copyright license to reproduce, prepare Derivative Works of,; Copyright [yyyy] [name of copyright owner]
+
+gilrs 0.11.2
+  Apache-2.0/MIT
+  Copyright 2016-2018 Mateusz Sieczko and other GilRs Developers
+
+gilrs-core 0.6.8
+  Apache-2.0/MIT
+  Mateusz Sieczko
 
 getrandom 0.3.4
   MIT OR Apache-2.0
@@ -1091,9 +1103,25 @@ ident_case 1.0.1
   MIT/Apache-2.0
   Ted Driggs
 
+gilrs 0.11.2
+  Apache-2.0/MIT
+  Copyright 2016-2018 Mateusz Sieczko and other GilRs Developers
+
+gilrs-core 0.6.8
+  Apache-2.0/MIT
+  Mateusz Sieczko
+
 indexmap 2.14.2
   Apache-2.0 OR MIT
   Copyright (c) 2016--2017
+
+inotify 0.11.5
+  ISC
+  Copyright (c) Hanno Braun and contributors
+
+inotify-sys 0.1.8
+  ISC
+  Copyright (c) Hanno Braun and contributors
 
 is_terminal_polyfill 1.70.2
   MIT OR Apache-2.0
@@ -1142,6 +1170,10 @@ libm 0.2.16
 libredox 0.1.24
   MIT
   Copyright (c) 2023 4lDO2
+
+libudev-sys 0.1.4
+  MIT
+  Copyright (c) 2015 David Cuddeback
 
 linked-hash-map 0.5.6
   MIT/Apache-2.0
@@ -1215,6 +1247,10 @@ ndk-sys 0.5.0+25.2.9519653
   MIT OR Apache-2.0
   The Rust Windowing contributors
 
+nix 0.31.3
+  MIT
+  Copyright (c) 2015 Carl Lerche + nix-rust Authors
+
 num-traits 0.2.19
   MIT OR Apache-2.0
   Copyright (c) 2014 The Rust Project Developers
@@ -1239,9 +1275,17 @@ objc2 0.4.1
   MIT
   Steven Sheldon, Mads Marquart,
 
+objc2-core-foundation 0.3.2
+  Zlib OR Apache-2.0 OR MIT
+  Mads Marquart
+
 objc2-encode 3.0.0
   MIT
   Steven Sheldon, Mads Marquart,
+
+objc2-io-kit 0.3.2
+  Zlib OR Apache-2.0 OR MIT
+  Mads Marquart
 
 once_cell 1.21.4
   MIT OR Apache-2.0
@@ -1509,6 +1553,11 @@ twox-hash 2.1.4
   MIT
   Copyright (c) 2015 Jake Goulding
 
+uuid 1.26.1
+  Apache-2.0 OR MIT
+  Copyright (c) 2014 The Rust Project Developers
+  Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
+
 unicode-ident 1.0.24
   (MIT OR Apache-2.0) AND Unicode-3.0
   COPYRIGHT AND PERMISSION NOTICE; Copyright © 1991-2023 Unicode, Inc.
@@ -1528,6 +1577,10 @@ unicode-xid 0.2.6
 utf8parse 0.2.2
   Apache-2.0 OR MIT
   Copyright (c) 2016 Joe Wilm
+
+vec_map 0.8.2
+  MIT/Apache-2.0
+  Copyright (c) 2015 The Rust Project Developers
 
 version_check 0.9.5
   MIT/Apache-2.0
