@@ -37,7 +37,7 @@ impl<In, Out> GameState<In, Out> {
         let mut cvars = HashMap::new();
         cvars.insert(
             "sv_gravity".to_string(),
-            Arc::new(ConVar::new("sv_gravity", ConVarValue::Float(800.0), "World gravity", Some(false), Some(true))),
+            Arc::new(ConVar::new("sv_gravity", ConVarValue::Float(24.0), "World gravity", Some(false), Some(true))),
         );
 
         let cvars = Arc::new(cvars);

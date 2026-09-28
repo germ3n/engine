@@ -2,6 +2,7 @@
 mod platform;
 
 mod entities;
+mod movement;
 mod world;
 mod network;
 mod state;

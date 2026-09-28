@@ -477,6 +477,110 @@ impl VoxelWorld {
         })
     }
 
+    pub fn sweep(&self, start: Vector3, end: Vector3, mins: Vector3, maxs: Vector3) -> Option<TraceHit> {
+        if !is_finite(start) || !is_finite(end) || !is_finite(mins) || !is_finite(maxs) {
+            return None;
+        }
+
+        let scale = self.scale;
+
+        if scale <= 0.0 {
+            return None;
+        }
+
+        let travel_x = end.x - start.x;
+        let travel_y = end.y - start.y;
+        let travel_z = end.z - start.z;
+        let max_dist = (travel_x * travel_x + travel_y * travel_y + travel_z * travel_z).sqrt();
+        let (dir_x, dir_y, dir_z) = if max_dist > 0.0 {
+            let inv = 1.0 / max_dist;
+
+            (travel_x * inv, travel_y * inv, travel_z * inv)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        let min_x = start.x.min(end.x) + mins.x;
+        let min_y = start.y.min(end.y) + mins.y;
+        let min_z = start.z.min(end.z) + mins.z;
+        let max_x = start.x.max(end.x) + maxs.x;
+        let max_y = start.y.max(end.y) + maxs.y;
+        let max_z = start.z.max(end.z) + maxs.z;
+        let x0 = floor_i32(min_x / scale);
+        let y0 = floor_i32(min_y / scale);
+        let z0 = floor_i32(min_z / scale);
+        let mut x1 = floor_i32((max_x - 1e-9) / scale);
+        let mut y1 = floor_i32((max_y - 1e-9) / scale);
+        let mut z1 = floor_i32((max_z - 1e-9) / scale);
+
+        if x1 < x0 {
+            x1 = x0;
+        }
+
+        if y1 < y0 {
+            y1 = y0;
+        }
+
+        if z1 < z0 {
+            z1 = z0;
+        }
+
+        if x1 - x0 > 48 {
+            x1 = x0 + 48;
+        }
+
+        if y1 - y0 > 48 {
+            y1 = y0 + 48;
+        }
+
+        if z1 - z0 > 48 {
+            z1 = z0 + 48;
+        }
+
+        let mut best_dist = f64::MAX;
+        let mut best: Option<TraceHit> = None;
+        let mut z = z0;
+
+        while z <= z1 {
+            let mut y = y0;
+
+            while y <= y1 {
+                let mut x = x0;
+
+                while x <= x1 {
+                    let pos = BlockPos { x, y, z };
+
+                    if self.is_solid(pos) {
+                        let cell_min = Vector3::new(x as f64 * scale, y as f64 * scale, z as f64 * scale);
+                        let cell_max = Vector3::new(cell_min.x + scale, cell_min.y + scale, cell_min.z + scale);
+                        let box_min = Vector3::new(cell_min.x - maxs.x, cell_min.y - maxs.y, cell_min.z - maxs.z);
+                        let box_max = Vector3::new(cell_max.x - mins.x, cell_max.y - mins.y, cell_max.z - mins.z);
+
+                        if let Some((distance, normal)) = ray_box(start, dir_x, dir_y, dir_z, max_dist, box_min, box_max) {
+                            if distance < best_dist {
+                                best_dist = distance;
+                                best = Some(TraceHit {
+                                    block: pos,
+                                    face: normal_face(normal),
+                                    distance,
+                                    position: Vector3::new(start.x + dir_x * distance, start.y + dir_y * distance, start.z + dir_z * distance),
+                                });
+                            }
+                        }
+                    }
+
+                    x += 1;
+                }
+
+                y += 1;
+            }
+
+            z += 1;
+        }
+
+        best
+    }
+
     fn trace_grid(&self, start: Vector3, end: Vector3) -> Option<TraceHit> {
         if !is_finite(start) || !is_finite(end) {
             return None;
@@ -752,6 +856,113 @@ fn is_finite(point: Vector3) -> bool {
     point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
 }
 
+fn point_inside(point: Vector3, min: Vector3, max: Vector3) -> bool {
+    point.x > min.x + 1e-8 && point.x < max.x - 1e-8 && point.y > min.y + 1e-8 && point.y < max.y - 1e-8 && point.z > min.z + 1e-8 && point.z < max.z - 1e-8
+}
+
+fn normal_face(normal: Vector3) -> Option<Face> {
+    if normal.x < -0.5 {
+        return Some(Face::NegX);
+    }
+
+    if normal.x > 0.5 {
+        return Some(Face::PosX);
+    }
+
+    if normal.y < -0.5 {
+        return Some(Face::NegY);
+    }
+
+    if normal.y > 0.5 {
+        return Some(Face::PosY);
+    }
+
+    if normal.z < -0.5 {
+        return Some(Face::NegZ);
+    }
+
+    if normal.z > 0.5 {
+        return Some(Face::PosZ);
+    }
+
+    None
+}
+
+fn ray_box(start: Vector3, dir_x: f64, dir_y: f64, dir_z: f64, max_dist: f64, min: Vector3, max: Vector3) -> Option<(f64, Vector3)> {
+    if min.x >= max.x || min.y >= max.y || min.z >= max.z {
+        return None;
+    }
+
+    if max_dist == 0.0 {
+        if point_inside(start, min, max) {
+            return Some((0.0, Vector3::new(0.0, 0.0, 0.0)));
+        }
+
+        return None;
+    }
+
+    let mut t_min = 0.0;
+    let mut t_max = max_dist;
+    let mut normal = Vector3::new(0.0, 0.0, 0.0);
+    let axes = [
+        (start.x, dir_x, min.x, max.x, Vector3::new(-1.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)),
+        (start.y, dir_y, min.y, max.y, Vector3::new(0.0, -1.0, 0.0), Vector3::new(0.0, 1.0, 0.0)),
+        (start.z, dir_z, min.z, max.z, Vector3::new(0.0, 0.0, -1.0), Vector3::new(0.0, 0.0, 1.0)),
+    ];
+    let mut idx = 0;
+
+    while idx < axes.len() {
+        let (origin, dir, lo, hi, neg, pos) = axes[idx];
+
+        if dir.abs() <= 1e-12 {
+            if origin < lo || origin > hi {
+                return None;
+            }
+        } else {
+            let inv = 1.0 / dir;
+            let mut near = (lo - origin) * inv;
+            let mut far = (hi - origin) * inv;
+            let mut enter = neg;
+
+            if near > far {
+                let swap = near;
+                near = far;
+                far = swap;
+                enter = pos;
+            }
+
+            if near > t_min {
+                t_min = near;
+                normal = enter;
+            }
+
+            if far < t_max {
+                t_max = far;
+            }
+
+            if t_min > t_max {
+                return None;
+            }
+        }
+
+        idx += 1;
+    }
+
+    if t_max < 0.0 || t_min > max_dist {
+        return None;
+    }
+
+    if t_min < 0.0 {
+        if point_inside(start, min, max) {
+            return Some((0.0, Vector3::new(0.0, 0.0, 0.0)));
+        }
+
+        return None;
+    }
+
+    Some((t_min, normal))
+}
+
 fn axis(origin: f64, dir: f64) -> Axis {
     let cell = floor_i32(origin);
 
@@ -870,6 +1081,19 @@ mod tests {
         assert_eq!(down.face, Some(Face::PosZ));
         assert!(near(down.distance, 1.5));
         assert!(near(down.position.z, 1.0));
+    }
+
+    #[test]
+    fn sweep_expands_the_block_by_the_hull() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block(1));
+        let mins = Vector3::new(-0.3, -0.3, 0.0);
+        let maxs = Vector3::new(0.3, 0.3, 1.6);
+        let hit = world.sweep(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5), mins, maxs).unwrap();
+
+        assert_eq!(hit.face, Some(Face::NegX));
+        assert!(near(hit.distance, 1.2));
+        assert!(near(hit.position.x, -0.3));
     }
 
     #[test]

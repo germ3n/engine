@@ -22,6 +22,7 @@ pub struct NetTransform {
     pub position: Vector3,
     pub angles: Angle3,
     pub velocity: Vector3,
+    pub ack: u64,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]

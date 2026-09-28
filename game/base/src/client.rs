@@ -22,9 +22,15 @@ use std::time::{Duration, Instant};
 use crate::network::{PacketType, ReliableChannel, ReliableBody, EnqueueStatus, NetSend, FromServer, UnreliableInbox, UnreliableAssembly, take_unreliable, OUTBOUND_CAP, RECV_BUDGET};
 use crate::network::packet::{bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, KEEPALIVE_INTERVAL, STREAM_STATE};
 use crate::network::events::{EntitySnapshot, NetTransform};
-use crate::entities::Player;
+use crate::entities::{EntityHandle, Player};
+use crate::movement::{self, Prediction, UserCommand};
+use crate::r#enum::InputButtons;
+use crate::script::libs::angle3::Angle3;
+use crate::script::libs::vector3::Vector3;
 use crate::network::usermessage::UserMsgReader;
 use crate::entities::context::FrameInfo;
+
+const LOOK_SPEED: f32 = 0.0025 * (180.0 / std::f32::consts::PI);
 
 struct TickIngress {
     tick: u64,
@@ -179,7 +185,9 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut scene_brushes = u64::MAX;
     let mut scene_revision = 0u64;
     let mut camera = FlyCamera::new();
+    let mut prediction = Prediction::new();
     let mut captured = false;
+    let mut attack = false;
     let mut keys = HashSet::new();
     let mut touches = Vec::new();
 
@@ -220,6 +228,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     if let PhysicalKey::Code(code) = event.physical_key {
                         if code == KeyCode::Escape && event.state == ElementState::Pressed {
                             captured = false;
+                            attack = false;
                             set_capture(client_window.winit_window(), false);
                         } else if event.state == ElementState::Pressed {
                             keys.insert(code);
@@ -228,13 +237,21 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         }
                     }
                 }
-                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                    captured = true;
-                    set_capture(client_window.winit_window(), true);
+                WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                    if state == ElementState::Pressed {
+                        if captured {
+                            attack = true;
+                        }
+
+                        captured = true;
+                        set_capture(client_window.winit_window(), true);
+                    } else {
+                        attack = false;
+                    }
                 }
                 WindowEvent::Touch(touch) => {
                     let width = client_window.winit_window().inner_size().width.max(1) as f64;
-                    apply_touch(&mut touches, &touch, width, &mut camera);
+                    apply_touch(&mut touches, &touch, width, &mut camera, &mut prediction.look, !prediction.local.is_null());
                 }
                 WindowEvent::RedrawRequested => {
                     let size = client_window.winit_window().inner_size();
@@ -304,7 +321,13 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
             },
             Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
                 if captured && !client_window.vr_input().active {
-                    camera.look(delta.0 as f32, delta.1 as f32);
+                    if prediction.local.is_null() {
+                        camera.look(delta.0 as f32, delta.1 as f32);
+                    } else {
+                        prediction.look.y += delta.0 as f32 * LOOK_SPEED;
+                        prediction.look.p -= delta.1 as f32 * LOOK_SPEED;
+                        prediction.look.p = prediction.look.p.clamp(-89.0, 89.0);
+                    }
                 }
             }
             Event::AboutToWait => {
@@ -312,45 +335,6 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 let dt = now.duration_since(last_frame).as_secs_f64();
                 last_frame = now;
                 let frame_dt = (dt as f32).min(0.1);
-                let speed = game.voxel_world.scale() as f32 * 14.0;
-                let (touch_forward, touch_right) = touch_wish(&touches);
-                let forward = (held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS) + touch_forward).clamp(-1.0, 1.0);
-                let right = (held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA) + touch_right).clamp(-1.0, 1.0);
-                let up = held_key(&keys, KeyCode::Space) - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
-                let vr = client_window.vr_input();
-
-                if vr.active {
-                    camera.yaw -= vr.turn * frame_dt * 1.5;
-                    camera.fly_facing(camera.yaw + vr.yaw, forward + vr.move_y, right + vr.move_x, up, frame_dt, speed);
-                } else {
-                    camera.fly(forward, right, up, frame_dt, speed);
-                }
-
-                {
-                    accumulated_time += dt;
-                    //let mut ticked = false;
-
-                    // Use a while loop to catch up if a frame lags
-                    while accumulated_time >= game.tick_interval {
-                        accumulated_time -= game.tick_interval;
-
-                        game.cur_time += game.tick_interval; //game.cur_time.lock().unwrap();
-                        game.frame_time = game.tick_interval;
-                        game.tick_count += 1;
-
-                        game.entities.set_frame(FrameInfo {
-                            dt: game.tick_interval,
-                            cur_time: game.cur_time,
-                            tick_count: game.tick_count,
-                        });
-                        game.entities.tick_all();
-                        //ticked = true;
-                    }
-
-                    /*if !ticked {
-                        std::thread::sleep(Duration::from_millis(1));
-                    }*/
-                }
 
                 while let Some((hash, data)) = game.script_engine.poll_usermessage() {
                     game.send_reliable(ClientToServer::UserMessage { hash, data });
@@ -363,6 +347,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
+                                prediction.clear();
                                 game.voxel_world.clear();
                                 hold_events = true;
                                 held.clear();
@@ -382,6 +367,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                     if let Some(built) = snapshot_ingress.push(generation, reset, part, parts, entities) {
                                         if built.reset {
                                             game.entities.clear();
+                                            prediction.clear();
                                         }
 
                                         for entity in built.entities {
@@ -390,7 +376,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                                         hold_events = false;
                                         while let Some(waiting) = held.pop_front() {
-                                            apply_server_event(&mut game, &mut tick_ingress, waiting);
+                                            apply_server_event(&mut game, &mut tick_ingress, &mut prediction, waiting);
                                         }
                                     } else {
                                         hold_events = true;
@@ -406,7 +392,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 continue;
                             }
 
-                            apply_server_event(&mut game, &mut tick_ingress, message);
+                            apply_server_event(&mut game, &mut tick_ingress, &mut prediction, message);
 
                             continue;
                         }
@@ -415,6 +401,70 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                 while let Some((hash, data)) = game.script_engine.poll_usermessage() {
                     game.send_reliable(ClientToServer::UserMessage { hash, data });
+                }
+
+                let speed = game.voxel_world.scale() as f32 * 14.0;
+                let (touch_forward, touch_right) = touch_wish(&touches);
+                let mut forward = held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS) + touch_forward;
+                let mut right = held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA) + touch_right;
+                let up = held_key(&keys, KeyCode::Space) - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
+                let vr = client_window.vr_input();
+
+                if prediction.arm_look {
+                    prediction.look.p = camera.pitch.to_degrees();
+                    prediction.look.y = camera.yaw.to_degrees();
+                    prediction.look.r = 0.0;
+                    prediction.arm_look = false;
+                }
+
+                if vr.active {
+                    let turn = vr.turn * frame_dt * 1.5;
+
+                    if prediction.local.is_null() {
+                        camera.yaw -= turn;
+                    } else {
+                        prediction.look.y -= turn.to_degrees();
+                    }
+
+                    forward += vr.move_y;
+                    right += vr.move_x;
+                }
+
+                forward = forward.clamp(-1.0, 1.0);
+                right = right.clamp(-1.0, 1.0);
+
+                let possessed = !prediction.local.is_null() && game.entities.is_valid(prediction.local);
+
+                if !possessed && vr.active {
+                    camera.fly_facing(camera.yaw + vr.yaw, forward, right, up, frame_dt, speed);
+                } else if !possessed {
+                    camera.fly(forward, right, up, frame_dt, speed);
+                }
+
+                accumulated_time += dt;
+
+                while accumulated_time >= game.tick_interval {
+                    accumulated_time -= game.tick_interval;
+                    game.cur_time += game.tick_interval;
+                    game.frame_time = game.tick_interval;
+                    game.tick_count += 1;
+                    game.entities.set_frame(FrameInfo {
+                        dt: game.tick_interval,
+                        cur_time: game.cur_time,
+                        tick_count: game.tick_count,
+                    });
+                    game.entities.tick_all();
+
+                    if possessed {
+                        predict_tick(&mut game, &mut prediction, &keys, attack, forward, right, vr.yaw);
+                    }
+                }
+
+                if possessed {
+                    if let Some(origin) = body_origin(&game, prediction.local) {
+                        let buttons = command_buttons(&keys, attack);
+                        place_camera(&mut camera, origin, prediction.look, movement::eye_height(buttons));
+                    }
                 }
 
                 client_window.winit_window().request_redraw();
@@ -454,7 +504,7 @@ struct TouchPoint {
     look: bool,
 }
 
-fn apply_touch(points: &mut Vec<TouchPoint>, touch: &winit::event::Touch, width: f64, camera: &mut FlyCamera) {
+fn apply_touch(points: &mut Vec<TouchPoint>, touch: &winit::event::Touch, width: f64, camera: &mut FlyCamera, look: &mut Angle3, possessed: bool) {
     match touch.phase {
         TouchPhase::Started => {
             points.push(TouchPoint {
@@ -481,7 +531,13 @@ fn apply_touch(points: &mut Vec<TouchPoint>, touch: &winit::event::Touch, width:
                     points[idx].last_y = touch.location.y;
 
                     if points[idx].look {
-                        camera.look(dx as f32, dy as f32);
+                        if possessed {
+                            look.y += dx as f32 * LOOK_SPEED;
+                            look.p -= dy as f32 * LOOK_SPEED;
+                            look.p = look.p.clamp(-89.0, 89.0);
+                        } else {
+                            camera.look(dx as f32, dy as f32);
+                        }
                     }
 
                     break;
@@ -538,7 +594,127 @@ fn set_capture(window: &winit::window::Window, captured: bool) {
     window.set_cursor_visible(true);
 }
 
-fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ingress: &mut TickIngress, message: ServerToClient) {
+fn command_buttons(keys: &HashSet<KeyCode>, attack: bool) -> InputButtons {
+    let mut buttons = InputButtons::NONE;
+
+    if attack {
+        buttons |= InputButtons::IN_ATTACK;
+    }
+
+    if keys.contains(&KeyCode::Space) {
+        buttons |= InputButtons::IN_JUMP;
+    }
+
+    if keys.contains(&KeyCode::ShiftLeft) || keys.contains(&KeyCode::ShiftRight) {
+        buttons |= InputButtons::IN_SPRINT;
+    }
+
+    if keys.contains(&KeyCode::ControlLeft) || keys.contains(&KeyCode::ControlRight) {
+        buttons |= InputButtons::IN_DUCK;
+    }
+
+    if keys.contains(&KeyCode::AltLeft) || keys.contains(&KeyCode::AltRight) {
+        buttons |= InputButtons::IN_WALK;
+    }
+
+    buttons
+}
+
+fn command_view(look: Angle3, vr_yaw: f32) -> Angle3 {
+    let mut view = look;
+    view.y += vr_yaw.to_degrees();
+    view.p = view.p.clamp(-89.0, 89.0);
+
+    view.normalize()
+}
+
+fn body_origin(game: &GameState<FromServer, ClientToServer>, handle: EntityHandle) -> Option<Vector3> {
+    game.entities.get(handle).map(|entity| entity.base().position)
+}
+
+fn place_camera(camera: &mut FlyCamera, origin: Vector3, look: Angle3, eye: f64) {
+    camera.x = origin.x as f32;
+    camera.y = origin.y as f32;
+    camera.z = (origin.z + eye) as f32;
+    camera.yaw = look.y.to_radians();
+    camera.pitch = look.p.to_radians();
+}
+
+fn predict_tick(
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    keys: &HashSet<KeyCode>,
+    attack: bool,
+    forward: f32,
+    right: f32,
+    vr_yaw: f32,
+) {
+    if !game.entities.is_valid(prediction.local) {
+        return;
+    }
+
+    let (mut position, mut velocity, mut angles) = {
+        let Some(entity) = game.entities.get(prediction.local) else {
+            return;
+        };
+
+        let base = entity.base();
+
+        (base.position, base.velocity, base.angles)
+    };
+    let cmd = UserCommand {
+        tick: game.tick_count,
+        buttons: command_buttons(keys, attack),
+        wish: Vector3::new(forward as f64, right as f64, 0.0),
+        view: command_view(prediction.look, vr_yaw),
+    };
+    let prev = prediction.previous();
+    let dt = game.tick_interval;
+    let gravity = movement::gravity(&game.cvars);
+    movement::step(&mut position, &mut velocity, &mut angles, &cmd, prev, dt, gravity, &game.brush_world, &game.voxel_world);
+    prediction.push(cmd.clone());
+
+    if let Some(entity) = game.entities.get_mut(prediction.local) {
+        let base = entity.base_mut();
+        base.position = position;
+        base.velocity = velocity;
+        base.angles = angles;
+    }
+
+    game.send_unreliable(ClientToServer::PlayerInput {
+        tick: cmd.tick,
+        buttons: cmd.buttons,
+        movement: cmd.wish,
+        viewangles: cmd.view,
+    });
+}
+
+fn reconcile_player(game: &mut GameState<FromServer, ClientToServer>, prediction: &mut Prediction, transform: &NetTransform) {
+    if transform.handle != prediction.local || !prediction.take_ack(transform.ack) {
+        return;
+    }
+
+    let mut position = transform.position;
+    let mut velocity = transform.velocity;
+    let mut angles = transform.angles;
+    let dt = game.tick_interval;
+    let gravity = movement::gravity(&game.cvars);
+    prediction.replay(&mut position, &mut velocity, &mut angles, dt, gravity, &game.brush_world, &game.voxel_world);
+
+    if let Some(entity) = game.entities.get_mut(transform.handle) {
+        let base = entity.base_mut();
+        base.position = position;
+        base.velocity = velocity;
+        base.angles = angles;
+    }
+
+    game.run_hook(
+        "TransformUpdated",
+        (transform.handle, Some(position), Some(angles), Some(velocity)),
+    );
+}
+
+fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ingress: &mut TickIngress, prediction: &mut Prediction, message: ServerToClient) {
     match message {
                         ServerToClient::PlayerConnected { handle, name } => {
                             game.run_hook("PlayerConnected", (handle, name));
@@ -547,6 +723,7 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                             game.run_hook("PlayerDisconnected", handle);
                         },
                         ServerToClient::PlayerSpawned { handle } => {
+                            prediction.possess(handle);
                             game.run_hook("PlayerSpawned", handle);
                         },
                         ServerToClient::PlayerDamaged { handle, attacker, inflictor, damage, new_health } => {
@@ -588,9 +765,29 @@ fn apply_server_event(game: &mut GameState<FromServer, ClientToServer>, tick_ing
                                 println!("[map] {err}");
                             }
                         },
+                        ServerToClient::EntitySpawned { handle, class_hash, position } => {
+                            if class_hash == Player::CLASS_HASH && !game.entities.is_valid(handle) {
+                                let mut player = Player::new();
+                                player.base.position = position;
+                                game.entities.insert_at(handle, Box::new(player));
+                            }
+                        },
+                        ServerToClient::EntityDespawned { handle } => {
+                            game.entities.remove(handle);
+
+                            if prediction.local == handle {
+                                prediction.clear();
+                            }
+                        },
                         ServerToClient::TickState { tick, part, parts, transforms } => {
                             if let Some(transforms) = tick_ingress.push(tick, part, parts, transforms) {
                                 for transform in transforms {
+                                    if transform.handle == prediction.local {
+                                        reconcile_player(game, prediction, &transform);
+
+                                        continue;
+                                    }
+
                                     if let Some(entity) = game.entities.get_mut(transform.handle) {
                                         let base = entity.base_mut();
                                         base.position = transform.position;

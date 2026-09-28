@@ -142,6 +142,7 @@ impl Brush {
 
 pub struct BrushMap {
     brushes: Vec<Brush>,
+    spawns: Vec<Vector3>,
     revision: u64,
 }
 
@@ -149,6 +150,7 @@ impl BrushMap {
     pub fn new() -> Self {
         Self {
             brushes: Vec::new(),
+            spawns: Vec::new(),
             revision: 0,
         }
     }
@@ -225,12 +227,17 @@ impl BrushMap {
     }
 
     pub fn clear(&mut self) {
-        if self.brushes.is_empty() {
+        if self.brushes.is_empty() && self.spawns.is_empty() {
             return;
         }
 
         self.brushes.clear();
+        self.spawns.clear();
         self.touch();
+    }
+
+    pub fn spawns(&self) -> &[Vector3] {
+        &self.spawns
     }
 
     pub fn mesh(&self) -> Vec<f32> {
@@ -302,6 +309,54 @@ impl BrushMap {
                         start.y + dir.y * distance,
                         start.z + dir.z * distance,
                     ),
+                    normal,
+                });
+            }
+        }
+
+        best
+    }
+
+    pub fn sweep(&self, start: Vector3, end: Vector3, mins: Vector3, maxs: Vector3) -> Option<BrushHit> {
+        if !finite(start) || !finite(end) || !finite(mins) || !finite(maxs) {
+            return None;
+        }
+
+        let delta = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
+        let max_dist = delta.len();
+        let mut best: Option<BrushHit> = None;
+
+        if max_dist == 0.0 {
+            for (idx, brush) in self.brushes.iter().enumerate() {
+                let expanded = expand_brush(brush, mins, maxs);
+
+                if contains(&expanded, start) {
+                    return Some(BrushHit {
+                        brush: idx,
+                        distance: 0.0,
+                        position: start,
+                        normal: None,
+                    });
+                }
+            }
+
+            return None;
+        }
+
+        let inv = 1.0 / max_dist;
+        let dir = Vector3::new(delta.x * inv, delta.y * inv, delta.z * inv);
+
+        for (idx, brush) in self.brushes.iter().enumerate() {
+            let expanded = expand_brush(brush, mins, maxs);
+            let Some((distance, normal)) = hit_planes(&expanded, start, dir, max_dist) else {
+                continue;
+            };
+
+            if best.as_ref().map(|hit| distance < hit.distance).unwrap_or(true) {
+                best = Some(BrushHit {
+                    brush: idx,
+                    distance,
+                    position: Vector3::new(start.x + dir.x * distance, start.y + dir.y * distance, start.z + dir.z * distance),
                     normal,
                 });
             }
@@ -485,6 +540,10 @@ fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
     let mut map = BrushMap::new();
 
     for entity in compiled.entities {
+        if let Some(origin) = player_start(&entity) {
+            map.spawns.push(origin);
+        }
+
         for brush in entity.brushes {
             let mut planes = Vec::with_capacity(brush.faces.len());
 
@@ -1392,11 +1451,76 @@ fn material_rgb(id: u16) -> [f32; 3] {
 }
 
 fn hit_brush(brush: &Brush, start: Vector3, dir: Vector3, max_dist: f64) -> Option<(f64, Option<Vector3>)> {
+    hit_planes(&brush.planes, start, dir, max_dist)
+}
+
+fn expand_brush(brush: &Brush, mins: Vector3, maxs: Vector3) -> Vec<Plane> {
+    let mut planes = Vec::with_capacity(brush.planes.len());
+
+    for plane in &brush.planes {
+        planes.push(Plane {
+            normal: plane.normal,
+            distance: plane.distance - hull_min_dot(plane.normal, mins, maxs),
+            material: plane.material,
+        });
+    }
+
+    planes
+}
+
+fn hull_min_dot(normal: Vector3, mins: Vector3, maxs: Vector3) -> f64 {
+    axis_extent(normal.x, mins.x, maxs.x) + axis_extent(normal.y, mins.y, maxs.y) + axis_extent(normal.z, mins.z, maxs.z)
+}
+
+fn axis_extent(normal: f64, min: f64, max: f64) -> f64 {
+    if normal > 0.0 {
+        normal * min
+    } else {
+        normal * max
+    }
+}
+
+fn parse_origin(text: &str) -> Option<Vector3> {
+    let mut parts = text.split_whitespace();
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    let z = parts.next()?.parse().ok()?;
+    let origin = Vector3::new(x, y, z);
+
+    if finite(origin) {
+        Some(origin)
+    } else {
+        None
+    }
+}
+
+fn player_start(entity: &CompiledEntity) -> Option<Vector3> {
+    let mut spawn = false;
+    let mut origin = None;
+
+    for pair in &entity.keys {
+        if pair.key == "classname" && pair.value == "info_player_start" {
+            spawn = true;
+        }
+
+        if pair.key == "origin" {
+            origin = parse_origin(&pair.value);
+        }
+    }
+
+    if spawn {
+        origin
+    } else {
+        None
+    }
+}
+
+fn hit_planes(planes: &[Plane], start: Vector3, dir: Vector3, max_dist: f64) -> Option<(f64, Option<Vector3>)> {
     let mut t_enter = 0.0;
     let mut t_exit = max_dist;
     let mut enter_normal = None;
 
-    for plane in &brush.planes {
+    for plane in planes {
         let denom = plane.normal.dot(dir);
         let offset = plane.distance - plane.normal.dot(start);
 
@@ -1429,7 +1553,7 @@ fn hit_brush(brush: &Brush, start: Vector3, dir: Vector3, max_dist: f64) -> Opti
     }
 
     if t_enter <= PLANE_EPS {
-        if contains(&brush.planes, start) {
+        if contains(planes, start) {
             return Some((0.0, None));
         }
 
@@ -1514,6 +1638,37 @@ mod tests {
         assert!(near(down.distance, 1.5));
         assert!(near(down.position.z, 1.0));
         assert!(near(down.normal.unwrap().z, 1.0));
+    }
+
+    #[test]
+    fn sweep_expands_the_box_by_the_hull() {
+        let map = box_map();
+        let mins = Vector3::new(-0.3, -0.3, 0.0);
+        let maxs = Vector3::new(0.3, 0.3, 1.6);
+        let hit = map.sweep(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5), mins, maxs).unwrap();
+
+        assert!(near(hit.distance, 1.2));
+        assert!(near(hit.position.x, -0.3));
+        assert!(near(hit.normal.unwrap().x, -1.0));
+    }
+
+    #[test]
+    fn player_start_is_kept() {
+        let mut compiled = CompiledMap::worldspawn();
+        compiled.entities.push(CompiledEntity {
+            keys: vec![
+                CompiledPair { key: "classname".to_string(), value: "info_player_start".to_string() },
+                CompiledPair { key: "origin".to_string(), value: "0 28 2".to_string() },
+            ],
+            brushes: Vec::new(),
+        });
+        let mut map = BrushMap::new();
+        map.load_document(&compiled).unwrap();
+
+        assert_eq!(map.spawns().len(), 1);
+        assert!(near(map.spawns()[0].x, 0.0));
+        assert!(near(map.spawns()[0].y, 28.0));
+        assert!(near(map.spawns()[0].z, 2.0));
     }
 
     #[test]

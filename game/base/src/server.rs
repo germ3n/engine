@@ -1,5 +1,6 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::net::TcpStream;
+use std::collections::VecDeque;
 use crate::network::wait_socket;
 use crate::network::{ClientToServer, ServerToClient};
 use crate::state::GameState;
@@ -13,14 +14,73 @@ use crate::network::server::ReliableSendError;
 use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::network::packet::{encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart};
 use crate::entities::context::FrameInfo;
+use crate::entities::{EntityHandle, Player};
+use crate::movement::{self, UserCommand};
+use crate::r#enum::InputButtons;
+use crate::script::libs::vector3::Vector3;
 use std::net::SocketAddr;
+
+struct RemotePlayer {
+    addr: SocketAddr,
+    player: EntityHandle,
+    pending: VecDeque<UserCommand>,
+    last_buttons: InputButtons,
+    ack: u64,
+}
+
+impl RemotePlayer {
+    fn push_cmd(&mut self, mut cmd: UserCommand) {
+        movement::sanitize(&mut cmd);
+
+        if cmd.tick <= self.ack {
+            return;
+        }
+
+        let mut idx = 0;
+
+        while idx < self.pending.len() {
+            if self.pending[idx].tick == cmd.tick {
+                return;
+            }
+
+            if self.pending[idx].tick > cmd.tick {
+                break;
+            }
+
+            idx += 1;
+        }
+
+        self.pending.insert(idx, cmd);
+
+        while self.pending.len() > 64 {
+            self.pending.pop_front();
+        }
+    }
+
+    fn take_cmd(&mut self) -> Option<UserCommand> {
+        loop {
+            let Some(tick) = self.pending.front().map(|cmd| cmd.tick) else {
+                break;
+            };
+
+            if tick > self.ack {
+                break;
+            }
+
+            self.pending.pop_front();
+        }
+
+        self.pending.pop_front()
+    }
+}
 
 #[cfg(feature = "server")]
 pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
     let mut tick_idx = 0;
-    let mut peers = Vec::new(); 
+    let mut peers = Vec::new();
+    let mut players = Vec::new();
 
     loop {
         let now = Instant::now();
@@ -43,7 +103,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                 tick_count: game.tick_count,
             });
             game.entities.tick_all();
-            
+            simulate_players(&mut game, &mut players);
+
             if tick_idx % 100 == 0 {
                 let hash = hash_usermessage_name("Test");
                 game.send_reliable(ServerToClient::UserMessage {
@@ -68,19 +129,71 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                         peers.push(addr);
                     }
 
+                    if !players.iter().any(|player| player.addr == addr) {
+                        let handle = spawn_player(&mut game, players.len());
+
+                        if !handle.is_null() {
+                            players.push(RemotePlayer {
+                                addr,
+                                player: handle,
+                                pending: VecDeque::new(),
+                                last_buttons: InputButtons::NONE,
+                                ack: 0,
+                            });
+                            println!("[sv] spawn {handle:?}");
+                            let mut idx = 0;
+
+                            while idx < players.len() {
+                                if players[idx].addr != addr {
+                                    let origin = game.entities.get(handle).map(|entity| entity.base().position).unwrap_or(Vector3::new(0.0, 28.0, 2.0));
+                                    game.send_reliable_to(players[idx].addr, ServerToClient::EntitySpawned {
+                                        handle,
+                                        class_hash: Player::CLASS_HASH,
+                                        position: origin,
+                                    });
+                                }
+
+                                idx += 1;
+                            }
+                        }
+                    }
+
                     emit_snapshot(&game, addr, generation);
                     emit_voxel_baseline(&game, addr);
                     game.send_state_to(addr, ServerToClient::MapChange { map_name: game.map_name.clone() });
+
+                    if let Some(player) = players.iter().find(|player| player.addr == addr) {
+                        game.send_state_to(addr, ServerToClient::PlayerSpawned { handle: player.player });
+                    }
                 }
                 FromClient::Disconnected { addr } => {
                     println!("[sv] peer left {}", addr);
                     peers.retain(|peer| *peer != addr);
+                    drop_player(&mut game, addr, &mut players);
                 }
                 FromClient::Message { addr, event } => {
                     match event {
                         ClientToServer::UserMessage { hash, data } => {
                             println!("[sv] usermessage {hash} from {addr}");
                             game.run_usermessage(hash, UserMsgReader::new(data));
+                        }
+                        ClientToServer::PlayerInput { tick, buttons, movement, viewangles } => {
+                            let mut idx = 0;
+
+                            while idx < players.len() {
+                                if players[idx].addr == addr {
+                                    players[idx].push_cmd(UserCommand {
+                                        tick,
+                                        buttons,
+                                        wish: movement,
+                                        view: viewangles,
+                                    });
+
+                                    break;
+                                }
+
+                                idx += 1;
+                            }
                         }
                         _ => {}
                     }
@@ -93,7 +206,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         }
 
         if ticked {
-            emit_tick_state(&game);
+            emit_tick_state(&game, &players);
             emit_voxel_dirty(&mut game, &peers);
         }
 
@@ -480,6 +593,101 @@ fn take_client_unreliable(
 }
 
 #[cfg(feature = "server")]
+fn spawn_player(game: &mut GameState<FromClient, ServerToClient>, slot: usize) -> EntityHandle {
+    let mut origin = game.brush_world.spawns().first().copied().unwrap_or(Vector3::new(0.0, 28.0, 2.0));
+    origin.x += slot as f64 * 0.9;
+    let mut player = Player::new();
+    player.base.position = origin;
+
+    game.entities.spawn(Box::new(player)).unwrap_or(EntityHandle::NULL)
+}
+
+fn drop_player(game: &mut GameState<FromClient, ServerToClient>, addr: SocketAddr, players: &mut Vec<RemotePlayer>) {
+    let mut idx = 0;
+
+    while idx < players.len() {
+        if players[idx].addr != addr {
+            idx += 1;
+
+            continue;
+        }
+
+        let handle = players[idx].player;
+        game.entities.remove(handle);
+        game.send_reliable(ServerToClient::EntityDespawned { handle });
+        players.remove(idx);
+    }
+}
+
+fn simulate_players(game: &mut GameState<FromClient, ServerToClient>, players: &mut [RemotePlayer]) {
+    let dt = game.tick_interval;
+    let gravity = movement::gravity(&game.cvars);
+    let mut idx = 0;
+
+    while idx < players.len() {
+        let Some(cmd) = players[idx].take_cmd() else {
+            idx += 1;
+
+            continue;
+        };
+
+        let handle = players[idx].player;
+        let prev = players[idx].last_buttons;
+
+        if apply_command(game, handle, &cmd, prev, dt, gravity) {
+            players[idx].last_buttons = cmd.buttons;
+            players[idx].ack = cmd.tick;
+        }
+
+        idx += 1;
+    }
+}
+
+fn apply_command(
+    game: &mut GameState<FromClient, ServerToClient>,
+    handle: EntityHandle,
+    cmd: &UserCommand,
+    prev: InputButtons,
+    dt: f64,
+    gravity: f64,
+) -> bool {
+    let (mut position, mut velocity, mut angles) = {
+        let Some(entity) = game.entities.get(handle) else {
+            return false;
+        };
+
+        let base = entity.base();
+
+        (base.position, base.velocity, base.angles)
+    };
+    movement::step(&mut position, &mut velocity, &mut angles, cmd, prev, dt, gravity, &game.brush_world, &game.voxel_world);
+
+    let Some(entity) = game.entities.get_mut(handle) else {
+        return false;
+    };
+
+    let base = entity.base_mut();
+    base.position = position;
+    base.velocity = velocity;
+    base.angles = angles;
+
+    true
+}
+
+fn player_ack(players: &[RemotePlayer], handle: EntityHandle) -> u64 {
+    let mut idx = 0;
+
+    while idx < players.len() {
+        if players[idx].player == handle {
+            return players[idx].ack;
+        }
+
+        idx += 1;
+    }
+
+    0
+}
+
 fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
     game.send_state_to(addr, ServerToClient::VoxelScale { scale: game.voxel_world.scale() });
 
@@ -565,7 +773,7 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
 }
 
 #[cfg(feature = "server")]
-fn emit_tick_state(game: &GameState<FromClient, ServerToClient>) {
+fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[RemotePlayer]) {
     let tick = game.tick_count;
     let mut pending = Vec::new();
     for (handle, entity) in game.entities.iter() {
@@ -575,6 +783,7 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>) {
             position: base.position,
             angles: base.angles,
             velocity: base.velocity,
+            ack: player_ack(players, handle),
         });
     }
 
