@@ -24,6 +24,7 @@ bitflags = "2.13.2"
 
 [build-dependencies]
 cc = "1"
+mlua = { version = "0.12.1", features = ["luajit52", "vendored"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

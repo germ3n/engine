@@ -1,4 +1,6 @@
 fn main() {
+    compile_bundled_lua();
+
     cc::Build::new()
         .file("src/ui/vr_openvr.c")
         .compile("vr_openvr");
@@ -54,4 +56,63 @@ fn main() {
     }
 
     openvr.compile("openvr_api");
+}
+
+fn compile_bundled_lua()
+{
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let lua_out = out_dir.join("lua");
+    let strip = std::env::var("PROFILE").unwrap() == "release";
+    let sources = [
+        "src/script/libs/hook.lua",
+        "src/script/libs/net.lua",
+        "src/script/libs/vector3.lua",
+        "src/script/libs/angle3.lua",
+        "src/lua/menu/menu.lua",
+    ];
+
+    for source in sources
+    {
+        let src = manifest_dir.join(source);
+        let stem = src.file_stem().unwrap().to_string_lossy();
+        let dest = lua_out.join(format!("{stem}.luac"));
+        compile_lua(&src, &dest, strip);
+    }
+}
+
+fn compile_lua(src: &std::path::Path, dest: &std::path::Path, strip: bool)
+{
+    println!("cargo:rerun-if-changed={}", src.display());
+
+    let source = std::fs::read(src).unwrap_or_else(|err| {
+        panic!("failed to read {}: {err}", src.display());
+    });
+    let lua = mlua::Lua::new();
+    let chunk_name = src.file_name().and_then(|name| name.to_str()).unwrap_or("chunk.lua");
+    let function = lua.load(&source).set_name(chunk_name).into_function().unwrap_or_else(|err| {
+        panic!("failed to compile {}: {err}", src.display());
+    });
+    let string_lib: mlua::Table = lua.globals().get("string").expect("string library missing");
+    let dump: mlua::Function = string_lib.get("dump").expect("string.dump missing");
+    let bytecode: mlua::LuaString = dump.call((function, strip)).unwrap_or_else(|err| {
+        panic!("failed to dump {}: {err}", src.display());
+    });
+    let bytes = bytecode.as_bytes();
+
+    if !bytes.starts_with(b"\x1bLJ")
+    {
+        panic!("compiled {} is not LuaJIT bytecode", src.display());
+    }
+
+    if let Some(parent) = dest.parent()
+    {
+        std::fs::create_dir_all(parent).unwrap_or_else(|err| {
+            panic!("failed to create {}: {err}", parent.display());
+        });
+    }
+
+    std::fs::write(dest, bytes.as_ref()).unwrap_or_else(|err| {
+        panic!("failed to write {}: {err}", dest.display());
+    });
 }

@@ -5,6 +5,7 @@ use crate::script::libs::{
     register_angle3_lib, register_convar_lib, register_engine_lib, 
     register_net_lib, register_surface_lib, register_vector3_lib
 };
+use crate::script::bundle::{self, load_bytecode};
 use crate::script::libs::engine::publish_clock;
 use crate::ui::Color;
 use std::collections::HashMap;
@@ -48,13 +49,11 @@ impl ScriptEngine {
         lua.globals().set("MENU", matches!(realm, Realm::Menu)).expect("Failed to set MENU global");
 
         {
-            let hook_lib_data = include_bytes!("libs/hook.lua");
-            lua.load(&hook_lib_data[..]).exec().expect("Failed to execute hook.lua");
+            load_bytecode(&lua, "hook.lua", bundle::HOOK).exec().expect("Failed to execute hook.lua");
 
             register_engine_lib(&lua, tick_interval);
             if !matches!(realm, Realm::Menu) {
-                let net_lib_data = include_bytes!("libs/net.lua");
-                lua.load(&net_lib_data[..]).exec().expect("Failed to execute net.lua");
+                load_bytecode(&lua, "net.lua", bundle::NET).exec().expect("Failed to execute net.lua");
 
                 register_net_lib(&lua, usermsg_sender);
             } else {

@@ -84,8 +84,9 @@ impl IntoLua for Vector3 {
 }
 
 pub fn register_vector3_lib(lua: &Lua) {
-    let vector_lib_data = include_bytes!("vector3.lua");
-    let exports: Table = lua.load(&vector_lib_data[..]).eval().expect("Failed to execute vector3.lua");
+    let exports: Table = crate::script::bundle::load_bytecode(lua, "vector3.lua", crate::script::bundle::VECTOR3)
+        .eval()
+        .expect("Failed to execute vector3.lua");
 
     let ctor: Function = exports.get("ctor").expect("Failed to get Vector3Ctor");
     let module: Table = exports.get("module").expect("Failed to get module");

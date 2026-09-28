@@ -165,8 +165,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
     let event_loop = client_window.take_event_loop();
 
-    let menu_script = include_bytes!("lua/menu/menu.lua");
-    game.script_engine.lua.load(&menu_script[..])
+    crate::script::bundle::load_bytecode(&game.script_engine.lua, "menu.lua", crate::script::bundle::MENU)
         .exec()
         .expect("Failed to execute menu.lua");
 

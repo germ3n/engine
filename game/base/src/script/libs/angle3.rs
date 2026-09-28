@@ -54,8 +54,9 @@ impl IntoLua for Angle3 {
 }
 
 pub fn register_angle3_lib(lua: &Lua) {
-    let angle_lib_data = include_bytes!("angle3.lua");
-    let exports: Table = lua.load(&angle_lib_data[..]).eval().expect("Failed to execute angle3.lua");
+    let exports: Table = crate::script::bundle::load_bytecode(lua, "angle3.lua", crate::script::bundle::ANGLE3)
+        .eval()
+        .expect("Failed to execute angle3.lua");
 
     let ctor: Function = exports.get("ctor").expect("Failed to get Angle3Ctor");
     let module: Table = exports.get("module").expect("Failed to get module");
