@@ -1,6 +1,5 @@
 use crate::ui::voxel::SceneView;
 use std::ffi::c_void;
-use std::sync::OnceLock;
 
 const TEX_D3D11: i32 = 0;
 const TEX_GL: i32 = 1;
@@ -39,16 +38,7 @@ pub struct EyeViews {
     pub height: u32,
 }
 
-struct Api {
-    _lib: libloading::Library,
-    init: unsafe extern "C" fn(*mut i32, i32) -> isize,
-    shutdown: unsafe extern "C" fn(),
-    interface: unsafe extern "C" fn(*const i8, *mut i32) -> isize,
-    hmd: unsafe extern "C" fn() -> u8,
-}
-
 pub struct Headset {
-    shutdown: unsafe extern "C" fn(),
     target_size: *mut c_void,
     projection_raw: *mut c_void,
     eye_to_head: *mut c_void,
@@ -69,12 +59,6 @@ pub fn connect(slot: &mut Option<Headset>, failed: &mut bool, enabled: bool, vie
     }
 
     if slot.is_none() && !*failed {
-        if api().is_none() {
-            *failed = true;
-
-            return None;
-        }
-
         if !hmd_present() {
             return None;
         }
@@ -135,9 +119,8 @@ impl Headset {
     }
 
     fn start() -> Option<Self> {
-        let api = api()?;
         let mut err = 0i32;
-        unsafe { (api.init)(&mut err, 1) };
+        let _token = unsafe { VR_InitInternal(&mut err, 1) };
 
         if err != 0 {
             println!("[vr] init {err}");
@@ -145,21 +128,20 @@ impl Headset {
             return None;
         }
 
-        let system = interface(api, b"FnTable:IVRSystem_026\0")?;
-        let compositor = interface(api, b"FnTable:IVRCompositor_029\0")?;
-        let target_size = required(api, slot(system, 0))?;
-        let projection_raw = required(api, slot(system, 2))?;
-        let eye_to_head = required(api, slot(system, 5))?;
-        let role_index = required(api, slot(system, 18))?;
-        let controller = required(api, slot(system, 37))?;
-        let set_space = required(api, slot(compositor, 0))?;
-        let wait_poses = required(api, slot(compositor, 2))?;
-        let submit = required(api, slot(compositor, 6))?;
-        let handoff_fn = required(api, slot(compositor, 9))?;
+        let system = interface(b"FnTable:IVRSystem_026\0")?;
+        let compositor = interface(b"FnTable:IVRCompositor_029\0")?;
+        let target_size = required(slot(system, 0))?;
+        let projection_raw = required(slot(system, 2))?;
+        let eye_to_head = required(slot(system, 5))?;
+        let role_index = required(slot(system, 18))?;
+        let controller = required(slot(system, 37))?;
+        let set_space = required(slot(compositor, 0))?;
+        let wait_poses = required(slot(compositor, 2))?;
+        let submit = required(slot(compositor, 6))?;
+        let handoff_fn = required(slot(compositor, 9))?;
         unsafe { vr_set_tracking_space(set_space, SPACE_STANDING) };
 
         Some(Self {
-            shutdown: api.shutdown,
             target_size,
             projection_raw,
             eye_to_head,
@@ -297,117 +279,34 @@ impl Headset {
 
 impl Drop for Headset {
     fn drop(&mut self) {
-        unsafe { (self.shutdown)() };
+        unsafe { VR_ShutdownInternal() };
     }
 }
 
 fn hmd_present() -> bool {
-    let Some(api) = api() else {
-        return false;
-    };
-
-    unsafe { (api.hmd)() != 0 }
+    unsafe { VR_IsHmdPresent() != 0 }
 }
 
-fn api() -> Option<&'static Api> {
-    static CELL: OnceLock<Option<Api>> = OnceLock::new();
-
-    CELL.get_or_init(load_api).as_ref()
-}
-
-fn load_api() -> Option<Api> {
-    let lib = open_library()?;
-    let init = unsafe { load_symbol(&lib, b"VR_InitInternal")? };
-    let shutdown = unsafe { load_symbol(&lib, b"VR_ShutdownInternal")? };
-    let interface = unsafe { load_symbol(&lib, b"VR_GetGenericInterface")? };
-    let hmd = unsafe { load_symbol(&lib, b"VR_IsHmdPresent")? };
-
-    Some(Api { _lib: lib, init, shutdown, interface, hmd })
-}
-
-fn open_library() -> Option<libloading::Library> {
-    let mut idx = 0;
-    let paths = library_paths();
-
-    while idx < paths.len() {
-        if let Ok(lib) = unsafe { libloading::Library::new(&paths[idx]) } {
-            return Some(lib);
-        }
-
-        idx += 1;
-    }
-
-    None
-}
-
-fn library_paths() -> Vec<std::path::PathBuf> {
-    let mut paths = Vec::new();
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join(library_name()));
-        }
-    }
-
-    paths.push(std::path::PathBuf::from(library_name()));
-
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = std::path::PathBuf::from(home);
-        paths.push(home.join("Library/Application Support/Steam/steamapps/common/SteamVR/bin/osx64").join(library_name()));
-        paths.push(home.join(".steam/steam/steamapps/common/SteamVR/bin/linux64").join(library_name()));
-        paths.push(home.join(".local/share/Steam/steamapps/common/SteamVR/bin/linux64").join(library_name()));
-    }
-
-    #[cfg(windows)]
-    {
-        paths.push(std::path::PathBuf::from(r"C:\Program Files (x86)\Steam\steamapps\common\SteamVR\bin\win64").join(library_name()));
-        paths.push(std::path::PathBuf::from(r"C:\Program Files\Steam\steamapps\common\SteamVR\bin\win64").join(library_name()));
-    }
-
-    paths
-}
-
-fn library_name() -> &'static str {
-    #[cfg(windows)]
-    {
-        "openvr_api.dll"
-    }
-    #[cfg(target_os = "macos")]
-    {
-        "libopenvr_api.dylib"
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        "libopenvr_api.so"
-    }
-}
-
-unsafe fn load_symbol<T: Copy>(lib: &libloading::Library, name: &[u8]) -> Option<T> {
-    let symbol = lib.get::<T>(name).ok()?;
-
-    Some(*symbol)
-}
-
-fn required(api: &Api, value: Option<*mut c_void>) -> Option<*mut c_void> {
+fn required(value: Option<*mut c_void>) -> Option<*mut c_void> {
     if value.is_none() {
-        unsafe { (api.shutdown)() };
+        unsafe { VR_ShutdownInternal() };
     }
 
     value
 }
 
-fn interface(api: &Api, name: &[u8]) -> Option<*mut c_void> {
+fn interface(name: &[u8]) -> Option<*mut c_void> {
     let mut err = 0i32;
-    let table = unsafe { (api.interface)(name.as_ptr() as *const i8, &mut err) };
+    let table = unsafe { VR_GetGenericInterface(name.as_ptr() as *const i8, &mut err) };
 
-    if err != 0 || table == 0 {
+    if err != 0 || table.is_null() {
         println!("[vr] interface {err}");
-        unsafe { (api.shutdown)() };
+        unsafe { VR_ShutdownInternal() };
 
         return None;
     }
 
-    Some(table as *mut c_void)
+    Some(table)
 }
 
 fn slot(table: *mut c_void, index: isize) -> Option<*mut c_void> {
@@ -593,6 +492,10 @@ extern "C" {
     fn vr_submit(func: *mut c_void, eye: i32, handle: *mut c_void, kind: i32) -> i32;
     fn vr_submit_d3d12(func: *mut c_void, eye: i32, resource: *mut c_void, queue: *mut c_void) -> i32;
     fn vr_handoff(func: *mut c_void);
+    fn VR_InitInternal(error: *mut i32, app_type: i32) -> u32;
+    fn VR_ShutdownInternal();
+    fn VR_GetGenericInterface(name: *const i8, error: *mut i32) -> *mut c_void;
+    fn VR_IsHmdPresent() -> u8;
 }
 
 #[cfg(test)]

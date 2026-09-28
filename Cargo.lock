@@ -162,7 +162,6 @@ dependencies = [
  "glutin-winit",
  "glyph_brush",
  "libc",
- "libloading",
  "log",
  "macro",
  "metal",
