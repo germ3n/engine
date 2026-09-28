@@ -90,16 +90,17 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK
-        if: matrix.kind == 'android'
-        uses: android-actions/setup-android@v3
-
       - name: Install Android NDK
         if: matrix.kind == 'android'
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
-          NDK="$(ls -d "$ANDROID_HOME/ndk"/* | sort -V | tail -1)"
+          SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
+          NDK="$(ls -d "$SDK/ndk"/* | sort -V | tail -1)"
           echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
 
       - name: Setup Gradle
