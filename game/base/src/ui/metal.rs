@@ -1,22 +1,24 @@
+use crate::ui::voxel::SceneView;
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
+use crate::ui::window::Window;
+use crate::ui::Color;
 use core_graphics_types::geometry::CGSize;
-#[cfg(target_os = "ios")]
-use std::ffi::c_void;
 use foreign_types::ForeignType;
-use glyph_brush::{ab_glyph::FontArc, BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text};
+use glyph_brush::{
+    ab_glyph::FontArc, BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text,
+};
 use metal::*;
 #[cfg(target_os = "macos")]
 use objc::runtime::NO;
 use objc::runtime::{Object, YES};
 use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+#[cfg(target_os = "ios")]
+use std::ffi::c_void;
 use winit::{
     event_loop::EventLoop,
     window::{Window as WinitWindow, WindowBuilder},
 };
-use crate::ui::vr::{self, EyeViews, Headset, VrInput};
-use crate::ui::window::Window;
-use crate::ui::voxel::SceneView;
-use crate::ui::Color;
 
 const SHADERS: &str = r#"
 #include <metal_stdlib>
@@ -149,20 +151,26 @@ impl MetalWindow {
         let library = device
             .new_library_with_source(SHADERS, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
-        let mesh_vert = library.get_function("mesh_vert", None).map_err(|err| format!("mesh_vert: {err}"))?;
-        let mesh_frag = library.get_function("mesh_frag", None).map_err(|err| format!("mesh_frag: {err}"))?;
-        let color_vert = library.get_function("color_vert", None).map_err(|err| format!("color_vert: {err}"))?;
-        let color_frag = library.get_function("color_frag", None).map_err(|err| format!("color_frag: {err}"))?;
-        let text_vert = library.get_function("text_vert", None).map_err(|err| format!("text_vert: {err}"))?;
-        let text_frag = library.get_function("text_frag", None).map_err(|err| format!("text_frag: {err}"))?;
+        let mesh_vert = library
+            .get_function("mesh_vert", None)
+            .map_err(|err| format!("mesh_vert: {err}"))?;
+        let mesh_frag = library
+            .get_function("mesh_frag", None)
+            .map_err(|err| format!("mesh_frag: {err}"))?;
+        let color_vert = library
+            .get_function("color_vert", None)
+            .map_err(|err| format!("color_vert: {err}"))?;
+        let color_frag = library
+            .get_function("color_frag", None)
+            .map_err(|err| format!("color_frag: {err}"))?;
+        let text_vert = library
+            .get_function("text_vert", None)
+            .map_err(|err| format!("text_vert: {err}"))?;
+        let text_frag = library
+            .get_function("text_frag", None)
+            .map_err(|err| format!("text_frag: {err}"))?;
 
-        let mesh_pipeline = pipeline(
-            &device,
-            &mesh_vert,
-            &mesh_frag,
-            &mesh_vertex_desc(),
-            false,
-        )?;
+        let mesh_pipeline = pipeline(&device, &mesh_vert, &mesh_frag, &mesh_vertex_desc(), false)?;
         let color_pipeline = pipeline(
             &device,
             &color_vert,
@@ -170,13 +178,7 @@ impl MetalWindow {
             &color_vertex_desc(),
             true,
         )?;
-        let text_pipeline = pipeline(
-            &device,
-            &text_vert,
-            &text_frag,
-            &text_vertex_desc(),
-            true,
-        )?;
+        let text_pipeline = pipeline(&device, &text_vert, &text_frag, &text_vertex_desc(), true)?;
 
         let depth_write = depth_state(&device, MTLCompareFunction::Less, true);
         let depth_off = depth_state(&device, MTLCompareFunction::Always, false);
@@ -203,7 +205,8 @@ impl MetalWindow {
         attach_layer(&window, &layer)?;
         resize_layer(&window, &layer);
 
-        let font = FontArc::try_from_slice(include_bytes!("font_default.ttf")).map_err(|err| err.to_string())?;
+        let font = FontArc::try_from_slice(include_bytes!("font_default.ttf"))
+            .map_err(|err| err.to_string())?;
         let glyphs = GlyphBrushBuilder::using_font(font)
             .initial_cache_size((512, 512))
             .build();
@@ -294,11 +297,25 @@ impl Window for MetalWindow {
         push_rect(&mut self.ui_verts, x, y, w, h, color.as_rgba_f32());
     }
 
-    fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
+    fn draw_outlined_rectangle(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    ) {
         self.draw_rectangle(x, y, w, thickness, color);
         self.draw_rectangle(x, y + h - thickness, w, thickness, color);
         self.draw_rectangle(x, y + thickness, thickness, h - 2.0 * thickness, color);
-        self.draw_rectangle(x + w - thickness, y + thickness, thickness, h - 2.0 * thickness, color);
+        self.draw_rectangle(
+            x + w - thickness,
+            y + thickness,
+            thickness,
+            h - 2.0 * thickness,
+            color,
+        );
     }
 
     fn draw_text(&mut self, _font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
@@ -336,7 +353,12 @@ impl Window for MetalWindow {
                     }
 
                     self.atlas.replace_region(
-                        MTLRegion::new_2d(rect.min[0] as u64, rect.min[1] as u64, width as u64, height as u64),
+                        MTLRegion::new_2d(
+                            rect.min[0] as u64,
+                            rect.min[1] as u64,
+                            width as u64,
+                            height as u64,
+                        ),
                         0,
                         data.as_ptr() as *const _,
                         width as u64,
@@ -396,7 +418,12 @@ impl Window for MetalWindow {
             color.set_texture(Some(color_texture));
             color.set_load_action(MTLLoadAction::Clear);
             color.set_store_action(MTLStoreAction::Store);
-            color.set_clear_color(MTLClearColor::new(self.clear[0], self.clear[1], self.clear[2], self.clear[3]));
+            color.set_clear_color(MTLClearColor::new(
+                self.clear[0],
+                self.clear[1],
+                self.clear[2],
+                self.clear[3],
+            ));
 
             let depth_attachment = pass.depth_attachment().unwrap();
             depth_attachment.set_texture(Some(depth));
@@ -416,7 +443,11 @@ impl Window for MetalWindow {
                     encoder.set_cull_mode(MTLCullMode::Back);
                     encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
                     encoder.set_vertex_buffer(0, Some(mesh), 0);
-                    encoder.set_vertex_bytes(1, std::mem::size_of::<[f32; 16]>() as u64, self.view_proj.as_ptr() as *const _);
+                    encoder.set_vertex_bytes(
+                        1,
+                        std::mem::size_of::<[f32; 16]>() as u64,
+                        self.view_proj.as_ptr() as *const _,
+                    );
                     encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, self.mesh_vertices);
                 }
             }
@@ -484,7 +515,12 @@ impl MetalWindow {
                 return;
             };
 
-            ([eyes.color[0].clone(), eyes.color[1].clone()], [eyes.depth[0].clone(), eyes.depth[1].clone()], eyes.width, eyes.height)
+            (
+                [eyes.color[0].clone(), eyes.color[1].clone()],
+                [eyes.depth[0].clone(), eyes.depth[1].clone()],
+                eyes.width,
+                eyes.height,
+            )
         };
         let command = self.queue.new_command_buffer();
         objc::rc::autoreleasepool(|| {
@@ -497,7 +533,12 @@ impl MetalWindow {
                 attachment.set_texture(Some(&color[idx]));
                 attachment.set_load_action(MTLLoadAction::Clear);
                 attachment.set_store_action(MTLStoreAction::Store);
-                attachment.set_clear_color(MTLClearColor::new(self.clear[0], self.clear[1], self.clear[2], self.clear[3]));
+                attachment.set_clear_color(MTLClearColor::new(
+                    self.clear[0],
+                    self.clear[1],
+                    self.clear[2],
+                    self.clear[3],
+                ));
                 let depth_attachment = pass.depth_attachment().unwrap();
                 depth_attachment.set_texture(Some(&depth[idx]));
                 depth_attachment.set_load_action(MTLLoadAction::Clear);
@@ -521,7 +562,11 @@ impl MetalWindow {
                         encoder.set_cull_mode(MTLCullMode::Back);
                         encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
                         encoder.set_vertex_buffer(0, Some(mesh), 0);
-                        encoder.set_vertex_bytes(1, std::mem::size_of::<[f32; 16]>() as u64, matrix.as_ptr() as *const _);
+                        encoder.set_vertex_bytes(
+                            1,
+                            std::mem::size_of::<[f32; 16]>() as u64,
+                            matrix.as_ptr() as *const _,
+                        );
                         encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, self.mesh_vertices);
                     }
                 }
@@ -553,8 +598,14 @@ impl MetalWindow {
         self.eyes = Some(MetalEyes {
             width,
             height,
-            color: [eye_color(&self.device, width, height), eye_color(&self.device, width, height)],
-            depth: [eye_depth(&self.device, width, height), eye_depth(&self.device, width, height)],
+            color: [
+                eye_color(&self.device, width, height),
+                eye_color(&self.device, width, height),
+            ],
+            depth: [
+                eye_depth(&self.device, width, height),
+                eye_depth(&self.device, width, height),
+            ],
         });
 
         true
@@ -666,7 +717,11 @@ fn bind_bytes(
         encoder.set_vertex_buffer(0, buffer.as_deref(), 0);
         buffer
     };
-    encoder.set_vertex_bytes(1, std::mem::size_of::<[f32; 2]>() as u64, resolution.as_ptr() as *const _);
+    encoder.set_vertex_bytes(
+        1,
+        std::mem::size_of::<[f32; 2]>() as u64,
+        resolution.as_ptr() as *const _,
+    );
 
     if let Some(texture) = texture {
         encoder.set_fragment_texture(0, Some(texture));
@@ -801,12 +856,42 @@ fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 
 fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     let color = vertex.extra.color;
     let positions = [
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.min.y, vertex.tex_coords.min.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.min.y, vertex.tex_coords.max.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.max.y, vertex.tex_coords.min.x, vertex.tex_coords.max.y],
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.max.y, vertex.tex_coords.min.x, vertex.tex_coords.max.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.min.y, vertex.tex_coords.max.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.max.y, vertex.tex_coords.max.x, vertex.tex_coords.max.y],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.max.y,
+        ],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.max.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.max.y,
+        ],
     ];
     let mut verts = [[0.0; 8]; 6];
 
@@ -856,4 +941,3 @@ fn eye_depth(device: &Device, width: u64, height: u64) -> Texture {
 
     device.new_texture(&desc)
 }
-

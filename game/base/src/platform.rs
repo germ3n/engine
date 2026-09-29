@@ -7,13 +7,11 @@ use winit::platform::android::EventLoopBuilderExtAndroid;
 
 static APP: Mutex<Option<AndroidApp>> = Mutex::new(None);
 
-pub fn remember(app: AndroidApp)
-{
+pub fn remember(app: AndroidApp) {
     *APP.lock().unwrap() = Some(app);
 }
 
-pub fn event_loop() -> EventLoop<()>
-{
+pub fn event_loop() -> EventLoop<()> {
     let app = APP.lock().unwrap().clone().expect("android app");
     let mut builder = EventLoopBuilder::new();
     builder.with_android_app(app);
@@ -21,13 +19,11 @@ pub fn event_loop() -> EventLoop<()>
     builder.build().unwrap()
 }
 
-pub fn redirect_stdio()
-{
+pub fn redirect_stdio() {
     unsafe {
         let mut pipes = [0i32; 2];
 
-        if libc::pipe(pipes.as_mut_ptr()) != 0
-        {
+        if libc::pipe(pipes.as_mut_ptr()) != 0 {
             return;
         }
 
@@ -40,8 +36,7 @@ pub fn redirect_stdio()
             let mut file = unsafe { std::fs::File::from_raw_fd(read_fd) };
             let mut buf = [0u8; 2048];
 
-            loop
-            {
+            loop {
                 let count = match file.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(count) => count,
@@ -52,14 +47,11 @@ pub fn redirect_stdio()
     }
 }
 
-fn log_chunk(bytes: &[u8])
-{
+fn log_chunk(bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
 
-    for line in text.split('\n')
-    {
-        if line.is_empty()
-        {
+    for line in text.split('\n') {
+        if line.is_empty() {
             continue;
         }
 
@@ -75,5 +67,9 @@ fn log_chunk(bytes: &[u8])
 }
 
 unsafe extern "C" {
-    fn __android_log_write(priority: i32, tag: *const libc::c_char, text: *const libc::c_char) -> i32;
+    fn __android_log_write(
+        priority: i32,
+        tag: *const libc::c_char,
+        text: *const libc::c_char,
+    ) -> i32;
 }

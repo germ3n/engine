@@ -1,14 +1,16 @@
+use windows::core::{Interface, HRESULT};
 use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::Graphics::Direct3D9::*;
-use windows::core::{HRESULT, Interface};
 use winit::event_loop::EventLoop;
 use winit::window::Window as WinitWindow;
 
-use crate::ui::d3d::draw::{bytes_of, grow, open_desktop, push_outline, push_rect, Desktop, TextFrame};
+use crate::ui::d3d::draw::{
+    bytes_of, grow, open_desktop, push_outline, push_rect, Desktop, TextFrame,
+};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
-use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::voxel::SceneView;
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::Color;
 
@@ -122,7 +124,11 @@ impl D3D9Window {
     fn reset_device(&mut self) -> Result<(), String> {
         self.params.BackBufferWidth = self.width.max(1);
         self.params.BackBufferHeight = self.height.max(1);
-        unsafe { self.device.Reset(&mut self.params).map_err(|err| err.to_string())? };
+        unsafe {
+            self.device
+                .Reset(&mut self.params)
+                .map_err(|err| err.to_string())?
+        };
         self.width = self.params.BackBufferWidth.max(1);
         self.height = self.params.BackBufferHeight.max(1);
 
@@ -132,7 +138,9 @@ impl D3D9Window {
     fn ready(&mut self) -> bool {
         match unsafe { self.device.TestCooperativeLevel() } {
             Ok(()) => {
-                if self.params.BackBufferWidth != self.width || self.params.BackBufferHeight != self.height {
+                if self.params.BackBufferWidth != self.width
+                    || self.params.BackBufferHeight != self.height
+                {
                     return self.reset_device().is_ok();
                 }
 
@@ -156,7 +164,11 @@ impl D3D9Window {
         }
 
         if self.atlas_size != self.text.size || self.atlas.is_none() {
-            self.atlas = Some(atlas_texture(&self.device, self.text.size.0, self.text.size.1)?);
+            self.atlas = Some(atlas_texture(
+                &self.device,
+                self.text.size.0,
+                self.text.size.1,
+            )?);
             self.atlas_size = self.text.size;
         }
 
@@ -165,8 +177,16 @@ impl D3D9Window {
         };
         unsafe {
             let mut locked = D3DLOCKED_RECT::default();
-            texture.LockRect(0, &mut locked, std::ptr::null(), 0).map_err(|err| err.to_string())?;
-            expand_bgra(&self.text.pixels, self.text.size.0, self.text.size.1, locked.pBits as *mut u8, locked.Pitch);
+            texture
+                .LockRect(0, &mut locked, std::ptr::null(), 0)
+                .map_err(|err| err.to_string())?;
+            expand_bgra(
+                &self.text.pixels,
+                self.text.size.0,
+                self.text.size.1,
+                locked.pBits as *mut u8,
+                locked.Pitch,
+            );
             texture.UnlockRect(0).map_err(|err| err.to_string())?;
         }
         self.text.dirty = false;
@@ -195,24 +215,51 @@ impl D3D9Window {
             let _ = self.device.SetVertexDeclaration(decl);
             let _ = self.device.SetVertexShader(vs);
             let _ = self.device.SetPixelShader(ps);
-            let _ = self.device.SetVertexShaderConstantF(0, constants.as_ptr(), vectors);
-            let _ = self.device.SetStreamSource(0, &buffer.buffer, 0, buffer.stride);
-            let _ = self.device.SetRenderState(D3DRS_ZENABLE, if depth { 1 } else { 0 });
-            let _ = self.device.SetRenderState(D3DRS_ZWRITEENABLE, if depth { 1 } else { 0 });
-            let _ = self.device.SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS.0 as u32);
-            let _ = self.device.SetRenderState(D3DRS_CULLMODE, if depth { D3DCULL_CW.0 as u32 } else { D3DCULL_NONE.0 as u32 });
-            let _ = self.device.SetRenderState(D3DRS_ALPHABLENDENABLE, if blend { 1 } else { 0 });
-            let _ = self.device.SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA.0 as u32);
-            let _ = self.device.SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA.0 as u32);
+            let _ = self
+                .device
+                .SetVertexShaderConstantF(0, constants.as_ptr(), vectors);
+            let _ = self
+                .device
+                .SetStreamSource(0, &buffer.buffer, 0, buffer.stride);
+            let _ = self
+                .device
+                .SetRenderState(D3DRS_ZENABLE, if depth { 1 } else { 0 });
+            let _ = self
+                .device
+                .SetRenderState(D3DRS_ZWRITEENABLE, if depth { 1 } else { 0 });
+            let _ = self
+                .device
+                .SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS.0 as u32);
+            let _ = self.device.SetRenderState(
+                D3DRS_CULLMODE,
+                if depth {
+                    D3DCULL_CW.0 as u32
+                } else {
+                    D3DCULL_NONE.0 as u32
+                },
+            );
+            let _ = self
+                .device
+                .SetRenderState(D3DRS_ALPHABLENDENABLE, if blend { 1 } else { 0 });
+            let _ = self
+                .device
+                .SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA.0 as u32);
+            let _ = self
+                .device
+                .SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA.0 as u32);
             match texture {
                 Some(texture) => {
-                    let _ = self.device.SetTexture(0, Into::<&IDirect3DBaseTexture9>::into(texture));
+                    let _ = self
+                        .device
+                        .SetTexture(0, Into::<&IDirect3DBaseTexture9>::into(texture));
                 }
                 None => {
                     let _ = self.device.SetTexture(0, None::<&IDirect3DBaseTexture9>);
                 }
             }
-            let _ = self.device.DrawPrimitive(D3DPT_TRIANGLELIST, 0, vertices / 3);
+            let _ = self
+                .device
+                .DrawPrimitive(D3DPT_TRIANGLELIST, 0, vertices / 3);
         }
     }
 }
@@ -227,7 +274,10 @@ impl Window for D3D9Window {
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let _ = self.desktop.window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        let _ = self
+            .desktop
+            .window
+            .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
         self.width = w.max(1);
         self.height = h.max(1);
 
@@ -282,7 +332,15 @@ impl Window for D3D9Window {
         push_rect(&mut self.ui, x, y, w, h, color.as_rgba_f32());
     }
 
-    fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
+    fn draw_outlined_rectangle(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    ) {
         push_outline(&mut self.ui, x, y, w, h, thickness, color.as_rgba_f32());
     }
 
@@ -315,7 +373,12 @@ impl Window for D3D9Window {
         }
 
         let ui = write_buffer(&self.device, self.ui_buf.take(), bytes_of(&self.ui), 24);
-        let text = write_buffer(&self.device, self.text_buf.take(), bytes_of(&self.text.verts), 32);
+        let text = write_buffer(
+            &self.device,
+            self.text_buf.take(),
+            bytes_of(&self.text.verts),
+            32,
+        );
         self.ui_buf = ui.ok();
         self.text_buf = text.ok();
         bind_sampler(&self.device);
@@ -337,12 +400,29 @@ impl Window for D3D9Window {
                 MinZ: 0.0,
                 MaxZ: 1.0,
             });
-            let _ = self.device.Clear(0, std::ptr::null(), (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER) as u32, pack_color(self.clear[0], self.clear[1], self.clear[2]), 1.0, 0);
+            let _ = self.device.Clear(
+                0,
+                std::ptr::null(),
+                (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER) as u32,
+                pack_color(self.clear[0], self.clear[1], self.clear[2]),
+                1.0,
+                0,
+            );
         }
 
         if self.draw_mesh {
             if let Some(mesh) = self.mesh.as_ref() {
-                self.draw_buffer(&self.mesh_vs, &self.mesh_ps, &self.mesh_decl, &self.view, mesh, self.mesh_vertices, true, false, None);
+                self.draw_buffer(
+                    &self.mesh_vs,
+                    &self.mesh_ps,
+                    &self.mesh_decl,
+                    &self.view,
+                    mesh,
+                    self.mesh_vertices,
+                    true,
+                    false,
+                    None,
+                );
             }
         }
 
@@ -351,7 +431,17 @@ impl Window for D3D9Window {
         screen[1] = self.height as f32;
 
         if let Some(ui) = self.ui_buf.as_ref() {
-            self.draw_buffer(&self.color_vs, &self.color_ps, &self.color_decl, &screen, ui, (self.ui.len() / 6) as u32, false, true, None);
+            self.draw_buffer(
+                &self.color_vs,
+                &self.color_ps,
+                &self.color_decl,
+                &screen,
+                ui,
+                (self.ui.len() / 6) as u32,
+                false,
+                true,
+                None,
+            );
         }
 
         if let Some(text) = self.text_buf.as_ref() {
@@ -375,7 +465,12 @@ impl Window for D3D9Window {
         self.submit_eyes();
 
         unsafe {
-            let _ = self.device.Present(std::ptr::null(), std::ptr::null(), HWND::default(), std::ptr::null());
+            let _ = self.device.Present(
+                std::ptr::null(),
+                std::ptr::null(),
+                HWND::default(),
+                std::ptr::null(),
+            );
         }
 
         if let Some(headset) = self.vr.as_mut() {
@@ -426,12 +521,29 @@ impl D3D9Window {
                     MinZ: 0.0,
                     MaxZ: 1.0,
                 });
-                let _ = self.device.Clear(0, std::ptr::null(), (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER) as u32, pack_color(self.clear[0], self.clear[1], self.clear[2]), 1.0, 0);
+                let _ = self.device.Clear(
+                    0,
+                    std::ptr::null(),
+                    (D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER) as u32,
+                    pack_color(self.clear[0], self.clear[1], self.clear[2]),
+                    1.0,
+                    0,
+                );
             }
 
             if self.draw_mesh {
                 if let Some(mesh) = self.mesh.as_ref() {
-                    self.draw_buffer(&self.mesh_vs, &self.mesh_ps, &self.mesh_decl, &matrix, mesh, self.mesh_vertices, true, false, None);
+                    self.draw_buffer(
+                        &self.mesh_vs,
+                        &self.mesh_ps,
+                        &self.mesh_decl,
+                        &matrix,
+                        mesh,
+                        self.mesh_vertices,
+                        true,
+                        false,
+                        None,
+                    );
                 }
             }
 
@@ -445,7 +557,6 @@ impl D3D9Window {
                 let _ = self.device.SetDepthStencilSurface(depth);
             }
         }
-
     }
 
     fn submit_eyes(&mut self) {
@@ -512,12 +623,25 @@ impl Drop for D3D9Window {
     }
 }
 
-fn shared_color(device: &IDirect3DDevice9, width: u32, height: u32) -> Result<(IDirect3DTexture9, IDirect3DSurface9, HANDLE), String> {
+fn shared_color(
+    device: &IDirect3DDevice9,
+    width: u32,
+    height: u32,
+) -> Result<(IDirect3DTexture9, IDirect3DSurface9, HANDLE), String> {
     let mut shared = HANDLE(std::ptr::null_mut());
     let mut texture = None;
     unsafe {
         device
-            .CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET as u32, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &mut texture, &mut shared)
+            .CreateTexture(
+                width,
+                height,
+                1,
+                D3DUSAGE_RENDERTARGET as u32,
+                D3DFMT_A8R8G8B8,
+                D3DPOOL_DEFAULT,
+                &mut texture,
+                &mut shared,
+            )
             .map_err(|err| err.to_string())?;
     }
     let texture = texture.ok_or_else(|| "vr color".to_string())?;
@@ -526,18 +650,35 @@ fn shared_color(device: &IDirect3DDevice9, width: u32, height: u32) -> Result<(I
     Ok((texture, surface, shared))
 }
 
-fn eye_depth(device: &IDirect3DDevice9, width: u32, height: u32) -> Result<IDirect3DSurface9, String> {
+fn eye_depth(
+    device: &IDirect3DDevice9,
+    width: u32,
+    height: u32,
+) -> Result<IDirect3DSurface9, String> {
     let mut depth = None;
     unsafe {
         device
-            .CreateDepthStencilSurface(width, height, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, true, &mut depth, std::ptr::null_mut())
+            .CreateDepthStencilSurface(
+                width,
+                height,
+                D3DFMT_D24S8,
+                D3DMULTISAMPLE_NONE,
+                0,
+                true,
+                &mut depth,
+                std::ptr::null_mut(),
+            )
             .map_err(|err| err.to_string())?;
     }
 
     depth.ok_or_else(|| "vr depth".to_string())
 }
 
-fn create_device(hwnd: HWND, width: u32, height: u32) -> Result<(IDirect3DDevice9, D3DPRESENT_PARAMETERS), String> {
+fn create_device(
+    hwnd: HWND,
+    width: u32,
+    height: u32,
+) -> Result<(IDirect3DDevice9, D3DPRESENT_PARAMETERS), String> {
     if let Ok(d3d) = unsafe { Direct3DCreate9Ex(D3D_SDK_VERSION) } {
         if let Ok(device) = create_device_ex(&d3d, hwnd, width, height) {
             return Ok(device);
@@ -549,8 +690,16 @@ fn create_device(hwnd: HWND, width: u32, height: u32) -> Result<(IDirect3DDevice
     create_device_hal(&d3d, hwnd, width, height)
 }
 
-fn create_device_ex(d3d: &IDirect3D9Ex, hwnd: HWND, width: u32, height: u32) -> Result<(IDirect3DDevice9, D3DPRESENT_PARAMETERS), String> {
-    let flags = [D3DCREATE_HARDWARE_VERTEXPROCESSING, D3DCREATE_SOFTWARE_VERTEXPROCESSING];
+fn create_device_ex(
+    d3d: &IDirect3D9Ex,
+    hwnd: HWND,
+    width: u32,
+    height: u32,
+) -> Result<(IDirect3DDevice9, D3DPRESENT_PARAMETERS), String> {
+    let flags = [
+        D3DCREATE_HARDWARE_VERTEXPROCESSING,
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+    ];
     let mut last = "d3d9ex device".to_string();
 
     for flag in flags {
@@ -575,7 +724,9 @@ fn create_device_ex(d3d: &IDirect3D9Ex, hwnd: HWND, width: u32, height: u32) -> 
         }
 
         if let Some(device) = device {
-            let device = device.cast::<IDirect3DDevice9>().map_err(|err| err.to_string())?;
+            let device = device
+                .cast::<IDirect3DDevice9>()
+                .map_err(|err| err.to_string())?;
 
             return Ok((device, params));
         }
@@ -584,8 +735,16 @@ fn create_device_ex(d3d: &IDirect3D9Ex, hwnd: HWND, width: u32, height: u32) -> 
     Err(last)
 }
 
-fn create_device_hal(d3d: &IDirect3D9, hwnd: HWND, width: u32, height: u32) -> Result<(IDirect3DDevice9, D3DPRESENT_PARAMETERS), String> {
-    let flags = [D3DCREATE_HARDWARE_VERTEXPROCESSING, D3DCREATE_SOFTWARE_VERTEXPROCESSING];
+fn create_device_hal(
+    d3d: &IDirect3D9,
+    hwnd: HWND,
+    width: u32,
+    height: u32,
+) -> Result<(IDirect3DDevice9, D3DPRESENT_PARAMETERS), String> {
+    let flags = [
+        D3DCREATE_HARDWARE_VERTEXPROCESSING,
+        D3DCREATE_SOFTWARE_VERTEXPROCESSING,
+    ];
     let mut last = "d3d9 device".to_string();
 
     for flag in flags {
@@ -634,16 +793,37 @@ fn present_params(hwnd: HWND, width: u32, height: u32) -> D3DPRESENT_PARAMETERS 
     }
 }
 
-fn vertex_shader(device: &IDirect3DDevice9, blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> Result<IDirect3DVertexShader9, String> {
-    unsafe { device.CreateVertexShader(blob_bytes(blob).as_ptr() as *const u32).map_err(|err| err.to_string()) }
+fn vertex_shader(
+    device: &IDirect3DDevice9,
+    blob: &windows::Win32::Graphics::Direct3D::ID3DBlob,
+) -> Result<IDirect3DVertexShader9, String> {
+    unsafe {
+        device
+            .CreateVertexShader(blob_bytes(blob).as_ptr() as *const u32)
+            .map_err(|err| err.to_string())
+    }
 }
 
-fn pixel_shader(device: &IDirect3DDevice9, blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> Result<IDirect3DPixelShader9, String> {
-    unsafe { device.CreatePixelShader(blob_bytes(blob).as_ptr() as *const u32).map_err(|err| err.to_string()) }
+fn pixel_shader(
+    device: &IDirect3DDevice9,
+    blob: &windows::Win32::Graphics::Direct3D::ID3DBlob,
+) -> Result<IDirect3DPixelShader9, String> {
+    unsafe {
+        device
+            .CreatePixelShader(blob_bytes(blob).as_ptr() as *const u32)
+            .map_err(|err| err.to_string())
+    }
 }
 
-fn declaration(device: &IDirect3DDevice9, elements: &[D3DVERTEXELEMENT9]) -> Result<IDirect3DVertexDeclaration9, String> {
-    unsafe { device.CreateVertexDeclaration(elements.as_ptr()).map_err(|err| err.to_string()) }
+fn declaration(
+    device: &IDirect3DDevice9,
+    elements: &[D3DVERTEXELEMENT9],
+) -> Result<IDirect3DVertexDeclaration9, String> {
+    unsafe {
+        device
+            .CreateVertexDeclaration(elements.as_ptr())
+            .map_err(|err| err.to_string())
+    }
 }
 
 fn element(offset: u16, kind: D3DDECLTYPE, usage: D3DDECLUSAGE) -> D3DVERTEXELEMENT9 {
@@ -692,7 +872,12 @@ fn text_decl() -> Vec<D3DVERTEXELEMENT9> {
     ])
 }
 
-fn write_buffer(device: &IDirect3DDevice9, current: Option<GpuBuf>, bytes: &[u8], stride: u32) -> Result<GpuBuf, String> {
+fn write_buffer(
+    device: &IDirect3DDevice9,
+    current: Option<GpuBuf>,
+    bytes: &[u8],
+    stride: u32,
+) -> Result<GpuBuf, String> {
     let mut buffer = match current {
         Some(buffer) if buffer.capacity >= bytes.len() as u32 && buffer.stride == stride => buffer,
         _ => {
@@ -716,7 +901,10 @@ fn write_buffer(device: &IDirect3DDevice9, current: Option<GpuBuf>, bytes: &[u8]
 
     unsafe {
         let mut ptr = std::ptr::null_mut();
-        buffer.buffer.Lock(0, bytes.len() as u32, &mut ptr, 0).map_err(|err| err.to_string())?;
+        buffer
+            .buffer
+            .Lock(0, bytes.len() as u32, &mut ptr, 0)
+            .map_err(|err| err.to_string())?;
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
         buffer.buffer.Unlock().map_err(|err| err.to_string())?;
     }
@@ -728,18 +916,38 @@ fn vertex_buffer(device: &IDirect3DDevice9, bytes: u32) -> Result<IDirect3DVerte
     let mut buffer = None;
     unsafe {
         device
-            .CreateVertexBuffer(bytes.max(4), 0, 0, D3DPOOL_MANAGED, &mut buffer, std::ptr::null_mut())
+            .CreateVertexBuffer(
+                bytes.max(4),
+                0,
+                0,
+                D3DPOOL_MANAGED,
+                &mut buffer,
+                std::ptr::null_mut(),
+            )
             .map_err(|err| err.to_string())?;
     }
 
     buffer.ok_or_else(|| "vertex buffer".to_string())
 }
 
-fn atlas_texture(device: &IDirect3DDevice9, width: u32, height: u32) -> Result<IDirect3DTexture9, String> {
+fn atlas_texture(
+    device: &IDirect3DDevice9,
+    width: u32,
+    height: u32,
+) -> Result<IDirect3DTexture9, String> {
     let mut texture = None;
     unsafe {
         device
-            .CreateTexture(width.max(1), height.max(1), 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &mut texture, std::ptr::null_mut())
+            .CreateTexture(
+                width.max(1),
+                height.max(1),
+                1,
+                0,
+                D3DFMT_A8R8G8B8,
+                D3DPOOL_MANAGED,
+                &mut texture,
+                std::ptr::null_mut(),
+            )
             .map_err(|err| err.to_string())?;
     }
 

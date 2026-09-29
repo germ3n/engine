@@ -5,9 +5,7 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
     if target_os == "android" || target_os == "ios" {
-        cc::Build::new()
-            .file("src/ui/vr_stub.c")
-            .compile("vr_stub");
+        cc::Build::new().file("src/ui/vr_stub.c").compile("vr_stub");
 
         if target_os == "android" {
             println!("cargo:rustc-link-lib=log");
@@ -85,17 +83,15 @@ fn main() {
     openvr.compile("openvr_api");
 }
 
-fn stage_steam()
-{
-    if std::env::var("CARGO_FEATURE_STEAM").is_err()
-    {
+fn stage_steam() {
+    if std::env::var("CARGO_FEATURE_STEAM").is_err() {
         return;
     }
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let pointer = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_else(|_| "64".to_string());
-    let name = match target_os.as_str()
-    {
+    let pointer =
+        std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_else(|_| "64".to_string());
+    let name = match target_os.as_str() {
         "windows" if pointer == "64" => "steam_api64.dll",
         "windows" => "steam_api.dll",
         "linux" => "libsteam_api.so",
@@ -103,26 +99,24 @@ fn stage_steam()
         _ => return,
     };
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let Some(build_dir) = out_dir.parent().and_then(|path| path.parent()) else
-    {
+    let Some(build_dir) = out_dir.parent().and_then(|path| path.parent()) else {
         return;
     };
 
     let mut source = None;
-    if let Ok(entries) = std::fs::read_dir(build_dir)
-    {
-        for entry in entries.flatten()
-        {
+    if let Ok(entries) = std::fs::read_dir(build_dir) {
+        for entry in entries.flatten() {
             let path = entry.path();
-            let file_name = path.file_name().and_then(|text| text.to_str()).unwrap_or("");
-            if !file_name.starts_with("steamworks-sys-")
-            {
+            let file_name = path
+                .file_name()
+                .and_then(|text| text.to_str())
+                .unwrap_or("");
+            if !file_name.starts_with("steamworks-sys-") {
                 continue;
             }
 
             let candidate = path.join("out").join(name);
-            if candidate.exists()
-            {
+            if candidate.exists() {
                 source = Some(candidate);
 
                 break;
@@ -130,39 +124,33 @@ fn stage_steam()
         }
     }
 
-    let Some(source) = source else
-    {
+    let Some(source) = source else {
         println!("cargo:warning=steam library {name} was not found");
 
         return;
     };
 
-    let Some(dest_dir) = build_dir.parent() else
-    {
+    let Some(dest_dir) = build_dir.parent() else {
         return;
     };
 
     let dest = dest_dir.join(name);
-    if let Err(err) = std::fs::copy(&source, &dest)
-    {
+    if let Err(err) = std::fs::copy(&source, &dest) {
         println!("cargo:warning=failed to copy {name}: {err}");
 
         return;
     }
 
-    if target_os == "macos"
-    {
+    if target_os == "macos" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
     }
 
-    if target_os == "linux"
-    {
+    if target_os == "linux" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     }
 }
 
-fn compile_bundled_lua()
-{
+fn compile_bundled_lua() {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let lua_out = out_dir.join("lua");
@@ -175,8 +163,7 @@ fn compile_bundled_lua()
         "src/lua/menu/menu.lua",
     ];
 
-    for source in sources
-    {
+    for source in sources {
         let src = manifest_dir.join(source);
         let stem = src.file_stem().unwrap().to_string_lossy();
         let dest = lua_out.join(format!("{stem}.luac"));
@@ -184,18 +171,24 @@ fn compile_bundled_lua()
     }
 }
 
-fn compile_lua(src: &std::path::Path, dest: &std::path::Path, strip: bool)
-{
+fn compile_lua(src: &std::path::Path, dest: &std::path::Path, strip: bool) {
     println!("cargo:rerun-if-changed={}", src.display());
 
     let source = std::fs::read(src).unwrap_or_else(|err| {
         panic!("failed to read {}: {err}", src.display());
     });
     let lua = mlua::Lua::new();
-    let chunk_name = src.file_name().and_then(|name| name.to_str()).unwrap_or("chunk.lua");
-    let function = lua.load(&source).set_name(chunk_name).into_function().unwrap_or_else(|err| {
-        panic!("failed to compile {}: {err}", src.display());
-    });
+    let chunk_name = src
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("chunk.lua");
+    let function = lua
+        .load(&source)
+        .set_name(chunk_name)
+        .into_function()
+        .unwrap_or_else(|err| {
+            panic!("failed to compile {}: {err}", src.display());
+        });
     let string_lib: mlua::Table = lua.globals().get("string").expect("string library missing");
     let dump: mlua::Function = string_lib.get("dump").expect("string.dump missing");
     let bytecode: mlua::LuaString = dump.call((function, strip)).unwrap_or_else(|err| {
@@ -203,13 +196,11 @@ fn compile_lua(src: &std::path::Path, dest: &std::path::Path, strip: bool)
     });
     let bytes = bytecode.as_bytes();
 
-    if !bytes.starts_with(b"\x1bLJ")
-    {
+    if !bytes.starts_with(b"\x1bLJ") {
         panic!("compiled {} is not LuaJIT bytecode", src.display());
     }
 
-    if let Some(parent) = dest.parent()
-    {
+    if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).unwrap_or_else(|err| {
             panic!("failed to create {}: {err}", parent.display());
         });

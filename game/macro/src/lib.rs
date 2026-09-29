@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemStruct, Fields};
+use syn::{parse_macro_input, Fields, ItemStruct};
 
 #[proc_macro_attribute]
 #[allow(non_snake_case)]
@@ -12,25 +12,28 @@ pub fn Networkable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     if let Fields::Named(ref mut fields) = ast.fields {
         for (idx, field) in fields.named.iter_mut().enumerate() {
-            let is_networked = field.attrs.iter().any(|attr| {
-                attr.meta.path().is_ident("Networked")
-            });
+            let is_networked = field
+                .attrs
+                .iter()
+                .any(|attr| attr.meta.path().is_ident("Networked"));
 
             if is_networked {
                 let field_name = &field.ident;
                 let field_type = &field.ty;
-                
+
                 generated_logic.push(quote! {
                     println!(
-                        "Field idx {} -> Syncing {} of type {}", 
-                        #idx, 
-                        stringify!(#field_name), 
+                        "Field idx {} -> Syncing {} of type {}",
+                        #idx,
+                        stringify!(#field_name),
                         stringify!(#field_type)
                     );
                 });
 
                 // Strip the helper attribute from the final AST so the compiler doesn't panic
-                field.attrs.retain(|attr| !attr.meta.path().is_ident("Networked"));
+                field
+                    .attrs
+                    .retain(|attr| !attr.meta.path().is_ident("Networked"));
             }
         }
     }
@@ -39,8 +42,8 @@ pub fn Networkable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #ast
 
         impl Networkable for #name {
-            fn handle(&self) -> EntityHandle { 
-                self.base.handle 
+            fn handle(&self) -> EntityHandle {
+                self.base.handle
             }
 
             fn sync_network_vars(&self) {

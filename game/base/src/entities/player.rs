@@ -1,7 +1,7 @@
-use r#macro::Networkable;
-use crate::entities::{base::Networkable, base::BaseEntity, base::BaseEntityData};
-use crate::entities::EntityHandle;
 use crate::entities::context::TickContext;
+use crate::entities::EntityHandle;
+use crate::entities::{base::BaseEntity, base::BaseEntityData, base::Networkable};
+use r#macro::Networkable;
 
 #[Networkable]
 pub struct Player {
@@ -14,7 +14,7 @@ impl Default for Player {
     fn default() -> Self {
         Self {
             base: BaseEntityData::default(),
-            health: 100
+            health: 100,
         }
     }
 }
@@ -48,13 +48,9 @@ impl BaseEntity for Player {
         &mut self.base
     }
 
-    fn on_spawn(&mut self, _ctx: &mut TickContext) {
+    fn on_spawn(&mut self, _ctx: &mut TickContext) {}
 
-    }
-
-    fn tick(&mut self, _ctx: &mut TickContext) {
-
-    }
+    fn tick(&mut self, _ctx: &mut TickContext) {}
 
     fn wants_think(&self) -> bool {
         true

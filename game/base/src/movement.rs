@@ -1,11 +1,11 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use crate::console::{ConVar, ConVarValue};
 use crate::entities::EntityHandle;
 use crate::r#enum::InputButtons;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::world::{BrushHit, BrushMap, Face, TraceHit, VoxelWorld};
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 const STAND_MINS: Vector3 = Vector3::new(-0.28, -0.28, 0.0);
 const STAND_MAXS: Vector3 = Vector3::new(0.28, 0.28, 1.65);
@@ -113,7 +113,11 @@ impl Prediction {
             return None;
         }
 
-        Some(lerp_vec(self.span_from, self.span_to, alpha.clamp(0.0, 1.0)))
+        Some(lerp_vec(
+            self.span_from,
+            self.span_to,
+            alpha.clamp(0.0, 1.0),
+        ))
     }
 
     pub fn previous(&self) -> InputButtons {
@@ -170,7 +174,9 @@ impl Prediction {
         let mut prev = self.prev_buttons;
 
         for cmd in &self.cmds {
-            step(position, velocity, angles, cmd, prev, dt, gravity, brushes, voxels);
+            step(
+                position, velocity, angles, cmd, prev, dt, gravity, brushes, voxels,
+            );
             prev = cmd.buttons;
         }
     }
@@ -331,7 +337,9 @@ pub fn step(
         let start = *position;
         let start_vel = *velocity;
         slide(position, velocity, dt, mins, maxs, brushes, voxels);
-        try_step(start, start_vel, position, velocity, dt, mins, maxs, brushes, voxels);
+        try_step(
+            start, start_vel, position, velocity, dt, mins, maxs, brushes, voxels,
+        );
     } else {
         slide(position, velocity, dt, mins, maxs, brushes, voxels);
     }
@@ -388,8 +396,15 @@ fn max_speed(buttons: InputButtons) -> f64 {
     speed
 }
 
-fn hull_for(buttons: InputButtons, position: Vector3, brushes: &BrushMap, voxels: &VoxelWorld) -> (Vector3, Vector3) {
-    if buttons.contains(InputButtons::IN_DUCK) || overlapping(position, STAND_MINS, STAND_MAXS, brushes, voxels) {
+fn hull_for(
+    buttons: InputButtons,
+    position: Vector3,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+) -> (Vector3, Vector3) {
+    if buttons.contains(InputButtons::IN_DUCK)
+        || overlapping(position, STAND_MINS, STAND_MAXS, brushes, voxels)
+    {
         return (STAND_MINS, DUCK_MAXS);
     }
 
@@ -524,7 +539,11 @@ fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
 }
 
 fn lerp_angles(from: Angle3, to: Angle3, alpha: f32) -> Angle3 {
-    Angle3::new(lerp_angle(from.p, to.p, alpha), lerp_angle(from.y, to.y, alpha), lerp_angle(from.r, to.r, alpha))
+    Angle3::new(
+        lerp_angle(from.p, to.p, alpha),
+        lerp_angle(from.y, to.y, alpha),
+        lerp_angle(from.r, to.r, alpha),
+    )
 }
 
 fn add(a: Vector3, b: Vector3) -> Vector3 {
@@ -552,10 +571,19 @@ fn move_along(start: Vector3, end: Vector3, distance: f64) -> Vector3 {
 
     let scale = (distance / span).clamp(0.0, 1.0);
 
-    Vector3::new(start.x + delta.x * scale, start.y + delta.y * scale, start.z + delta.z * scale)
+    Vector3::new(
+        start.x + delta.x * scale,
+        start.y + delta.y * scale,
+        start.z + delta.z * scale,
+    )
 }
 
-fn unstuck(position: Vector3, buttons: InputButtons, brushes: &BrushMap, voxels: &VoxelWorld) -> Vector3 {
+fn unstuck(
+    position: Vector3,
+    buttons: InputButtons,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+) -> Vector3 {
     let (mins, maxs) = hull_for(buttons, position, brushes, voxels);
 
     if !overlapping(position, mins, maxs, brushes, voxels) {
@@ -577,14 +605,27 @@ fn unstuck(position: Vector3, buttons: InputButtons, brushes: &BrushMap, voxels:
     position
 }
 
-fn overlapping(position: Vector3, mins: Vector3, maxs: Vector3, brushes: &BrushMap, voxels: &VoxelWorld) -> bool {
+fn overlapping(
+    position: Vector3,
+    mins: Vector3,
+    maxs: Vector3,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+) -> bool {
     match sweep(brushes, voxels, position, position, mins, maxs) {
         Some(hit) => hit.stuck,
         None => false,
     }
 }
 
-fn grounded(position: Vector3, velocity: Vector3, mins: Vector3, maxs: Vector3, brushes: &BrushMap, voxels: &VoxelWorld) -> bool {
+fn grounded(
+    position: Vector3,
+    velocity: Vector3,
+    mins: Vector3,
+    maxs: Vector3,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+) -> bool {
     if velocity.z > 0.5 {
         return false;
     }
@@ -597,7 +638,14 @@ fn grounded(position: Vector3, velocity: Vector3, mins: Vector3, maxs: Vector3, 
     }
 }
 
-fn snap_ground(position: &mut Vector3, velocity: &mut Vector3, mins: Vector3, maxs: Vector3, brushes: &BrushMap, voxels: &VoxelWorld) {
+fn snap_ground(
+    position: &mut Vector3,
+    velocity: &mut Vector3,
+    mins: Vector3,
+    maxs: Vector3,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+) {
     let end = Vector3::new(position.x, position.y, position.z - SNAP_DIST);
     let Some(hit) = sweep(brushes, voxels, *position, end, mins, maxs) else {
         return;
@@ -629,7 +677,11 @@ fn slide(
 
     while time_left > 1e-6 && bumps < 4 {
         bumps += 1;
-        let travel = Vector3::new(velocity.x * time_left, velocity.y * time_left, velocity.z * time_left);
+        let travel = Vector3::new(
+            velocity.x * time_left,
+            velocity.y * time_left,
+            velocity.z * time_left,
+        );
         let end = add(*position, travel);
         let Some(hit) = sweep(brushes, voxels, *position, end, mins, maxs) else {
             *position = end;
@@ -701,7 +753,15 @@ fn try_step(
     };
     let mut stepped_pos = raised;
     let mut stepped_vel = start_vel;
-    slide(&mut stepped_pos, &mut stepped_vel, dt, mins, maxs, brushes, voxels);
+    slide(
+        &mut stepped_pos,
+        &mut stepped_vel,
+        dt,
+        mins,
+        maxs,
+        brushes,
+        voxels,
+    );
     let down = Vector3::new(stepped_pos.x, stepped_pos.y, stepped_pos.z - STEP_HEIGHT);
     let Some(land) = sweep(brushes, voxels, stepped_pos, down, mins, maxs) else {
         return;
@@ -722,7 +782,14 @@ fn try_step(
     velocity.z = 0.0;
 }
 
-fn sweep(brushes: &BrushMap, voxels: &VoxelWorld, start: Vector3, end: Vector3, mins: Vector3, maxs: Vector3) -> Option<SweepHit> {
+fn sweep(
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+    start: Vector3,
+    end: Vector3,
+    mins: Vector3,
+    maxs: Vector3,
+) -> Option<SweepHit> {
     let brush = brushes.sweep(start, end, mins, maxs).map(sweep_from_brush);
     let voxel = voxels.sweep(start, end, mins, maxs).map(sweep_from_voxel);
 
@@ -741,8 +808,16 @@ fn sweep(brushes: &BrushMap, voxels: &VoxelWorld, start: Vector3, end: Vector3, 
 
 fn sweep_from_brush(hit: BrushHit) -> SweepHit {
     match hit.normal {
-        Some(normal) if normal.len_sq() > 1e-8 => SweepHit { distance: hit.distance, normal, stuck: false },
-        _ => SweepHit { distance: hit.distance, normal: Vector3::new(0.0, 0.0, 0.0), stuck: true },
+        Some(normal) if normal.len_sq() > 1e-8 => SweepHit {
+            distance: hit.distance,
+            normal,
+            stuck: false,
+        },
+        _ => SweepHit {
+            distance: hit.distance,
+            normal: Vector3::new(0.0, 0.0, 0.0),
+            stuck: true,
+        },
     }
 }
 
@@ -758,7 +833,11 @@ fn sweep_from_voxel(hit: TraceHit) -> SweepHit {
     };
     let stuck = normal.len_sq() < 1e-8;
 
-    SweepHit { distance: hit.distance, normal, stuck }
+    SweepHit {
+        distance: hit.distance,
+        normal,
+        stuck,
+    }
 }
 
 #[cfg(test)]
@@ -771,7 +850,11 @@ mod tests {
 
     fn arena() -> (BrushMap, VoxelWorld) {
         let mut brushes = BrushMap::new();
-        assert!(brushes.add_box(Vector3::new(-40.0, -40.0, -1.0), Vector3::new(40.0, 40.0, 0.0), 1));
+        assert!(brushes.add_box(
+            Vector3::new(-40.0, -40.0, -1.0),
+            Vector3::new(40.0, 40.0, 0.0),
+            1
+        ));
 
         (brushes, VoxelWorld::new())
     }
@@ -784,7 +867,17 @@ mod tests {
         let mut prev = InputButtons::NONE;
 
         for cmd in cmds {
-            step(&mut position, &mut velocity, &mut angles, cmd, prev, dt, 24.0, brushes, voxels);
+            step(
+                &mut position,
+                &mut velocity,
+                &mut angles,
+                cmd,
+                prev,
+                dt,
+                24.0,
+                brushes,
+                voxels,
+            );
             prev = cmd.buttons;
         }
 
@@ -821,7 +914,11 @@ mod tests {
     #[test]
     fn walk_stops_at_a_wall() {
         let (mut brushes, voxels) = arena();
-        assert!(brushes.add_box(Vector3::new(1.0, -2.0, -1.0), Vector3::new(2.0, 2.0, 3.0), 1));
+        assert!(brushes.add_box(
+            Vector3::new(1.0, -2.0, -1.0),
+            Vector3::new(2.0, 2.0, 3.0),
+            1
+        ));
         let mut cmds = Vec::new();
         let mut tick = 1u64;
 
@@ -850,7 +947,17 @@ mod tests {
 
         while tick <= 40 {
             let cmd = command(tick, InputButtons::IN_JUMP, 0.0);
-            step(&mut position, &mut velocity, &mut angles, &cmd, prev, dt, 24.0, &brushes, &voxels);
+            step(
+                &mut position,
+                &mut velocity,
+                &mut angles,
+                &cmd,
+                prev,
+                dt,
+                24.0,
+                &brushes,
+                &voxels,
+            );
             prev = cmd.buttons;
 
             if position.z > peak {
@@ -891,13 +998,31 @@ mod tests {
 
         while idx < 12 {
             let prev = predicted.previous();
-            step(&mut position, &mut velocity, &mut angles, &cmds[idx], prev, dt, 24.0, &brushes, &voxels);
+            step(
+                &mut position,
+                &mut velocity,
+                &mut angles,
+                &cmds[idx],
+                prev,
+                dt,
+                24.0,
+                &brushes,
+                &voxels,
+            );
             predicted.push(cmds[idx]);
             idx += 1;
         }
 
         assert!(predicted.take_ack(12));
-        predicted.replay(&mut position, &mut velocity, &mut angles, dt, 24.0, &brushes, &voxels);
+        predicted.replay(
+            &mut position,
+            &mut velocity,
+            &mut angles,
+            dt,
+            24.0,
+            &brushes,
+            &voxels,
+        );
 
         idx = 12;
 
@@ -909,13 +1034,46 @@ mod tests {
         let mut replay_pos = position;
         let mut replay_vel = velocity;
         let mut replay_ang = angles;
-        predicted.replay(&mut replay_pos, &mut replay_vel, &mut replay_ang, dt, 24.0, &brushes, &voxels);
+        predicted.replay(
+            &mut replay_pos,
+            &mut replay_vel,
+            &mut replay_ang,
+            dt,
+            24.0,
+            &brushes,
+            &voxels,
+        );
 
-        assert!(near(replay_pos.x, server_pos.x), "x {} {}", replay_pos.x, server_pos.x);
-        assert!(near(replay_pos.y, server_pos.y), "y {} {}", replay_pos.y, server_pos.y);
-        assert!(near(replay_pos.z, server_pos.z), "z {} {}", replay_pos.z, server_pos.z);
-        assert!(near(replay_vel.x, server_vel.x), "vx {} {}", replay_vel.x, server_vel.x);
-        assert!(near(replay_vel.z, server_vel.z), "vz {} {}", replay_vel.z, server_vel.z);
+        assert!(
+            near(replay_pos.x, server_pos.x),
+            "x {} {}",
+            replay_pos.x,
+            server_pos.x
+        );
+        assert!(
+            near(replay_pos.y, server_pos.y),
+            "y {} {}",
+            replay_pos.y,
+            server_pos.y
+        );
+        assert!(
+            near(replay_pos.z, server_pos.z),
+            "z {} {}",
+            replay_pos.z,
+            server_pos.z
+        );
+        assert!(
+            near(replay_vel.x, server_vel.x),
+            "vx {} {}",
+            replay_vel.x,
+            server_vel.x
+        );
+        assert!(
+            near(replay_vel.z, server_vel.z),
+            "vz {} {}",
+            replay_vel.z,
+            server_vel.z
+        );
     }
 
     #[test]
@@ -932,20 +1090,28 @@ mod tests {
     #[test]
     fn remote_poses_blend_across_the_gap_and_wrap_yaw() {
         let mut samples = VecDeque::new();
-        remember_pose(&mut samples, NetPose {
-            tick: 1,
-            time: 1.0,
-            position: Vector3::new(0.0, 0.0, 0.0),
-            angles: Angle3::new(0.0, 350.0, 0.0),
-            velocity: Vector3::new(0.0, 0.0, 0.0),
-        }, 0.1);
-        remember_pose(&mut samples, NetPose {
-            tick: 2,
-            time: 1.0,
-            position: Vector3::new(10.0, 0.0, 0.0),
-            angles: Angle3::new(0.0, 10.0, 0.0),
-            velocity: Vector3::new(4.0, 0.0, 0.0),
-        }, 0.1);
+        remember_pose(
+            &mut samples,
+            NetPose {
+                tick: 1,
+                time: 1.0,
+                position: Vector3::new(0.0, 0.0, 0.0),
+                angles: Angle3::new(0.0, 350.0, 0.0),
+                velocity: Vector3::new(0.0, 0.0, 0.0),
+            },
+            0.1,
+        );
+        remember_pose(
+            &mut samples,
+            NetPose {
+                tick: 2,
+                time: 1.0,
+                position: Vector3::new(10.0, 0.0, 0.0),
+                angles: Angle3::new(0.0, 10.0, 0.0),
+                velocity: Vector3::new(4.0, 0.0, 0.0),
+            },
+            0.1,
+        );
 
         assert!((samples[1].time - 1.1).abs() < 1e-6);
         let mid = blend_poses(&samples, 1.05, 0.1).unwrap();

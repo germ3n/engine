@@ -1,20 +1,40 @@
-use mlua::{Lua, RegistryKey, StdLib, LuaOptions};
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc::Receiver;
-use crate::script::libs::{
-    register_angle3_lib, register_convar_lib, register_engine_lib, 
-    register_net_lib, register_surface_lib, register_vector3_lib
-};
+use crate::console::ConVar;
 use crate::script::bundle::{self, load_bytecode};
 use crate::script::libs::engine::publish_clock;
+use crate::script::libs::{
+    register_angle3_lib, register_convar_lib, register_engine_lib, register_net_lib,
+    register_surface_lib, register_vector3_lib,
+};
 use crate::ui::Color;
+use mlua::{Lua, LuaOptions, RegistryKey, StdLib};
 use std::collections::HashMap;
-use crate::console::ConVar;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 
 pub enum DrawCommand {
-    Rect { x: f32, y: f32, w: f32, h: f32, color: Color },
-    OutlinedRect { x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color },
-    Text { font: mlua::LuaString, text: mlua::LuaString, x: f32, y: f32, scale: f32, color: Color },
+    Rect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: Color,
+    },
+    OutlinedRect {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    },
+    Text {
+        font: mlua::LuaString,
+        text: mlua::LuaString,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: Color,
+    },
 }
 
 pub type RenderQueue = Arc<Mutex<Vec<DrawCommand>>>;
@@ -37,23 +57,29 @@ pub struct ScriptEngine {
 }
 
 impl ScriptEngine {
-    pub fn new(
-        realm: Realm,
-        tick_interval: f64,
-        cvars: Arc<HashMap<String, Arc<ConVar>>>
-    ) -> Self {
+    pub fn new(realm: Realm, tick_interval: f64, cvars: Arc<HashMap<String, Arc<ConVar>>>) -> Self {
         let (usermsg_sender, usermsg_receiver) = std::sync::mpsc::channel();
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
-        lua.globals().set("CLIENT", matches!(realm, Realm::Client)).expect("Failed to set CLIENT global");
-        lua.globals().set("SERVER", matches!(realm, Realm::Server)).expect("Failed to set SERVER global");
-        lua.globals().set("MENU", matches!(realm, Realm::Menu)).expect("Failed to set MENU global");
+        lua.globals()
+            .set("CLIENT", matches!(realm, Realm::Client))
+            .expect("Failed to set CLIENT global");
+        lua.globals()
+            .set("SERVER", matches!(realm, Realm::Server))
+            .expect("Failed to set SERVER global");
+        lua.globals()
+            .set("MENU", matches!(realm, Realm::Menu))
+            .expect("Failed to set MENU global");
 
         {
-            load_bytecode(&lua, "hook.lua", bundle::HOOK).exec().expect("Failed to execute hook.lua");
+            load_bytecode(&lua, "hook.lua", bundle::HOOK)
+                .exec()
+                .expect("Failed to execute hook.lua");
 
             register_engine_lib(&lua, tick_interval);
             if !matches!(realm, Realm::Menu) {
-                load_bytecode(&lua, "net.lua", bundle::NET).exec().expect("Failed to execute net.lua");
+                load_bytecode(&lua, "net.lua", bundle::NET)
+                    .exec()
+                    .expect("Failed to execute net.lua");
 
                 register_net_lib(&lua, usermsg_sender);
             } else {
@@ -69,7 +95,7 @@ impl ScriptEngine {
         if !matches!(realm, Realm::Server) {
             register_surface_lib(&lua, render_queue.clone());
         }
-        
+
         let hook_table: mlua::Table = lua.globals().get("hook").unwrap();
         let hook_call_fn: mlua::Function = hook_table.get("call").unwrap();
         let hook_caller = lua.create_registry_value(hook_call_fn).unwrap();
@@ -94,7 +120,14 @@ impl ScriptEngine {
         self.usermsg_receiver.try_recv().ok()
     }
 
-    pub fn run_hook<A: mlua::IntoLuaMulti>(&self, hook_name: &str, cur_time: f64, frame_time: f64, tick_count: u64, args: A) {
+    pub fn run_hook<A: mlua::IntoLuaMulti>(
+        &self,
+        hook_name: &str,
+        cur_time: f64,
+        frame_time: f64,
+        tick_count: u64,
+        args: A,
+    ) {
         publish_clock(&self.lua, cur_time, frame_time, tick_count);
         let call_fn: mlua::Function = self.lua.registry_value(&self.hook_caller).unwrap();
 
@@ -103,7 +136,14 @@ impl ScriptEngine {
         }
     }
 
-    pub fn run_usermessage<A: mlua::IntoLuaMulti>(&self, hash: u32, cur_time: f64, frame_time: f64, tick_count: u64, args: A) {
+    pub fn run_usermessage<A: mlua::IntoLuaMulti>(
+        &self,
+        hash: u32,
+        cur_time: f64,
+        frame_time: f64,
+        tick_count: u64,
+        args: A,
+    ) {
         publish_clock(&self.lua, cur_time, frame_time, tick_count);
         let call_fn: mlua::Function = self.lua.registry_value(&self.net_caller).unwrap();
 

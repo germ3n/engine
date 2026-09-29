@@ -1,6 +1,6 @@
+use crate::entities::{DynEntity, EntityCommand, EntityHandle, FrameInfo, TickContext};
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
-use crate::entities::{DynEntity, EntityHandle, EntityCommand, TickContext, FrameInfo};
 
 const MIN_FREE_SLOTS: usize = 64;
 const MAX_COMMAND_PASSES: usize = 8;
@@ -124,7 +124,11 @@ impl EntityList {
         }
 
         let idx = self.slots.len() as u32;
-        self.slots.push(Slot { generation: 0, think_idx: NOT_THINKING, entity: UnsafeCell::new(None) });
+        self.slots.push(Slot {
+            generation: 0,
+            think_idx: NOT_THINKING,
+            entity: UnsafeCell::new(None),
+        });
 
         Some(idx)
     }
@@ -161,7 +165,11 @@ impl EntityList {
         }
 
         if idx >= self.slots.len() {
-            self.slots.resize_with(idx + 1, || Slot { generation: 0, think_idx: NOT_THINKING, entity: UnsafeCell::new(None) });
+            self.slots.resize_with(idx + 1, || Slot {
+                generation: 0,
+                think_idx: NOT_THINKING,
+                entity: UnsafeCell::new(None),
+            });
         }
 
         if self.slots[idx].entity.get_mut().is_some() {
@@ -254,7 +262,9 @@ impl EntityList {
             return;
         }
 
-        if think_idx as usize >= self.think_list.len() || self.think_list[think_idx as usize] != handle {
+        if think_idx as usize >= self.think_list.len()
+            || self.think_list[think_idx as usize] != handle
+        {
             return;
         }
 
@@ -278,7 +288,12 @@ impl EntityList {
         slot.think_idx = think_idx;
     }
 
-    fn with_entity(&mut self, handle: EntityHandle, commands: &mut Vec<EntityCommand>, f: impl FnOnce(&mut DynEntity, &mut TickContext)) {
+    fn with_entity(
+        &mut self,
+        handle: EntityHandle,
+        commands: &mut Vec<EntityCommand>,
+        f: impl FnOnce(&mut DynEntity, &mut TickContext),
+    ) {
         let idx = handle.index() as usize;
         let frame = self.frame;
         let entity_ptr = {
@@ -291,7 +306,9 @@ impl EntityList {
             }
 
             unsafe {
-                (*slot.entity.get()).as_mut().map(|entity| entity.as_mut() as *mut DynEntity)
+                (*slot.entity.get())
+                    .as_mut()
+                    .map(|entity| entity.as_mut() as *mut DynEntity)
             }
         };
 
@@ -383,9 +400,9 @@ impl EntityList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::base::{BaseEntity, BaseEntityData, Networkable};
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
     use std::sync::Arc;
-    use crate::entities::base::{BaseEntity, BaseEntityData, Networkable};
 
     struct Probe {
         base: BaseEntityData,
@@ -400,8 +417,7 @@ mod tests {
             self.base.handle
         }
 
-        fn sync_network_vars(&self) {
-        }
+        fn sync_network_vars(&self) {}
     }
 
     impl BaseEntity for Probe {
@@ -416,14 +432,20 @@ mod tests {
         fn on_spawn(&mut self, ctx: &mut TickContext) {
             let handle = self.base.handle;
             if let Some(current) = ctx.get(handle) {
-                self.saw_self_on_spawn.store(current.handle() == handle && ctx.is_valid(handle), Ordering::Relaxed);
+                self.saw_self_on_spawn.store(
+                    current.handle() == handle && ctx.is_valid(handle),
+                    Ordering::Relaxed,
+                );
             }
         }
 
         fn tick(&mut self, ctx: &mut TickContext) {
             let handle = self.base.handle;
             if let Some(current) = ctx.get(handle) {
-                self.saw_self.store(current.handle() == handle && ctx.is_valid(handle), Ordering::Relaxed);
+                self.saw_self.store(
+                    current.handle() == handle && ctx.is_valid(handle),
+                    Ordering::Relaxed,
+                );
             }
 
             if self.other.is_null() {
@@ -431,7 +453,8 @@ mod tests {
             }
 
             if let Some(other) = ctx.get(self.other) {
-                self.saw_other.store(other.handle() == self.other, Ordering::Relaxed);
+                self.saw_other
+                    .store(other.handle() == self.other, Ordering::Relaxed);
             }
         }
 
@@ -445,24 +468,28 @@ mod tests {
         let mut list = EntityList::new();
         let other_saw_self_on_spawn = Arc::new(AtomicBool::new(false));
         let other_saw_self = Arc::new(AtomicBool::new(false));
-        let other = list.spawn(Box::new(Probe {
-            base: BaseEntityData::default(),
-            other: EntityHandle::NULL,
-            saw_self_on_spawn: other_saw_self_on_spawn.clone(),
-            saw_self: other_saw_self.clone(),
-            saw_other: Arc::new(AtomicBool::new(false)),
-        })).unwrap();
+        let other = list
+            .spawn(Box::new(Probe {
+                base: BaseEntityData::default(),
+                other: EntityHandle::NULL,
+                saw_self_on_spawn: other_saw_self_on_spawn.clone(),
+                saw_self: other_saw_self.clone(),
+                saw_other: Arc::new(AtomicBool::new(false)),
+            }))
+            .unwrap();
 
         let saw_self_on_spawn = Arc::new(AtomicBool::new(false));
         let saw_self = Arc::new(AtomicBool::new(false));
         let saw_other = Arc::new(AtomicBool::new(false));
-        let main = list.spawn(Box::new(Probe {
-            base: BaseEntityData::default(),
-            other,
-            saw_self_on_spawn: saw_self_on_spawn.clone(),
-            saw_self: saw_self.clone(),
-            saw_other: saw_other.clone(),
-        })).unwrap();
+        let main = list
+            .spawn(Box::new(Probe {
+                base: BaseEntityData::default(),
+                other,
+                saw_self_on_spawn: saw_self_on_spawn.clone(),
+                saw_self: saw_self.clone(),
+                saw_other: saw_other.clone(),
+            }))
+            .unwrap();
 
         assert!(other_saw_self_on_spawn.load(Ordering::Relaxed));
         assert!(saw_self_on_spawn.load(Ordering::Relaxed));
@@ -525,8 +552,7 @@ mod tests {
             self.base.handle
         }
 
-        fn sync_network_vars(&self) {
-        }
+        fn sync_network_vars(&self) {}
     }
 
     impl BaseEntity for Actor {
@@ -730,7 +756,10 @@ mod tests {
         assert_eq!(ticks.load(Ordering::Relaxed), 0);
         assert_eq!(list.think_count(), 0);
 
-        list.queue(EntityCommand::SetThink { handle, enabled: true });
+        list.queue(EntityCommand::SetThink {
+            handle,
+            enabled: true,
+        });
         list.apply_commands();
         list.tick_all();
 
@@ -745,7 +774,10 @@ mod tests {
         let stale = list.spawn(Box::new(actor)).unwrap();
 
         assert!(list.remove(stale));
-        list.queue(EntityCommand::SetThink { handle: stale, enabled: true });
+        list.queue(EntityCommand::SetThink {
+            handle: stale,
+            enabled: true,
+        });
         list.apply_commands();
 
         let (actor, ticks) = Actor::new(true);
@@ -766,7 +798,10 @@ mod tests {
 
         let (actor, ticks) = Actor::new(true);
         let renewed = list.spawn(Box::new(actor)).unwrap();
-        list.queue(EntityCommand::SetThink { handle: stale, enabled: false });
+        list.queue(EntityCommand::SetThink {
+            handle: stale,
+            enabled: false,
+        });
         list.apply_commands();
         list.tick_all();
 

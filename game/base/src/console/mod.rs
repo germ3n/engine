@@ -1,7 +1,7 @@
 pub mod convar;
 
-pub use convar::{ConVar, ConVarValue};
 use clap::Parser;
+pub use convar::{ConVar, ConVarValue};
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "Base", version = "1.0", about = "An awesome networked game")]
@@ -12,7 +12,11 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     pub editor: bool,
 
-    #[arg(long = "compile-map", visible_alias = "compile_map", default_value_t = false)]
+    #[arg(
+        long = "compile-map",
+        visible_alias = "compile_map",
+        default_value_t = false
+    )]
     pub compile_map: bool,
 
     #[arg(long, default_value_t = false)]

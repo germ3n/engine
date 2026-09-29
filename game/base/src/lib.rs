@@ -1,22 +1,22 @@
 #[cfg(target_os = "android")]
 mod platform;
 
-mod entities;
-mod movement;
-mod world;
-mod network;
-mod state;
 mod client;
-mod server;
 mod console;
-mod ui;
-mod script;
-pub mod plugin;
+mod entities;
 mod r#enum;
+mod movement;
+mod network;
+pub mod plugin;
+mod script;
+mod server;
+mod state;
+mod ui;
+mod world;
 
-use crate::state::GameState;
-use crate::script::Realm;
 use crate::network::{wake_pair, NetWake, OUTBOUND_CAP};
+use crate::script::Realm;
+use crate::state::GameState;
 use std::net::SocketAddr;
 use std::str::FromStr;
 #[cfg(feature = "client")]

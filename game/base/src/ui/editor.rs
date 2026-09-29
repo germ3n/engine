@@ -3,7 +3,9 @@ use crate::ui::backend;
 use crate::ui::voxel::FlyCamera;
 use crate::ui::window::Window;
 use crate::ui::Color;
-use crate::world::{find_voxel_file, Block, BlockPos, BrushHit, BrushMap, CompiledMap, Face, TraceHit, VoxelWorld};
+use crate::world::{
+    find_voxel_file, Block, BlockPos, BrushHit, BrushMap, CompiledMap, Face, TraceHit, VoxelWorld,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -115,151 +117,165 @@ pub fn run(map_name: &str) {
     let mut picture_key = String::new();
     let mut picture_revision = 0u64;
 
-    event_loop.run(move |event, window_target| {
-        window_target.set_control_flow(ControlFlow::Poll);
+    event_loop
+        .run(move |event, window_target| {
+            window_target.set_control_flow(ControlFlow::Poll);
 
-        match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => {
-                    window_target.exit();
-                }
-                WindowEvent::Resized(physical_size) => {
-                    window.set_size(physical_size.width, physical_size.height);
-                }
-                WindowEvent::Focused(false) => {
-                    keys.clear();
-                    looking = false;
-                    editor.end_stroke();
-                    set_capture(window.winit_window(), false);
-                }
-                WindowEvent::ModifiersChanged(next) => {
-                    modifiers = next.state();
-                }
-                WindowEvent::CursorMoved { position, .. } => {
-                    editor.cursor_x = position.x as f32;
-                    editor.cursor_y = position.y as f32;
-
-                    if editor.painting && !looking {
-                        let size = window.winit_window().inner_size();
-                        let aim = editor.pointer_aim(size.width, size.height);
-                        editor.stroke(&aim);
+            match event {
+                Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => {
+                        window_target.exit();
                     }
-                }
-                WindowEvent::MouseWheel { delta, .. } => {
-                    editor.on_wheel(wheel_steps(delta));
-                }
-                WindowEvent::MouseInput { state, button, .. } => {
-                    if button == MouseButton::Right {
-                        looking = state == ElementState::Pressed;
+                    WindowEvent::Resized(physical_size) => {
+                        window.set_size(physical_size.width, physical_size.height);
+                    }
+                    WindowEvent::Focused(false) => {
+                        keys.clear();
+                        looking = false;
                         editor.end_stroke();
-                        set_capture(window.winit_window(), looking);
-                    } else if button == MouseButton::Left && state == ElementState::Released {
-                        editor.end_stroke();
-                    } else if button == MouseButton::Left && state == ElementState::Pressed && !looking {
-                        let size = window.winit_window().inner_size();
-                        let aim = editor.pointer_aim(size.width, size.height);
+                        set_capture(window.winit_window(), false);
+                    }
+                    WindowEvent::ModifiersChanged(next) => {
+                        modifiers = next.state();
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        editor.cursor_x = position.x as f32;
+                        editor.cursor_y = position.y as f32;
 
-                        if editor.mode == Mode::Voxel {
-                            editor.painting = true;
+                        if editor.painting && !looking {
+                            let size = window.winit_window().inner_size();
+                            let aim = editor.pointer_aim(size.width, size.height);
                             editor.stroke(&aim);
-                        } else {
-                            editor.brush_click(&aim);
                         }
                     }
-                }
-                WindowEvent::KeyboardInput { event, .. } => {
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        let pressed = event.state == ElementState::Pressed;
-
-                        if pressed {
-                            keys.insert(code);
-                        } else {
-                            keys.remove(&code);
-                        }
-
-                        if pressed && code == KeyCode::Escape {
-                            looking = false;
+                    WindowEvent::MouseWheel { delta, .. } => {
+                        editor.on_wheel(wheel_steps(delta));
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => {
+                        if button == MouseButton::Right {
+                            looking = state == ElementState::Pressed;
                             editor.end_stroke();
-                            set_capture(window.winit_window(), false);
-                            editor.cancel();
-                        } else if pressed && matches!(code, KeyCode::Delete | KeyCode::Backspace) {
-                            if !event.repeat {
-                                if editor.mode == Mode::Voxel {
-                                    let size = window.winit_window().inner_size();
-                                    let aim = editor.pointer_aim(size.width, size.height);
-                                    editor.erase_at(&aim);
-                                } else {
-                                    editor.delete_selection();
-                                }
+                            set_capture(window.winit_window(), looking);
+                        } else if button == MouseButton::Left && state == ElementState::Released {
+                            editor.end_stroke();
+                        } else if button == MouseButton::Left
+                            && state == ElementState::Pressed
+                            && !looking
+                        {
+                            let size = window.winit_window().inner_size();
+                            let aim = editor.pointer_aim(size.width, size.height);
+
+                            if editor.mode == Mode::Voxel {
+                                editor.painting = true;
+                                editor.stroke(&aim);
+                            } else {
+                                editor.brush_click(&aim);
                             }
-                        } else if pressed {
-                            let control = modifiers.control_key() || modifiers.super_key();
-                            editor.on_key(code, event.repeat, control);
                         }
+                    }
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if let PhysicalKey::Code(code) = event.physical_key {
+                            let pressed = event.state == ElementState::Pressed;
+
+                            if pressed {
+                                keys.insert(code);
+                            } else {
+                                keys.remove(&code);
+                            }
+
+                            if pressed && code == KeyCode::Escape {
+                                looking = false;
+                                editor.end_stroke();
+                                set_capture(window.winit_window(), false);
+                                editor.cancel();
+                            } else if pressed
+                                && matches!(code, KeyCode::Delete | KeyCode::Backspace)
+                            {
+                                if !event.repeat {
+                                    if editor.mode == Mode::Voxel {
+                                        let size = window.winit_window().inner_size();
+                                        let aim = editor.pointer_aim(size.width, size.height);
+                                        editor.erase_at(&aim);
+                                    } else {
+                                        editor.delete_selection();
+                                    }
+                                }
+                            } else if pressed {
+                                let control = modifiers.control_key() || modifiers.super_key();
+                                editor.on_key(code, event.repeat, control);
+                            }
+                        }
+                    }
+                    WindowEvent::RedrawRequested => {
+                        let size = window.winit_window().inner_size();
+                        let aim = editor.pointer_aim(size.width, size.height);
+                        let marked = editor.marked(&aim);
+
+                        if !solid_ready
+                            || solid_brush != editor.brushes.revision()
+                            || solid_voxel != editor.voxels.revision()
+                            || solid_mark != marked
+                        {
+                            solid = editor.voxels.mesh();
+
+                            match marked {
+                                Some(index) => solid.extend(editor.brushes.mesh_highlight(index)),
+                                None => solid.extend(editor.brushes.mesh()),
+                            }
+
+                            solid_brush = editor.brushes.revision();
+                            solid_voxel = editor.voxels.revision();
+                            solid_mark = marked;
+                            solid_ready = true;
+                            picture_key.clear();
+                        }
+
+                        let key = overlay_key(&editor, &aim);
+
+                        if picture_key != key {
+                            picture = solid.clone();
+                            push_overlay(&mut picture, &editor, &aim);
+                            picture_key = key;
+                            picture_revision = picture_revision.wrapping_add(1);
+                        }
+
+                        let aspect = size.width as f32 / size.height.max(1) as f32;
+                        let view = editor.camera.scene(aspect, editor.voxels.scale() as f32);
+                        let title = editor.title();
+
+                        if title != shown_title {
+                            window.set_window_title(&title);
+                            shown_title = title;
+                        }
+
+                        let lines = hud_lines(&editor, &aim);
+                        window.begin_frame(0.46, 0.62, 0.74);
+                        window.draw_colored_mesh(&picture, picture_revision, &view);
+                        draw_hud(&mut window, &lines);
+                        window.render_text();
+                        window.present();
+                    }
+                    _ => {}
+                },
+                Event::DeviceEvent {
+                    event: DeviceEvent::MouseMotion { delta },
+                    ..
+                } => {
+                    if looking {
+                        editor.camera.look(delta.0 as f32, delta.1 as f32);
                     }
                 }
-                WindowEvent::RedrawRequested => {
-                    let size = window.winit_window().inner_size();
-                    let aim = editor.pointer_aim(size.width, size.height);
-                    let marked = editor.marked(&aim);
-
-                    if !solid_ready || solid_brush != editor.brushes.revision() || solid_voxel != editor.voxels.revision() || solid_mark != marked {
-                        solid = editor.voxels.mesh();
-
-                        match marked {
-                            Some(index) => solid.extend(editor.brushes.mesh_highlight(index)),
-                            None => solid.extend(editor.brushes.mesh()),
-                        }
-
-                        solid_brush = editor.brushes.revision();
-                        solid_voxel = editor.voxels.revision();
-                        solid_mark = marked;
-                        solid_ready = true;
-                        picture_key.clear();
-                    }
-
-                    let key = overlay_key(&editor, &aim);
-
-                    if picture_key != key {
-                        picture = solid.clone();
-                        push_overlay(&mut picture, &editor, &aim);
-                        picture_key = key;
-                        picture_revision = picture_revision.wrapping_add(1);
-                    }
-
-                    let aspect = size.width as f32 / size.height.max(1) as f32;
-                    let view = editor.camera.scene(aspect, editor.voxels.scale() as f32);
-                    let title = editor.title();
-
-                    if title != shown_title {
-                        window.set_window_title(&title);
-                        shown_title = title;
-                    }
-
-                    let lines = hud_lines(&editor, &aim);
-                    window.begin_frame(0.46, 0.62, 0.74);
-                    window.draw_colored_mesh(&picture, picture_revision, &view);
-                    draw_hud(&mut window, &lines);
-                    window.render_text();
-                    window.present();
+                Event::AboutToWait => {
+                    let now = Instant::now();
+                    let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
+                    last_frame = now;
+                    editor.fly(&keys, modifiers.shift_key(), dt);
+                    window.winit_window().request_redraw();
                 }
                 _ => {}
-            },
-            Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
-                if looking {
-                    editor.camera.look(delta.0 as f32, delta.1 as f32);
-                }
             }
-            Event::AboutToWait => {
-                let now = Instant::now();
-                let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
-                last_frame = now;
-                editor.fly(&keys, modifiers.shift_key(), dt);
-                window.winit_window().request_redraw();
-            }
-            _ => {}
-        }
-    }).unwrap();
+        })
+        .unwrap();
 }
 
 fn open_editor(name: &str) -> Result<Editor, String> {
@@ -278,7 +294,9 @@ fn open_editor(name: &str) -> Result<Editor, String> {
 
             let map_path = match &voxel_existing {
                 Some(path) => path.with_extension("map"),
-                None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("maps").join(format!("{}.map", map_stem(&brush_query))),
+                None => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("maps")
+                    .join(format!("{}.map", map_stem(&brush_query))),
             };
             let message = format!("new {}", map_path.display());
 
@@ -341,13 +359,24 @@ impl Editor {
     }
 
     fn pointer_aim(&self, width: u32, height: u32) -> Aim {
-        let (origin, dir) = cursor_ray(&self.camera, self.cursor_x, self.cursor_y, width.max(1) as f32, height.max(1) as f32, self.voxels.scale() as f32);
+        let (origin, dir) = cursor_ray(
+            &self.camera,
+            self.cursor_x,
+            self.cursor_y,
+            width.max(1) as f32,
+            height.max(1) as f32,
+            self.voxels.scale() as f32,
+        );
 
         self.aim(origin, dir)
     }
 
     fn aim(&self, origin: Vector3, dir: Vector3) -> Aim {
-        let end = Vector3::new(origin.x + dir.x * REACH, origin.y + dir.y * REACH, origin.z + dir.z * REACH);
+        let end = Vector3::new(
+            origin.x + dir.x * REACH,
+            origin.y + dir.y * REACH,
+            origin.z + dir.z * REACH,
+        );
 
         if self.mode == Mode::Brush {
             if let Some(hit) = self.brushes.trace(origin, end) {
@@ -357,10 +386,22 @@ impl Editor {
             let z = self.anchor.map(|anchor| anchor.z).unwrap_or(0.0);
 
             if let Some(point) = ray_z(origin, dir, z) {
-                return Aim { point, brush: None, place: None, erase: None, surface: true };
+                return Aim {
+                    point,
+                    brush: None,
+                    place: None,
+                    erase: None,
+                    surface: true,
+                };
             }
 
-            return Aim { point: origin, brush: None, place: None, erase: None, surface: false };
+            return Aim {
+                point: origin,
+                brush: None,
+                place: None,
+                erase: None,
+                surface: false,
+            };
         }
 
         let brush_hit = self.brushes.trace(origin, end);
@@ -391,7 +432,13 @@ impl Editor {
             };
         }
 
-        Aim { point: origin, brush: None, place: None, erase: None, surface: false }
+        Aim {
+            point: origin,
+            brush: None,
+            place: None,
+            erase: None,
+            surface: false,
+        }
     }
 
     fn marked(&self, aim: &Aim) -> Option<usize> {
@@ -605,7 +652,11 @@ impl Editor {
         }
 
         self.dirty = false;
-        self.message = format!("saved {} and {}", self.map_path.display(), self.voxel_path.display());
+        self.message = format!(
+            "saved {} and {}",
+            self.map_path.display(),
+            self.voxel_path.display()
+        );
         println!("[editor] {} ({})", self.message, compiled.display());
     }
 
@@ -646,7 +697,11 @@ impl Editor {
 
         match self.mode {
             Mode::Brush => {
-                self.brush_tool = if slot == 1 { BrushTool::Select } else { BrushTool::Box };
+                self.brush_tool = if slot == 1 {
+                    BrushTool::Select
+                } else {
+                    BrushTool::Box
+                };
 
                 if self.brush_tool != BrushTool::Box {
                     self.anchor = None;
@@ -654,7 +709,11 @@ impl Editor {
                 }
             }
             Mode::Voxel => {
-                self.voxel_tool = if slot == 1 { VoxelTool::Paint } else { VoxelTool::Erase };
+                self.voxel_tool = if slot == 1 {
+                    VoxelTool::Paint
+                } else {
+                    VoxelTool::Erase
+                };
             }
         }
     }
@@ -739,7 +798,10 @@ fn cell_offset(voxels: &VoxelWorld, position: Vector3, normal: Vector3, sign: f6
 }
 
 fn overlay_key(editor: &Editor, aim: &Aim) -> String {
-    let mut key = format!("{:?}:{:?}:{:?}:{}", editor.mode, editor.brush_tool, editor.voxel_tool, editor.grid);
+    let mut key = format!(
+        "{:?}:{:?}:{:?}:{}",
+        editor.mode, editor.brush_tool, editor.voxel_tool, editor.grid
+    );
 
     if editor.mode == Mode::Brush && editor.brush_tool == BrushTool::Box {
         key.push_str(&format!(":{}", aim.surface));
@@ -781,7 +843,12 @@ fn push_overlay(vertices: &mut Vec<f32>, editor: &Editor, aim: &Aim) {
                 push_marker(vertices, anchor, editor.grid, [0.35, 0.9, 1.0]);
             }
         } else if aim.surface {
-            push_marker(vertices, snap_point(aim.point, editor.grid), editor.grid, [0.35, 0.9, 1.0]);
+            push_marker(
+                vertices,
+                snap_point(aim.point, editor.grid),
+                editor.grid,
+                [0.35, 0.9, 1.0],
+            );
         }
     }
 
@@ -818,7 +885,11 @@ fn hud_lines(editor: &Editor, aim: &Aim) -> Vec<String> {
         },
     };
     let dirty = if editor.dirty { " *" } else { "" };
-    let corner = if editor.anchor.is_some() { format!("  lift {}", editor.lift) } else { String::new() };
+    let corner = if editor.anchor.is_some() {
+        format!("  lift {}", editor.lift)
+    } else {
+        String::new()
+    };
     let selected = match editor.selected {
         Some(index) => format!("selected {index}"),
         None => "selected none".to_string(),
@@ -873,11 +944,34 @@ fn aim_label(editor: &Editor, aim: &Aim) -> String {
 
 fn draw_hud(window: &mut impl Window, lines: &[String]) {
     let height = 16.0 + lines.len() as f32 * 20.0;
-    window.draw_rectangle(8.0, 8.0, 1180.0, height, Color::ColorRGBA { r: 8, g: 10, b: 14, a: 188 });
+    window.draw_rectangle(
+        8.0,
+        8.0,
+        1180.0,
+        height,
+        Color::ColorRGBA {
+            r: 8,
+            g: 10,
+            b: 14,
+            a: 188,
+        },
+    );
     let mut y = 14.0;
 
     for line in lines {
-        window.draw_text("default", line, 16.0, y, 16.0, Color::ColorRGBA { r: 236, g: 238, b: 242, a: 255 });
+        window.draw_text(
+            "default",
+            line,
+            16.0,
+            y,
+            16.0,
+            Color::ColorRGBA {
+                r: 236,
+                g: 238,
+                b: 242,
+                a: 255,
+            },
+        );
         y += 20.0;
     }
 }
@@ -917,7 +1011,14 @@ fn frame_view(camera: &mut FlyCamera, mesh: &[f32]) {
     camera.pitch = -0.4;
 }
 
-fn cursor_ray(camera: &FlyCamera, x: f32, y: f32, width: f32, height: f32, scale: f32) -> (Vector3, Vector3) {
+fn cursor_ray(
+    camera: &FlyCamera,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    scale: f32,
+) -> (Vector3, Vector3) {
     let view = camera.scene(width / height.max(1.0), scale);
     let ndc_x = (x / width.max(1.0)) * 2.0 - 1.0;
     let ndc_y = 1.0 - (y / height.max(1.0)) * 2.0;
@@ -989,7 +1090,11 @@ fn snap(value: f64, grid: f64) -> f64 {
 }
 
 fn snap_point(point: Vector3, grid: f64) -> Vector3 {
-    Vector3::new(snap(point.x, grid), snap(point.y, grid), snap(point.z, grid))
+    Vector3::new(
+        snap(point.x, grid),
+        snap(point.y, grid),
+        snap(point.z, grid),
+    )
 }
 
 fn neighbor(pos: BlockPos, face: Face) -> BlockPos {
@@ -1005,8 +1110,16 @@ fn neighbor(pos: BlockPos, face: Face) -> BlockPos {
 
 fn block_bounds(world: &VoxelWorld, pos: BlockPos, pad: f64) -> (Vector3, Vector3) {
     let scale = world.scale();
-    let min = Vector3::new(pos.x as f64 * scale - pad, pos.y as f64 * scale - pad, pos.z as f64 * scale - pad);
-    let max = Vector3::new((pos.x as f64 + 1.0) * scale + pad, (pos.y as f64 + 1.0) * scale + pad, (pos.z as f64 + 1.0) * scale + pad);
+    let min = Vector3::new(
+        pos.x as f64 * scale - pad,
+        pos.y as f64 * scale - pad,
+        pos.z as f64 * scale - pad,
+    );
+    let max = Vector3::new(
+        (pos.x as f64 + 1.0) * scale + pad,
+        (pos.y as f64 + 1.0) * scale + pad,
+        (pos.z as f64 + 1.0) * scale + pad,
+    );
 
     (min, max)
 }
@@ -1022,9 +1135,24 @@ fn push_marker(vertices: &mut Vec<f32>, point: Vector3, grid: f64, color: [f32; 
 }
 
 fn push_axes(vertices: &mut Vec<f32>) {
-    push_box(vertices, Vector3::new(0.0, -0.04, -0.04), Vector3::new(4.0, 0.04, 0.04), [0.9, 0.25, 0.25]);
-    push_box(vertices, Vector3::new(-0.04, 0.0, -0.04), Vector3::new(0.04, 4.0, 0.04), [0.25, 0.85, 0.35]);
-    push_box(vertices, Vector3::new(-0.04, -0.04, 0.0), Vector3::new(0.04, 0.04, 4.0), [0.3, 0.55, 1.0]);
+    push_box(
+        vertices,
+        Vector3::new(0.0, -0.04, -0.04),
+        Vector3::new(4.0, 0.04, 0.04),
+        [0.9, 0.25, 0.25],
+    );
+    push_box(
+        vertices,
+        Vector3::new(-0.04, 0.0, -0.04),
+        Vector3::new(0.04, 4.0, 0.04),
+        [0.25, 0.85, 0.35],
+    );
+    push_box(
+        vertices,
+        Vector3::new(-0.04, -0.04, 0.0),
+        Vector3::new(0.04, 0.04, 4.0),
+        [0.3, 0.55, 1.0],
+    );
 }
 
 fn push_grid(vertices: &mut Vec<f32>, step: f32, extent: f32) {
@@ -1036,13 +1164,31 @@ fn push_grid(vertices: &mut Vec<f32>, step: f32, extent: f32) {
     let mut cursor = -extent;
 
     while cursor <= extent + step * 0.25 {
-        push_ribbon(vertices, [-extent, cursor, -0.03], [extent, cursor, -0.03], 0.02, color);
-        push_ribbon(vertices, [cursor, -extent, -0.03], [cursor, extent, -0.03], 0.02, color);
+        push_ribbon(
+            vertices,
+            [-extent, cursor, -0.03],
+            [extent, cursor, -0.03],
+            0.02,
+            color,
+        );
+        push_ribbon(
+            vertices,
+            [cursor, -extent, -0.03],
+            [cursor, extent, -0.03],
+            0.02,
+            color,
+        );
         cursor += step;
     }
 }
 
-fn push_ribbon(vertices: &mut Vec<f32>, a: [f32; 3], b: [f32; 3], half_width: f32, color: [f32; 3]) {
+fn push_ribbon(
+    vertices: &mut Vec<f32>,
+    a: [f32; 3],
+    b: [f32; 3],
+    half_width: f32,
+    color: [f32; 3],
+) {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
     let len = (dx * dx + dy * dy).sqrt();
@@ -1110,11 +1256,17 @@ fn cell_key(cell: Option<BlockPos>) -> String {
 }
 
 fn file_label(path: &Path) -> String {
-    path.file_name().and_then(|text| text.to_str()).unwrap_or("map").to_string()
+    path.file_name()
+        .and_then(|text| text.to_str())
+        .unwrap_or("map")
+        .to_string()
 }
 
 fn map_stem(name: &str) -> &str {
-    let file = Path::new(name).file_name().and_then(|file| file.to_str()).unwrap_or(name);
+    let file = Path::new(name)
+        .file_name()
+        .and_then(|file| file.to_str())
+        .unwrap_or(name);
     let stem = file
         .strip_suffix(".vmap")
         .or_else(|| file.strip_suffix(".map"))
@@ -1129,13 +1281,21 @@ fn map_stem(name: &str) -> &str {
 }
 
 fn is_voxel_name(name: &str) -> bool {
-    Path::new(name).extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("vmap"))
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vmap"))
 }
 
 fn is_nudge(code: KeyCode) -> bool {
     matches!(
         code,
-        KeyCode::ArrowLeft | KeyCode::ArrowRight | KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::KeyQ | KeyCode::KeyE
+        KeyCode::ArrowLeft
+            | KeyCode::ArrowRight
+            | KeyCode::ArrowUp
+            | KeyCode::ArrowDown
+            | KeyCode::KeyQ
+            | KeyCode::KeyE
     )
 }
 
@@ -1207,7 +1367,11 @@ mod tests {
 
     #[test]
     fn flat_corners_gain_one_grid_of_thickness() {
-        let (min, max) = box_from_corners(Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 4.0, 0.0), 1.0);
+        let (min, max) = box_from_corners(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 4.0, 0.0),
+            1.0,
+        );
 
         assert_eq!(min.x, 0.0);
         assert_eq!(max.x, 1.0);

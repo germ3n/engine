@@ -36,7 +36,12 @@ mod tests {
                 let cx = c[0] / c[3];
                 let cy = c[1] / c[3];
                 let cz = c[2] / c[3];
-                let on_screen = ax.abs() < 1.5 && ay.abs() < 1.5 && bx.abs() < 1.5 && by.abs() < 1.5 && cx.abs() < 1.5 && cy.abs() < 1.5;
+                let on_screen = ax.abs() < 1.5
+                    && ay.abs() < 1.5
+                    && bx.abs() < 1.5
+                    && by.abs() < 1.5
+                    && cx.abs() < 1.5
+                    && cy.abs() < 1.5;
                 let in_depth = az > 0.0 && az < 1.0 && bz > 0.0 && bz < 1.0 && cz > 0.0 && cz < 1.0;
 
                 if on_screen && in_depth {

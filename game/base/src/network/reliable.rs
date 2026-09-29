@@ -1,8 +1,11 @@
+use crate::network::packet::{
+    encoded_packet_count, fragment_payload_limit, reliable_payload_limit, SharedBytes,
+    MAX_FRAGMENTS, STREAM_EVENT,
+};
+use crate::network::PacketType;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::collections::{HashMap, VecDeque};
-use crate::network::PacketType;
-use crate::network::packet::{encoded_packet_count, fragment_payload_limit, reliable_payload_limit, SharedBytes, MAX_FRAGMENTS, STREAM_EVENT};
 
 const RECV_WINDOW: u32 = 1024;
 const UNRELIABLE_JUMP: u32 = 1024;
@@ -170,10 +173,14 @@ impl ReliableChannel {
             }
         }
 
-        out.extend(self.unsent.drain(..).map(|payload| match Arc::try_unwrap(payload) {
-            Ok(bytes) => bytes,
-            Err(payload) => payload.as_ref().clone(),
-        }));
+        out.extend(
+            self.unsent
+                .drain(..)
+                .map(|payload| match Arc::try_unwrap(payload) {
+                    Ok(bytes) => bytes,
+                    Err(payload) => payload.as_ref().clone(),
+                }),
+        );
         self.encoded.clear();
         self.pending_acknowledgements.clear();
 
@@ -195,7 +202,10 @@ impl ReliableChannel {
             }
         }
 
-        SelectiveAck { cumulative, selective }
+        SelectiveAck {
+            cumulative,
+            selective,
+        }
     }
 
     pub fn handle_ack(&mut self, cumulative: u32, selective: u32) {
@@ -234,7 +244,10 @@ impl ReliableChannel {
         }
 
         if self.recv_buffer.contains_key(&seq) {
-            return RecvResult { ack: true, messages: Vec::new() };
+            return RecvResult {
+                ack: true,
+                messages: Vec::new(),
+            };
         }
 
         self.recv_buffer.insert(seq, body);
@@ -271,13 +284,16 @@ impl ReliableChannel {
             let seq = packet.seq;
             let wire = self.to_packet(&packet);
             emit(wire.clone());
-            self.pending_acknowledgements.insert(seq, PendingPacket {
-                packet: wire,
-                first_sent: now,
-                last_sent: now,
-                retransmitted: false,
-                fast_sent: false,
-            });
+            self.pending_acknowledgements.insert(
+                seq,
+                PendingPacket {
+                    packet: wire,
+                    first_sent: now,
+                    last_sent: now,
+                    retransmitted: false,
+                    fast_sent: false,
+                },
+            );
         }
 
         self.retransmit_timeout(now, &mut emit);
@@ -293,13 +309,17 @@ impl ReliableChannel {
         }
 
         let origin = self.outgoing_seq;
-        let mut overdue: Vec<u32> = self.pending_acknowledgements.iter().filter_map(|(seq, pending)| {
-            if now.duration_since(pending.last_sent) > self.current_rto {
-                Some(*seq)
-            } else {
-                None
-            }
-        }).collect();
+        let mut overdue: Vec<u32> = self
+            .pending_acknowledgements
+            .iter()
+            .filter_map(|(seq, pending)| {
+                if now.duration_since(pending.last_sent) > self.current_rto {
+                    Some(*seq)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         if overdue.is_empty() {
             return;
@@ -502,7 +522,14 @@ impl ReliableChannel {
                 generation: self.generation,
                 payload: SharedBytes::full(Arc::clone(payload)),
             },
-            OutKind::Fragment { packet_id, fragment_idx, total_fragments, data, start, end } => PacketType::Fragment {
+            OutKind::Fragment {
+                packet_id,
+                fragment_idx,
+                total_fragments,
+                data,
+                start,
+                end,
+            } => PacketType::Fragment {
                 session,
                 stream: self.stream,
                 sequence: packet.seq,
@@ -549,7 +576,9 @@ impl ReliableChannel {
                     let mut consumed = 0u32;
                     for idx in 0..total {
                         let part_seq = seq.wrapping_add(idx);
-                        let Some(ReliableBody::Fragment { data, .. }) = self.recv_buffer.remove(&part_seq) else {
+                        let Some(ReliableBody::Fragment { data, .. }) =
+                            self.recv_buffer.remove(&part_seq)
+                        else {
                             break;
                         };
 
@@ -573,7 +602,13 @@ impl ReliableChannel {
     }
 
     fn fragment_run(&self, seq: u32) -> FragmentRun {
-        let Some(ReliableBody::Fragment { packet_id, fragment_idx, total_fragments, .. }) = self.recv_buffer.get(&seq) else {
+        let Some(ReliableBody::Fragment {
+            packet_id,
+            fragment_idx,
+            total_fragments,
+            ..
+        }) = self.recv_buffer.get(&seq)
+        else {
             return FragmentRun::Invalid;
         };
 
@@ -597,7 +632,8 @@ impl ReliableChannel {
                     fragment_idx: frag,
                     total_fragments: total_frag,
                     ..
-                }) if *id == packet_id && *frag == idx as u16 && *total_frag == total_fragments => {}
+                }) if *id == packet_id && *frag == idx as u16 && *total_frag == total_fragments => {
+                }
                 Some(_) => {
                     return FragmentRun::Invalid;
                 }
@@ -696,7 +732,10 @@ impl UnreliableAssembly {
     ) -> Option<Vec<u8>> {
         self.discard_stale(inbox);
 
-        if total_fragments == 0 || total_fragments > MAX_FRAGMENTS || fragment_idx >= total_fragments {
+        if total_fragments == 0
+            || total_fragments > MAX_FRAGMENTS
+            || fragment_idx >= total_fragments
+        {
             return None;
         }
 
@@ -718,11 +757,14 @@ impl UnreliableAssembly {
             }
         }
 
-        let entry = self.incoming.entry(sequence).or_insert_with(|| PartialUnreliable {
-            total_fragments,
-            received_count: 0,
-            chunks: vec![None; total_fragments as usize],
-        });
+        let entry = self
+            .incoming
+            .entry(sequence)
+            .or_insert_with(|| PartialUnreliable {
+                total_fragments,
+                received_count: 0,
+                chunks: vec![None; total_fragments as usize],
+            });
 
         let idx = fragment_idx as usize;
         if entry.chunks[idx].is_none() {
@@ -755,7 +797,8 @@ impl UnreliableAssembly {
     }
 
     fn discard_stale(&mut self, inbox: &UnreliableInbox) {
-        self.incoming.retain(|sequence, _| unreliable_sequence_open(inbox, *sequence));
+        self.incoming
+            .retain(|sequence, _| unreliable_sequence_open(inbox, *sequence));
     }
 }
 
@@ -787,19 +830,33 @@ fn unreliable_sequence_open(inbox: &UnreliableInbox, sequence: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::packet::{bundle_part, owned_payload, pack_bundles, BundlePart, MAX_DATAGRAM, MAX_FRAGMENTS, fragment_payload_limit};
+    use crate::network::packet::{
+        bundle_part, fragment_payload_limit, owned_payload, pack_bundles, BundlePart, MAX_DATAGRAM,
+        MAX_FRAGMENTS,
+    };
 
     fn push_fragment(recv: &mut ReliableChannel, packet: &PacketType) -> RecvResult {
-        let PacketType::Fragment { sequence, packet_id, fragment_idx, total_fragments, data, .. } = packet else {
+        let PacketType::Fragment {
+            sequence,
+            packet_id,
+            fragment_idx,
+            total_fragments,
+            data,
+            ..
+        } = packet
+        else {
             panic!("expected fragment");
         };
 
-        recv.receive(*sequence, ReliableBody::Fragment {
-            packet_id: *packet_id,
-            fragment_idx: *fragment_idx,
-            total_fragments: *total_fragments,
-            data: owned_payload(data.clone()),
-        })
+        recv.receive(
+            *sequence,
+            ReliableBody::Fragment {
+                packet_id: *packet_id,
+                fragment_idx: *fragment_idx,
+                total_fragments: *total_fragments,
+                data: owned_payload(data.clone()),
+            },
+        )
     }
 
     #[test]
@@ -814,7 +871,12 @@ mod tests {
         assert_eq!(sent.len(), 1);
 
         match &sent[0] {
-            PacketType::Reliable { session, sequence, payload: body, .. } => {
+            PacketType::Reliable {
+                session,
+                sequence,
+                payload: body,
+                ..
+            } => {
                 assert_eq!(*session, 1);
                 assert_eq!(*sequence, 0);
                 assert_eq!(body.as_slice(), payload.as_slice());
@@ -833,7 +895,15 @@ mod tests {
         let mut sent = Vec::new();
         channel.pump(|packet| sent.push(packet));
         assert!(sent.len() > 1);
-        let packed = pack_bundles(1, 0, 0, 0, 0, true, sent.iter().filter_map(bundle_part).collect());
+        let packed = pack_bundles(
+            1,
+            0,
+            0,
+            0,
+            0,
+            true,
+            sent.iter().filter_map(bundle_part).collect(),
+        );
         assert!(packed.iter().all(|bytes| bytes.len() <= MAX_DATAGRAM));
 
         let mut recv = ReliableChannel::new();
@@ -957,7 +1027,13 @@ mod tests {
         pending.last_sent = Instant::now() - Duration::from_secs(5);
         channel.current_rto = Duration::from_millis(1);
         channel.pump(|_| {});
-        assert!(channel.pending_acknowledgements.get(&0).unwrap().retransmitted);
+        assert!(
+            channel
+                .pending_acknowledgements
+                .get(&0)
+                .unwrap()
+                .retransmitted
+        );
 
         let before = channel.smoothed_rtt;
         channel.handle_ack(1, 0);
@@ -994,10 +1070,20 @@ mod tests {
 
         let mut recv = ReliableChannel::new();
         let packets = sent;
-        let PacketType::Reliable { sequence: seq0, payload: body0, .. } = &packets[0] else {
+        let PacketType::Reliable {
+            sequence: seq0,
+            payload: body0,
+            ..
+        } = &packets[0]
+        else {
             panic!("expected reliable");
         };
-        let PacketType::Reliable { sequence: seq2, payload: body2, .. } = &packets[2] else {
+        let PacketType::Reliable {
+            sequence: seq2,
+            payload: body2,
+            ..
+        } = &packets[2]
+        else {
             panic!("expected reliable");
         };
 
@@ -1013,7 +1099,9 @@ mod tests {
 
         sender.handle_ack(ack.cumulative, ack.selective);
         assert!(!sender.pending_acknowledgements.contains_key(&seq0));
-        assert!(sender.pending_acknowledgements.contains_key(&seq0.wrapping_add(1)));
+        assert!(sender
+            .pending_acknowledgements
+            .contains_key(&seq0.wrapping_add(1)));
         assert!(!sender.pending_acknowledgements.contains_key(&seq2));
         assert_eq!(sender.take_unacked(), vec![b"b".to_vec()]);
     }
@@ -1081,12 +1169,26 @@ mod tests {
 
         let mut packets = Vec::new();
         sender.pump(|packet| packets.push(packet));
-        let datagrams = pack_bundles(4, 9, 0, 0, 0, true, packets.iter().filter_map(bundle_part).collect());
+        let datagrams = pack_bundles(
+            4,
+            9,
+            0,
+            0,
+            0,
+            true,
+            packets.iter().filter_map(bundle_part).collect(),
+        );
         assert_eq!(datagrams.len(), 1);
         assert!(datagrams[0].len() <= MAX_DATAGRAM);
 
         let packet = wincode::deserialize::<PacketType>(&datagrams[0]).unwrap();
-        let PacketType::Bundle { ack, cumulative, parts, .. } = packet else {
+        let PacketType::Bundle {
+            ack,
+            cumulative,
+            parts,
+            ..
+        } = packet
+        else {
             panic!("expected bundle");
         };
         assert!(ack);
@@ -1095,7 +1197,10 @@ mod tests {
         let mut recv = ReliableChannel::new();
         let mut messages = Vec::new();
         for part in parts {
-            let BundlePart::Reliable { sequence, payload, .. } = part else {
+            let BundlePart::Reliable {
+                sequence, payload, ..
+            } = part
+            else {
                 panic!("expected reliable");
             };
             let result = recv.receive(sequence, ReliableBody::Complete(owned_payload(payload)));
@@ -1135,12 +1240,15 @@ mod tests {
     #[test]
     fn corrupt_fragment_does_not_stall_the_stream() {
         let mut channel = ReliableChannel::new();
-        let dropped = channel.receive(0, ReliableBody::Fragment {
-            packet_id: 1,
-            fragment_idx: 1,
-            total_fragments: 2,
-            data: vec![1],
-        });
+        let dropped = channel.receive(
+            0,
+            ReliableBody::Fragment {
+                packet_id: 1,
+                fragment_idx: 1,
+                total_fragments: 2,
+                data: vec![1],
+            },
+        );
         assert!(dropped.ack);
         assert!(dropped.messages.is_empty());
 
@@ -1191,13 +1299,16 @@ mod tests {
         let mut resent = Vec::new();
         channel.pump(|packet| resent.push(packet));
         assert_eq!(resent.len(), 3);
-        let mut sequences: Vec<u32> = resent.iter().map(|packet| {
-            let PacketType::Reliable { sequence, .. } = packet else {
-                panic!("expected reliable");
-            };
+        let mut sequences: Vec<u32> = resent
+            .iter()
+            .map(|packet| {
+                let PacketType::Reliable { sequence, .. } = packet else {
+                    panic!("expected reliable");
+                };
 
-            *sequence
-        }).collect();
+                *sequence
+            })
+            .collect();
         sequences.sort();
         assert_eq!(sequences, vec![0, 1, 2]);
         assert_eq!(channel.current_rto, Duration::from_millis(2));
@@ -1215,7 +1326,11 @@ mod tests {
         assert_eq!(channel.enqueue(b"b"), EnqueueStatus::Queued);
         channel.pump(|_| {});
 
-        channel.pending_acknowledgements.get_mut(&0).unwrap().last_sent = Instant::now() - Duration::from_secs(5);
+        channel
+            .pending_acknowledgements
+            .get_mut(&0)
+            .unwrap()
+            .last_sent = Instant::now() - Duration::from_secs(5);
         channel.current_rto = Duration::from_millis(1);
         channel.retransmit_after = Instant::now() - Duration::from_secs(1);
 
@@ -1242,11 +1357,23 @@ mod tests {
         let mut built = None;
         let last = parts.len() - 1;
         for (idx, part) in parts.into_iter().enumerate() {
-            let BundlePart::UnreliableFragment { sequence, fragment_idx, total_fragments, data } = part else {
+            let BundlePart::UnreliableFragment {
+                sequence,
+                fragment_idx,
+                total_fragments,
+                data,
+            } = part
+            else {
                 panic!("expected fragment");
             };
 
-            let result = assembly.push(&mut inbox, sequence, fragment_idx, total_fragments, owned_payload(data));
+            let result = assembly.push(
+                &mut inbox,
+                sequence,
+                fragment_idx,
+                total_fragments,
+                owned_payload(data),
+            );
             if idx == last {
                 built = result;
             } else {

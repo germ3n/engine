@@ -1,5 +1,5 @@
-use std::sync::Mutex;
 use mlua::RegistryKey;
+use std::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub enum ConVarValue {
@@ -21,7 +21,13 @@ pub struct ConVar {
 }
 
 impl ConVar {
-    pub fn new(name: &str, default: ConVarValue, description: &str, is_cheat: Option<bool>, is_replicated: Option<bool>) -> Self {
+    pub fn new(
+        name: &str,
+        default: ConVarValue,
+        description: &str,
+        is_cheat: Option<bool>,
+        is_replicated: Option<bool>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             description: description.to_string(),
@@ -29,7 +35,7 @@ impl ConVar {
             default_value: default,
             has_cheat_flag: is_cheat.unwrap_or(false),
             is_replicated_to_clients: is_replicated.unwrap_or(false),
-            callbacks: Mutex::new(Vec::new())
+            callbacks: Mutex::new(Vec::new()),
         }
     }
 
@@ -37,7 +43,7 @@ impl ConVar {
         let mut val = self.value.lock().unwrap();
         *val = new_value;
     }
-    
+
     pub fn reset(&self) {
         self.set_value(self.default_value.clone());
     }

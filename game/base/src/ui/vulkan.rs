@@ -1,5 +1,5 @@
-use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::voxel::SceneView;
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::Color;
 use ash::vk::{self, Handle};
@@ -67,48 +67,48 @@ fn build_window(entry: ash::Entry, event_loop: &EventLoop<()>) -> Result<VulkanW
         .build(event_loop)
         .map_err(|err| err.to_string())?;
     let gpu = Gpu::open(entry, &window)?;
-        let format = surface_format(&gpu)?;
-        let extent = window.inner_size();
-        let mut swap = Swap::create(&gpu, format, extent.width.max(1), extent.height.max(1))?;
-        let pipes = Pipelines::create(&gpu, swap.format)?;
-        swap.finish(&gpu, pipes.swap_pass)?;
-        let frames = Frames::create(&gpu)?;
-        let mesh = HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?;
-        let ui_bufs = [
-            HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
-            HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
-        ];
-        let text_bufs = [
-            HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
-            HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
-        ];
-        let text = TextFrame::new()?;
+    let format = surface_format(&gpu)?;
+    let extent = window.inner_size();
+    let mut swap = Swap::create(&gpu, format, extent.width.max(1), extent.height.max(1))?;
+    let pipes = Pipelines::create(&gpu, swap.format)?;
+    swap.finish(&gpu, pipes.swap_pass)?;
+    let frames = Frames::create(&gpu)?;
+    let mesh = HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+    let ui_bufs = [
+        HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
+        HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
+    ];
+    let text_bufs = [
+        HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
+        HostBuffer::create(&gpu, 4096, vk::BufferUsageFlags::VERTEX_BUFFER)?,
+    ];
+    let text = TextFrame::new()?;
     let atlas = Atlas::create(&gpu, text.size.0, text.size.1)?;
 
     Ok(VulkanWindow {
-            eyes: None,
-            swap,
-            pipes,
-            frames,
-            mesh,
-            ui_bufs,
-            text_bufs,
-            atlas,
-            gpu,
-            window,
-            event_loop: None,
-            ui: Vec::new(),
-            text,
-            view: [0.0; 16],
-            clear: [0.0, 0.0, 0.0, 1.0],
-            mesh_vertices: 0,
-            mesh_revision: 0,
-            mesh_ready: false,
-            draw_mesh: false,
-            frame_idx: 0,
-            vr: None,
-            vr_failed: false,
-            vr_enable: false,
+        eyes: None,
+        swap,
+        pipes,
+        frames,
+        mesh,
+        ui_bufs,
+        text_bufs,
+        atlas,
+        gpu,
+        window,
+        event_loop: None,
+        ui: Vec::new(),
+        text,
+        view: [0.0; 16],
+        clear: [0.0, 0.0, 0.0, 1.0],
+        mesh_vertices: 0,
+        mesh_revision: 0,
+        mesh_ready: false,
+        draw_mesh: false,
+        frame_idx: 0,
+        vr: None,
+        vr_failed: false,
+        vr_enable: false,
         eye_views: None,
     })
 }
@@ -132,9 +132,14 @@ impl Window for VulkanWindow {
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let _ = self.window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        let _ = self
+            .window
+            .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
 
-        if let Err(err) = self.swap.resize(&self.gpu, w.max(1), h.max(1), self.pipes.swap_pass) {
+        if let Err(err) = self
+            .swap
+            .resize(&self.gpu, w.max(1), h.max(1), self.pipes.swap_pass)
+        {
             println!("[gfx] vulkan resize {err}");
         }
     }
@@ -180,7 +185,15 @@ impl Window for VulkanWindow {
         push_rect(&mut self.ui, x, y, w, h, color.as_rgba_f32());
     }
 
-    fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
+    fn draw_outlined_rectangle(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    ) {
         push_outline(&mut self.ui, x, y, w, h, thickness, color.as_rgba_f32());
     }
 
@@ -233,7 +246,12 @@ impl VulkanWindow {
             Ok(image) => image,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 let size = self.window.inner_size();
-                self.swap.resize(&self.gpu, size.width.max(1), size.height.max(1), self.pipes.swap_pass)?;
+                self.swap.resize(
+                    &self.gpu,
+                    size.width.max(1),
+                    size.height.max(1),
+                    self.pipes.swap_pass,
+                )?;
 
                 return Ok(());
             }
@@ -242,7 +260,8 @@ impl VulkanWindow {
 
         if self.text.dirty {
             unsafe { self.gpu.device.device_wait_idle().map_err(vk_err)? };
-            self.atlas.resize(&self.gpu, self.text.size.0, self.text.size.1)?;
+            self.atlas
+                .resize(&self.gpu, self.text.size.0, self.text.size.1)?;
         }
 
         let ui_len = self.ui.len() * 4;
@@ -259,8 +278,14 @@ impl VulkanWindow {
 
         let cmd = self.frames.cmd[slot];
         unsafe {
-            self.gpu.device.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty()).map_err(vk_err)?;
-            self.gpu.device.begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default()).map_err(vk_err)?;
+            self.gpu
+                .device
+                .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+                .map_err(vk_err)?;
+            self.gpu
+                .device
+                .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
+                .map_err(vk_err)?;
         }
 
         if self.text.dirty {
@@ -291,7 +316,12 @@ impl VulkanWindow {
             Ok(()) => Ok(()),
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 let size = self.window.inner_size();
-                self.swap.resize(&self.gpu, size.width.max(1), size.height.max(1), self.pipes.swap_pass)
+                self.swap.resize(
+                    &self.gpu,
+                    size.width.max(1),
+                    size.height.max(1),
+                    self.pipes.swap_pass,
+                )
             }
             Err(err) => Err(vk_err(err)),
         }
@@ -318,10 +348,28 @@ impl VulkanWindow {
 
         while idx < 2 {
             let matrix = vr::view_proj(&frame.views[idx], true);
-            let extent = vk::Extent2D { width: eyes.width, height: eyes.height };
-            begin_pass(&self.gpu.device, cmd, self.pipes.eye_pass, eyes.framebuffers[idx], extent, self.clear);
+            let extent = vk::Extent2D {
+                width: eyes.width,
+                height: eyes.height,
+            };
+            begin_pass(
+                &self.gpu.device,
+                cmd,
+                self.pipes.eye_pass,
+                eyes.framebuffers[idx],
+                extent,
+                self.clear,
+            );
             if self.draw_mesh {
-                draw_mesh(&self.gpu.device, cmd, self.pipes.mesh_layout, self.pipes.mesh_eye, self.mesh.buffer, &matrix, self.mesh_vertices);
+                draw_mesh(
+                    &self.gpu.device,
+                    cmd,
+                    self.pipes.mesh_layout,
+                    self.pipes.mesh_eye,
+                    self.mesh.buffer,
+                    &matrix,
+                    self.mesh_vertices,
+                );
             }
             unsafe { self.gpu.device.cmd_end_render_pass(cmd) };
             idx += 1;
@@ -330,9 +378,22 @@ impl VulkanWindow {
         Ok(())
     }
 
-    fn record_window(&self, cmd: vk::CommandBuffer, image: u32, ui_bytes: usize, text_bytes: usize) -> Result<(), String> {
+    fn record_window(
+        &self,
+        cmd: vk::CommandBuffer,
+        image: u32,
+        ui_bytes: usize,
+        text_bytes: usize,
+    ) -> Result<(), String> {
         let extent = self.swap.extent;
-        begin_pass(&self.gpu.device, cmd, self.pipes.swap_pass, self.swap.framebuffers[image as usize], extent, self.clear);
+        begin_pass(
+            &self.gpu.device,
+            cmd,
+            self.pipes.swap_pass,
+            self.swap.framebuffers[image as usize],
+            extent,
+            self.clear,
+        );
 
         if self.draw_mesh {
             draw_mesh(
@@ -452,8 +513,14 @@ impl Drop for Gpu {
 
 impl Gpu {
     fn open(entry: ash::Entry, window: &WinitWindow) -> Result<Self, String> {
-        let display = window.display_handle().map_err(|err| err.to_string())?.as_raw();
-        let window_handle = window.window_handle().map_err(|err| err.to_string())?.as_raw();
+        let display = window
+            .display_handle()
+            .map_err(|err| err.to_string())?
+            .as_raw();
+        let window_handle = window
+            .window_handle()
+            .map_err(|err| err.to_string())?
+            .as_raw();
         let mut names = Vec::new();
         let required = ash_window::enumerate_required_extensions(display).map_err(vk_err)?;
 
@@ -462,10 +529,14 @@ impl Gpu {
             push_name(&mut names, &text);
         }
 
-        let supported = unsafe { entry.enumerate_instance_extension_properties(None) }.map_err(vk_err)?;
+        let supported =
+            unsafe { entry.enumerate_instance_extension_properties(None) }.map_err(vk_err)?;
         let supported = extension_names(&supported);
 
-        if supported.iter().any(|name| name == "VK_KHR_portability_enumeration") {
+        if supported
+            .iter()
+            .any(|name| name == "VK_KHR_portability_enumeration")
+        {
             push_name(&mut names, "VK_KHR_portability_enumeration");
         }
 
@@ -478,7 +549,10 @@ impl Gpu {
         let ptrs = name_ptrs(&names);
         let mut flags = vk::InstanceCreateFlags::empty();
 
-        if names.iter().any(|name| name.to_bytes() == b"VK_KHR_portability_enumeration") {
+        if names
+            .iter()
+            .any(|name| name.to_bytes() == b"VK_KHR_portability_enumeration")
+        {
             flags |= vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
         }
 
@@ -489,7 +563,9 @@ impl Gpu {
             .flags(flags);
         let instance = unsafe { entry.create_instance(&info, None) }.map_err(vk_err)?;
         let surface_loader = ash::khr::surface::Instance::new(&entry, &instance);
-        let surface = unsafe { ash_window::create_surface(&entry, &instance, display, window_handle, None) }.map_err(vk_err)?;
+        let surface =
+            unsafe { ash_window::create_surface(&entry, &instance, display, window_handle, None) }
+                .map_err(vk_err)?;
         let (physical, family) = pick_device(&instance, &surface_loader, surface)?;
         let device = create_device(&instance, physical, family)?;
         let queue = unsafe { device.get_device_queue(family, 0) };
@@ -537,9 +613,21 @@ impl Drop for Swap {
 }
 
 impl Swap {
-    fn create(gpu: &Gpu, format: (vk::Format, vk::ColorSpaceKHR), width: u32, height: u32) -> Result<Self, String> {
+    fn create(
+        gpu: &Gpu,
+        format: (vk::Format, vk::ColorSpaceKHR),
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
         let loader = ash::khr::swapchain::Device::new(&gpu.instance, &gpu.device);
-        let (handle, extent) = create_swapchain(gpu, &loader, vk::SwapchainKHR::null(), format, width, height)?;
+        let (handle, extent) = create_swapchain(
+            gpu,
+            &loader,
+            vk::SwapchainKHR::null(),
+            format,
+            width,
+            height,
+        )?;
         let views = swap_views(&gpu.device, &loader, handle, format.0)?;
         let depth = gpu_image(
             gpu,
@@ -563,15 +651,23 @@ impl Swap {
     }
 
     fn finish(&mut self, gpu: &Gpu, pass: vk::RenderPass) -> Result<(), String> {
-        self.framebuffers = framebuffers(&gpu.device, pass, &self.views, self.depth.view, self.extent)?;
+        self.framebuffers =
+            framebuffers(&gpu.device, pass, &self.views, self.depth.view, self.extent)?;
 
         Ok(())
     }
 
-    fn resize(&mut self, gpu: &Gpu, width: u32, height: u32, pass: vk::RenderPass) -> Result<(), String> {
+    fn resize(
+        &mut self,
+        gpu: &Gpu,
+        width: u32,
+        height: u32,
+        pass: vk::RenderPass,
+    ) -> Result<(), String> {
         unsafe { gpu.device.device_wait_idle().map_err(vk_err)? };
         let format = (self.format, vk::ColorSpaceKHR::SRGB_NONLINEAR);
-        let (handle, extent) = create_swapchain(gpu, &self.loader, self.handle, format, width, height)?;
+        let (handle, extent) =
+            create_swapchain(gpu, &self.loader, self.handle, format, width, height)?;
         let views = swap_views(&gpu.device, &self.loader, handle, self.format)?;
         let depth = gpu_image(
             gpu,
@@ -605,7 +701,10 @@ impl Swap {
     }
 
     fn acquire(&self, semaphore: vk::Semaphore) -> Result<u32, vk::Result> {
-        let (index, _suboptimal) = unsafe { self.loader.acquire_next_image(self.handle, u64::MAX, semaphore, vk::Fence::null())? };
+        let (index, _suboptimal) = unsafe {
+            self.loader
+                .acquire_next_image(self.handle, u64::MAX, semaphore, vk::Fence::null())?
+        };
 
         Ok(index)
     }
@@ -650,12 +749,40 @@ impl Eyes {
             | vk::ImageUsageFlags::TRANSFER_SRC
             | vk::ImageUsageFlags::SAMPLED;
         let color = [
-            gpu_image(gpu, width, height, vk::Format::R8G8B8A8_UNORM, usage, vk::ImageAspectFlags::COLOR)?,
-            gpu_image(gpu, width, height, vk::Format::R8G8B8A8_UNORM, usage, vk::ImageAspectFlags::COLOR)?,
+            gpu_image(
+                gpu,
+                width,
+                height,
+                vk::Format::R8G8B8A8_UNORM,
+                usage,
+                vk::ImageAspectFlags::COLOR,
+            )?,
+            gpu_image(
+                gpu,
+                width,
+                height,
+                vk::Format::R8G8B8A8_UNORM,
+                usage,
+                vk::ImageAspectFlags::COLOR,
+            )?,
         ];
         let depth = [
-            gpu_image(gpu, width, height, vk::Format::D32_SFLOAT, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::ImageAspectFlags::DEPTH)?,
-            gpu_image(gpu, width, height, vk::Format::D32_SFLOAT, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::ImageAspectFlags::DEPTH)?,
+            gpu_image(
+                gpu,
+                width,
+                height,
+                vk::Format::D32_SFLOAT,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::ImageAspectFlags::DEPTH,
+            )?,
+            gpu_image(
+                gpu,
+                width,
+                height,
+                vk::Format::D32_SFLOAT,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                vk::ImageAspectFlags::DEPTH,
+            )?,
         ];
         let extent = vk::Extent2D { width, height };
         let left = framebuffers(&gpu.device, pass, &[color[0].view], depth[0].view, extent)?;
@@ -704,7 +831,11 @@ impl Drop for Pipelines {
 impl Pipelines {
     fn create(gpu: &Gpu, format: vk::Format) -> Result<Self, String> {
         let swap_pass = render_pass(&gpu.device, format, vk::ImageLayout::PRESENT_SRC_KHR)?;
-        let eye_pass = render_pass(&gpu.device, vk::Format::R8G8B8A8_UNORM, vk::ImageLayout::TRANSFER_SRC_OPTIMAL)?;
+        let eye_pass = render_pass(
+            &gpu.device,
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        )?;
         let mesh_layout = layout(&gpu.device, 64, &[])?;
         let color_layout = layout(&gpu.device, 16, &[])?;
         let text_sets = [descriptor_layout(&gpu.device)?];
@@ -721,10 +852,54 @@ impl Pipelines {
         let color_fs = shader(&gpu.device, &color_frag)?;
         let text_vs = shader(&gpu.device, &text_vert)?;
         let text_fs = shader(&gpu.device, &text_frag)?;
-        let mesh = pipeline(&gpu.device, swap_pass, mesh_layout, mesh_vs, mesh_fs, &mesh_attrs(), 24, true, false, true)?;
-        let mesh_eye = pipeline(&gpu.device, eye_pass, mesh_layout, mesh_vs, mesh_fs, &mesh_attrs(), 24, true, false, true)?;
-        let color = pipeline(&gpu.device, swap_pass, color_layout, color_vs, color_fs, &color_attrs(), 24, false, true, false)?;
-        let text = pipeline(&gpu.device, swap_pass, text_layout, text_vs, text_fs, &text_attrs(), 32, false, true, false)?;
+        let mesh = pipeline(
+            &gpu.device,
+            swap_pass,
+            mesh_layout,
+            mesh_vs,
+            mesh_fs,
+            &mesh_attrs(),
+            24,
+            true,
+            false,
+            true,
+        )?;
+        let mesh_eye = pipeline(
+            &gpu.device,
+            eye_pass,
+            mesh_layout,
+            mesh_vs,
+            mesh_fs,
+            &mesh_attrs(),
+            24,
+            true,
+            false,
+            true,
+        )?;
+        let color = pipeline(
+            &gpu.device,
+            swap_pass,
+            color_layout,
+            color_vs,
+            color_fs,
+            &color_attrs(),
+            24,
+            false,
+            true,
+            false,
+        )?;
+        let text = pipeline(
+            &gpu.device,
+            swap_pass,
+            text_layout,
+            text_vs,
+            text_fs,
+            &text_attrs(),
+            32,
+            false,
+            true,
+            false,
+        )?;
 
         unsafe {
             gpu.device.destroy_shader_module(mesh_vs, None);
@@ -811,13 +986,21 @@ impl Frames {
     }
 
     fn wait(&self, slot: usize) -> Result<(), String> {
-        unsafe { self.device.wait_for_fences(&[self.fence[slot]], true, u64::MAX).map_err(vk_err)? };
+        unsafe {
+            self.device
+                .wait_for_fences(&[self.fence[slot]], true, u64::MAX)
+                .map_err(vk_err)?
+        };
 
         Ok(())
     }
 
     fn submit(&self, gpu: &Gpu, slot: usize, cmd: vk::CommandBuffer) -> Result<(), String> {
-        unsafe { self.device.reset_fences(&[self.fence[slot]]).map_err(vk_err)? };
+        unsafe {
+            self.device
+                .reset_fences(&[self.fence[slot]])
+                .map_err(vk_err)?
+        };
         let wait = [self.acquire[slot]];
         let signal = [self.ready[slot]];
         let cmds = [cmd];
@@ -827,7 +1010,11 @@ impl Frames {
             .wait_dst_stage_mask(&stages)
             .command_buffers(&cmds)
             .signal_semaphores(&signal);
-        unsafe { gpu.device.queue_submit(gpu.queue, &[info], self.fence[slot]) }.map_err(vk_err)
+        unsafe {
+            gpu.device
+                .queue_submit(gpu.queue, &[info], self.fence[slot])
+        }
+        .map_err(vk_err)
     }
 }
 
@@ -856,13 +1043,25 @@ impl HostBuffer {
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
         let buffer = unsafe { gpu.device.create_buffer(&info, None) }.map_err(vk_err)?;
         let reqs = unsafe { gpu.device.get_buffer_memory_requirements(buffer) };
-        let index = memory_index(&gpu.mem, reqs.memory_type_bits, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        let index = memory_index(
+            &gpu.mem,
+            reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
         let alloc = vk::MemoryAllocateInfo::default()
             .allocation_size(reqs.size)
             .memory_type_index(index);
         let memory = unsafe { gpu.device.allocate_memory(&alloc, None) }.map_err(vk_err)?;
-        unsafe { gpu.device.bind_buffer_memory(buffer, memory, 0).map_err(vk_err)? };
-        let ptr = unsafe { gpu.device.map_memory(memory, 0, reqs.size, vk::MemoryMapFlags::empty()).map_err(vk_err)? } as *mut u8;
+        unsafe {
+            gpu.device
+                .bind_buffer_memory(buffer, memory, 0)
+                .map_err(vk_err)?
+        };
+        let ptr = unsafe {
+            gpu.device
+                .map_memory(memory, 0, reqs.size, vk::MemoryMapFlags::empty())
+                .map_err(vk_err)?
+        } as *mut u8;
 
         Ok(Self {
             device: gpu.device.clone(),
@@ -878,7 +1077,11 @@ impl HostBuffer {
             return Ok(());
         }
 
-        *self = HostBuffer::create(gpu, grow(self.capacity, bytes), vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        *self = HostBuffer::create(
+            gpu,
+            grow(self.capacity, bytes),
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
 
         Ok(())
     }
@@ -961,11 +1164,18 @@ impl Atlas {
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(1)
             .pool_sizes(&pool_sizes);
-        let pool = unsafe { gpu.device.create_descriptor_pool(&pool_info, None) }.map_err(vk_err)?;
+        let pool =
+            unsafe { gpu.device.create_descriptor_pool(&pool_info, None) }.map_err(vk_err)?;
         let layouts = [layout];
-        let alloc = vk::DescriptorSetAllocateInfo::default().descriptor_pool(pool).set_layouts(&layouts);
+        let alloc = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(&layouts);
         let sets = unsafe { gpu.device.allocate_descriptor_sets(&alloc) }.map_err(vk_err)?;
-        let staging = HostBuffer::create(gpu, (width as u64) * (height as u64), vk::BufferUsageFlags::TRANSFER_SRC)?;
+        let staging = HostBuffer::create(
+            gpu,
+            (width as u64) * (height as u64),
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )?;
         let atlas = Self {
             device: gpu.device.clone(),
             image,
@@ -996,7 +1206,11 @@ impl Atlas {
             vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::COLOR,
         )?;
-        self.staging = HostBuffer::create(gpu, (width as u64) * (height as u64), vk::BufferUsageFlags::TRANSFER_SRC)?;
+        self.staging = HostBuffer::create(
+            gpu,
+            (width as u64) * (height as u64),
+            vk::BufferUsageFlags::TRANSFER_SRC,
+        )?;
         self.width = width;
         self.height = height;
         self.uploaded = false;
@@ -1072,7 +1286,11 @@ impl Atlas {
                 base_array_layer: 0,
                 layer_count: 1,
             })
-            .image_extent(vk::Extent3D { width: self.width, height: self.height, depth: 1 });
+            .image_extent(vk::Extent3D {
+                width: self.width,
+                height: self.height,
+                depth: 1,
+            });
         unsafe {
             self.device.cmd_copy_buffer_to_image(
                 cmd,
@@ -1107,15 +1325,32 @@ impl Atlas {
     }
 }
 
-fn begin_pass(device: &ash::Device, cmd: vk::CommandBuffer, pass: vk::RenderPass, framebuffer: vk::Framebuffer, extent: vk::Extent2D, clear: [f32; 4]) {
+fn begin_pass(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    pass: vk::RenderPass,
+    framebuffer: vk::Framebuffer,
+    extent: vk::Extent2D,
+    clear: [f32; 4],
+) {
     let clears = [
-        vk::ClearValue { color: vk::ClearColorValue { float32: clear } },
-        vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } },
+        vk::ClearValue {
+            color: vk::ClearColorValue { float32: clear },
+        },
+        vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 1.0,
+                stencil: 0,
+            },
+        },
     ];
     let info = vk::RenderPassBeginInfo::default()
         .render_pass(pass)
         .framebuffer(framebuffer)
-        .render_area(vk::Rect2D { offset: vk::Offset2D::default(), extent })
+        .render_area(vk::Rect2D {
+            offset: vk::Offset2D::default(),
+            extent,
+        })
         .clear_values(&clears);
     let viewport = vk::Viewport {
         x: 0.0,
@@ -1125,7 +1360,10 @@ fn begin_pass(device: &ash::Device, cmd: vk::CommandBuffer, pass: vk::RenderPass
         min_depth: 0.0,
         max_depth: 1.0,
     };
-    let scissor = vk::Rect2D { offset: vk::Offset2D::default(), extent };
+    let scissor = vk::Rect2D {
+        offset: vk::Offset2D::default(),
+        extent,
+    };
     unsafe {
         device.cmd_begin_render_pass(cmd, &info, vk::SubpassContents::INLINE);
         device.cmd_set_viewport(cmd, 0, &[viewport]);
@@ -1133,44 +1371,102 @@ fn begin_pass(device: &ash::Device, cmd: vk::CommandBuffer, pass: vk::RenderPass
     }
 }
 
-fn draw_mesh(device: &ash::Device, cmd: vk::CommandBuffer, layout: vk::PipelineLayout, pipeline: vk::Pipeline, buffer: vk::Buffer, matrix: &[f32; 16], count: u32) {
+fn draw_mesh(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    buffer: vk::Buffer,
+    matrix: &[f32; 16],
+    count: u32,
+) {
     unsafe {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        device.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::VERTEX, 0, bytes_of(matrix));
+        device.cmd_push_constants(
+            cmd,
+            layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            bytes_of(matrix),
+        );
         device.cmd_bind_vertex_buffers(cmd, 0, &[buffer], &[0]);
         device.cmd_draw(cmd, count, 1, 0, 0);
     }
 }
 
-fn draw_color(device: &ash::Device, cmd: vk::CommandBuffer, layout: vk::PipelineLayout, pipeline: vk::Pipeline, buffer: vk::Buffer, screen: &[f32; 4], count: u32) {
+fn draw_color(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    buffer: vk::Buffer,
+    screen: &[f32; 4],
+    count: u32,
+) {
     unsafe {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        device.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::VERTEX, 0, bytes_of(screen));
+        device.cmd_push_constants(
+            cmd,
+            layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            bytes_of(screen),
+        );
         device.cmd_bind_vertex_buffers(cmd, 0, &[buffer], &[0]);
         device.cmd_draw(cmd, count, 1, 0, 0);
     }
 }
 
-fn draw_text(device: &ash::Device, cmd: vk::CommandBuffer, layout: vk::PipelineLayout, pipeline: vk::Pipeline, buffer: vk::Buffer, set: vk::DescriptorSet, screen: &[f32; 4], count: u32) {
+fn draw_text(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+    buffer: vk::Buffer,
+    set: vk::DescriptorSet,
+    screen: &[f32; 4],
+    count: u32,
+) {
     unsafe {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-        device.cmd_bind_descriptor_sets(cmd, vk::PipelineBindPoint::GRAPHICS, layout, 0, &[set], &[]);
-        device.cmd_push_constants(cmd, layout, vk::ShaderStageFlags::VERTEX, 0, bytes_of(screen));
+        device.cmd_bind_descriptor_sets(
+            cmd,
+            vk::PipelineBindPoint::GRAPHICS,
+            layout,
+            0,
+            &[set],
+            &[],
+        );
+        device.cmd_push_constants(
+            cmd,
+            layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            bytes_of(screen),
+        );
         device.cmd_bind_vertex_buffers(cmd, 0, &[buffer], &[0]);
         device.cmd_draw(cmd, count, 1, 0, 0);
     }
 }
 
-fn create_device(instance: &ash::Instance, physical: vk::PhysicalDevice, family: u32) -> Result<ash::Device, String> {
+fn create_device(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    family: u32,
+) -> Result<ash::Device, String> {
     let priority = 1.0f32;
     let queue = vk::DeviceQueueCreateInfo::default()
         .queue_family_index(family)
         .queue_priorities(std::slice::from_ref(&priority));
     let mut names = vec![ash::khr::swapchain::NAME.to_owned()];
-    let supported = unsafe { instance.enumerate_device_extension_properties(physical) }.map_err(vk_err)?;
+    let supported =
+        unsafe { instance.enumerate_device_extension_properties(physical) }.map_err(vk_err)?;
     let supported = extension_names(&supported);
 
-    if supported.iter().any(|name| name == "VK_KHR_portability_subset") {
+    if supported
+        .iter()
+        .any(|name| name == "VK_KHR_portability_subset")
+    {
         push_name(&mut names, "VK_KHR_portability_subset");
     }
 
@@ -1188,7 +1484,11 @@ fn create_device(instance: &ash::Instance, physical: vk::PhysicalDevice, family:
     unsafe { instance.create_device(physical, &info, None) }.map_err(vk_err)
 }
 
-fn pick_device(instance: &ash::Instance, surface: &ash::khr::surface::Instance, target: vk::SurfaceKHR) -> Result<(vk::PhysicalDevice, u32), String> {
+fn pick_device(
+    instance: &ash::Instance,
+    surface: &ash::khr::surface::Instance,
+    target: vk::SurfaceKHR,
+) -> Result<(vk::PhysicalDevice, u32), String> {
     let devices = unsafe { instance.enumerate_physical_devices() }.map_err(vk_err)?;
     let mut best: Option<(vk::PhysicalDevice, u32, u32)> = None;
 
@@ -1197,7 +1497,11 @@ fn pick_device(instance: &ash::Instance, surface: &ash::khr::surface::Instance, 
             continue;
         };
         let props = unsafe { instance.get_physical_device_properties(device) };
-        let score = if props.device_type == vk::PhysicalDeviceType::DISCRETE_GPU { 2 } else { 1 };
+        let score = if props.device_type == vk::PhysicalDeviceType::DISCRETE_GPU {
+            2
+        } else {
+            1
+        };
 
         if best.map(|(_, _, have)| score > have).unwrap_or(true) {
             best = Some((device, family, score));
@@ -1211,13 +1515,20 @@ fn pick_device(instance: &ash::Instance, surface: &ash::khr::surface::Instance, 
     Ok((device, family))
 }
 
-fn queue_family(instance: &ash::Instance, surface: &ash::khr::surface::Instance, device: vk::PhysicalDevice, target: vk::SurfaceKHR) -> Option<u32> {
+fn queue_family(
+    instance: &ash::Instance,
+    surface: &ash::khr::surface::Instance,
+    device: vk::PhysicalDevice,
+    target: vk::SurfaceKHR,
+) -> Option<u32> {
     let families = unsafe { instance.get_physical_device_queue_family_properties(device) };
     let mut idx = 0;
 
     while idx < families.len() {
         let graphics = families[idx].queue_flags.contains(vk::QueueFlags::GRAPHICS);
-        let present = unsafe { surface.get_physical_device_surface_support(device, idx as u32, target) }.unwrap_or(false);
+        let present =
+            unsafe { surface.get_physical_device_surface_support(device, idx as u32, target) }
+                .unwrap_or(false);
 
         if graphics && present {
             return Some(idx as u32);
@@ -1230,16 +1541,24 @@ fn queue_family(instance: &ash::Instance, surface: &ash::khr::surface::Instance,
 }
 
 fn surface_format(gpu: &Gpu) -> Result<(vk::Format, vk::ColorSpaceKHR), String> {
-    let formats = unsafe { gpu.surface_loader.get_physical_device_surface_formats(gpu.physical, gpu.surface) }.map_err(vk_err)?;
+    let formats = unsafe {
+        gpu.surface_loader
+            .get_physical_device_surface_formats(gpu.physical, gpu.surface)
+    }
+    .map_err(vk_err)?;
 
     for format in &formats {
-        if format.format == vk::Format::R8G8B8A8_UNORM && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR {
+        if format.format == vk::Format::R8G8B8A8_UNORM
+            && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        {
             return Ok((format.format, format.color_space));
         }
     }
 
     for format in &formats {
-        if format.format == vk::Format::B8G8R8A8_UNORM && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR {
+        if format.format == vk::Format::B8G8R8A8_UNORM
+            && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR
+        {
             return Ok((format.format, format.color_space));
         }
     }
@@ -1251,9 +1570,24 @@ fn surface_format(gpu: &Gpu) -> Result<(vk::Format, vk::ColorSpaceKHR), String> 
     Ok((format.format, format.color_space))
 }
 
-fn create_swapchain(gpu: &Gpu, loader: &ash::khr::swapchain::Device, old: vk::SwapchainKHR, format: (vk::Format, vk::ColorSpaceKHR), width: u32, height: u32) -> Result<(vk::SwapchainKHR, vk::Extent2D), String> {
-    let caps = unsafe { gpu.surface_loader.get_physical_device_surface_capabilities(gpu.physical, gpu.surface) }.map_err(vk_err)?;
-    let modes = unsafe { gpu.surface_loader.get_physical_device_surface_present_modes(gpu.physical, gpu.surface) }.map_err(vk_err)?;
+fn create_swapchain(
+    gpu: &Gpu,
+    loader: &ash::khr::swapchain::Device,
+    old: vk::SwapchainKHR,
+    format: (vk::Format, vk::ColorSpaceKHR),
+    width: u32,
+    height: u32,
+) -> Result<(vk::SwapchainKHR, vk::Extent2D), String> {
+    let caps = unsafe {
+        gpu.surface_loader
+            .get_physical_device_surface_capabilities(gpu.physical, gpu.surface)
+    }
+    .map_err(vk_err)?;
+    let modes = unsafe {
+        gpu.surface_loader
+            .get_physical_device_surface_present_modes(gpu.physical, gpu.surface)
+    }
+    .map_err(vk_err)?;
     let extent = if caps.current_extent.width != u32::MAX {
         caps.current_extent
     } else {
@@ -1316,18 +1650,34 @@ fn present_mode(modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR {
     vk::PresentModeKHR::FIFO
 }
 
-fn swap_views(device: &ash::Device, loader: &ash::khr::swapchain::Device, swapchain: vk::SwapchainKHR, format: vk::Format) -> Result<Vec<vk::ImageView>, String> {
+fn swap_views(
+    device: &ash::Device,
+    loader: &ash::khr::swapchain::Device,
+    swapchain: vk::SwapchainKHR,
+    format: vk::Format,
+) -> Result<Vec<vk::ImageView>, String> {
     let images = unsafe { loader.get_swapchain_images(swapchain) }.map_err(vk_err)?;
     let mut views = Vec::new();
 
     for image in images {
-        views.push(image_view(device, image, format, vk::ImageAspectFlags::COLOR)?);
+        views.push(image_view(
+            device,
+            image,
+            format,
+            vk::ImageAspectFlags::COLOR,
+        )?);
     }
 
     Ok(views)
 }
 
-fn framebuffers(device: &ash::Device, pass: vk::RenderPass, colors: &[vk::ImageView], depth: vk::ImageView, extent: vk::Extent2D) -> Result<Vec<vk::Framebuffer>, String> {
+fn framebuffers(
+    device: &ash::Device,
+    pass: vk::RenderPass,
+    colors: &[vk::ImageView],
+    depth: vk::ImageView,
+    extent: vk::Extent2D,
+) -> Result<Vec<vk::Framebuffer>, String> {
     let mut buffers = Vec::new();
 
     for color in colors {
@@ -1344,7 +1694,11 @@ fn framebuffers(device: &ash::Device, pass: vk::RenderPass, colors: &[vk::ImageV
     Ok(buffers)
 }
 
-fn render_pass(device: &ash::Device, format: vk::Format, final_layout: vk::ImageLayout) -> Result<vk::RenderPass, String> {
+fn render_pass(
+    device: &ash::Device,
+    format: vk::Format,
+    final_layout: vk::ImageLayout,
+) -> Result<vk::RenderPass, String> {
     let color = vk::AttachmentDescription::default()
         .format(format)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -1377,9 +1731,18 @@ fn render_pass(device: &ash::Device, format: vk::Format, final_layout: vk::Image
     let dependency = vk::SubpassDependency::default()
         .src_subpass(vk::SUBPASS_EXTERNAL)
         .dst_subpass(0)
-        .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
-        .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
-        .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE);
+        .src_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        )
+        .dst_stage_mask(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        )
+        .dst_access_mask(
+            vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        );
     let info = vk::RenderPassCreateInfo::default()
         .attachments(&attachments)
         .subpasses(std::slice::from_ref(&subpass))
@@ -1388,7 +1751,11 @@ fn render_pass(device: &ash::Device, format: vk::Format, final_layout: vk::Image
     unsafe { device.create_render_pass(&info, None) }.map_err(vk_err)
 }
 
-fn layout(device: &ash::Device, push_size: u32, sets: &[vk::DescriptorSetLayout]) -> Result<vk::PipelineLayout, String> {
+fn layout(
+    device: &ash::Device,
+    push_size: u32,
+    sets: &[vk::DescriptorSetLayout],
+) -> Result<vk::PipelineLayout, String> {
     let push = vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::VERTEX)
         .offset(0)
@@ -1418,7 +1785,18 @@ fn descriptor_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, St
     unsafe { device.create_descriptor_set_layout(&info, None) }.map_err(vk_err)
 }
 
-fn pipeline(device: &ash::Device, pass: vk::RenderPass, layout: vk::PipelineLayout, vert: vk::ShaderModule, frag: vk::ShaderModule, attrs: &[vk::VertexInputAttributeDescription], stride: u32, depth: bool, blend: bool, cull: bool) -> Result<vk::Pipeline, String> {
+fn pipeline(
+    device: &ash::Device,
+    pass: vk::RenderPass,
+    layout: vk::PipelineLayout,
+    vert: vk::ShaderModule,
+    frag: vk::ShaderModule,
+    attrs: &[vk::VertexInputAttributeDescription],
+    stride: u32,
+    depth: bool,
+    blend: bool,
+    cull: bool,
+) -> Result<vk::Pipeline, String> {
     let stages = [
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
@@ -1436,14 +1814,22 @@ fn pipeline(device: &ash::Device, pass: vk::RenderPass, layout: vk::PipelineLayo
     let vertex = vk::PipelineVertexInputStateCreateInfo::default()
         .vertex_binding_descriptions(std::slice::from_ref(&binding))
         .vertex_attribute_descriptions(attrs);
-    let input = vk::PipelineInputAssemblyStateCreateInfo::default().topology(vk::PrimitiveTopology::TRIANGLE_LIST);
-    let viewport = vk::PipelineViewportStateCreateInfo::default().viewport_count(1).scissor_count(1);
+    let input = vk::PipelineInputAssemblyStateCreateInfo::default()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+    let viewport = vk::PipelineViewportStateCreateInfo::default()
+        .viewport_count(1)
+        .scissor_count(1);
     let raster = vk::PipelineRasterizationStateCreateInfo::default()
         .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(if cull { vk::CullModeFlags::BACK } else { vk::CullModeFlags::NONE })
+        .cull_mode(if cull {
+            vk::CullModeFlags::BACK
+        } else {
+            vk::CullModeFlags::NONE
+        })
         .front_face(vk::FrontFace::CLOCKWISE)
         .line_width(1.0);
-    let multisample = vk::PipelineMultisampleStateCreateInfo::default().rasterization_samples(vk::SampleCountFlags::TYPE_1);
+    let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+        .rasterization_samples(vk::SampleCountFlags::TYPE_1);
     let depth_state = vk::PipelineDepthStencilStateCreateInfo::default()
         .depth_test_enable(depth)
         .depth_write_enable(depth)
@@ -1463,7 +1849,8 @@ fn pipeline(device: &ash::Device, pass: vk::RenderPass, layout: vk::PipelineLayo
             .blend_enable(false)
             .color_write_mask(vk::ColorComponentFlags::RGBA)
     };
-    let blend_info = vk::PipelineColorBlendStateCreateInfo::default().attachments(std::slice::from_ref(&blend_state));
+    let blend_info = vk::PipelineColorBlendStateCreateInfo::default()
+        .attachments(std::slice::from_ref(&blend_state));
     let dynamics = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
     let dynamic = vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamics);
     let info = vk::GraphicsPipelineCreateInfo::default()
@@ -1492,11 +1879,22 @@ fn shader(device: &ash::Device, words: &[u32]) -> Result<vk::ShaderModule, Strin
     unsafe { device.create_shader_module(&info, None) }.map_err(vk_err)
 }
 
-fn gpu_image(gpu: &Gpu, width: u32, height: u32, format: vk::Format, usage: vk::ImageUsageFlags, aspect: vk::ImageAspectFlags) -> Result<GpuImage, String> {
+fn gpu_image(
+    gpu: &Gpu,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    usage: vk::ImageUsageFlags,
+    aspect: vk::ImageAspectFlags,
+) -> Result<GpuImage, String> {
     let info = vk::ImageCreateInfo::default()
         .image_type(vk::ImageType::TYPE_2D)
         .format(format)
-        .extent(vk::Extent3D { width, height, depth: 1 })
+        .extent(vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        })
         .mip_levels(1)
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
@@ -1506,13 +1904,27 @@ fn gpu_image(gpu: &Gpu, width: u32, height: u32, format: vk::Format, usage: vk::
         .initial_layout(vk::ImageLayout::UNDEFINED);
     let image = unsafe { gpu.device.create_image(&info, None) }.map_err(vk_err)?;
     let reqs = unsafe { gpu.device.get_image_memory_requirements(image) };
-    let index = memory_index(&gpu.mem, reqs.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)
-        .or_else(|_| memory_index(&gpu.mem, reqs.memory_type_bits, vk::MemoryPropertyFlags::empty()))?;
+    let index = memory_index(
+        &gpu.mem,
+        reqs.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .or_else(|_| {
+        memory_index(
+            &gpu.mem,
+            reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::empty(),
+        )
+    })?;
     let alloc = vk::MemoryAllocateInfo::default()
         .allocation_size(reqs.size)
         .memory_type_index(index);
     let memory = unsafe { gpu.device.allocate_memory(&alloc, None) }.map_err(vk_err)?;
-    unsafe { gpu.device.bind_image_memory(image, memory, 0).map_err(vk_err)? };
+    unsafe {
+        gpu.device
+            .bind_image_memory(image, memory, 0)
+            .map_err(vk_err)?
+    };
     let view = image_view(&gpu.device, image, format, aspect)?;
 
     Ok(GpuImage {
@@ -1523,7 +1935,12 @@ fn gpu_image(gpu: &Gpu, width: u32, height: u32, format: vk::Format, usage: vk::
     })
 }
 
-fn image_view(device: &ash::Device, image: vk::Image, format: vk::Format, aspect: vk::ImageAspectFlags) -> Result<vk::ImageView, String> {
+fn image_view(
+    device: &ash::Device,
+    image: vk::Image,
+    format: vk::Format,
+    aspect: vk::ImageAspectFlags,
+) -> Result<vk::ImageView, String> {
     let info = vk::ImageViewCreateInfo::default()
         .image(image)
         .view_type(vk::ImageViewType::TYPE_2D)
@@ -1539,12 +1956,18 @@ fn image_view(device: &ash::Device, image: vk::Image, format: vk::Format, aspect
     unsafe { device.create_image_view(&info, None) }.map_err(vk_err)
 }
 
-fn memory_index(mem: &vk::PhysicalDeviceMemoryProperties, bits: u32, flags: vk::MemoryPropertyFlags) -> Result<u32, String> {
+fn memory_index(
+    mem: &vk::PhysicalDeviceMemoryProperties,
+    bits: u32,
+    flags: vk::MemoryPropertyFlags,
+) -> Result<u32, String> {
     let mut idx = 0;
 
     while idx < mem.memory_type_count {
         let kind = (bits & (1 << idx)) != 0;
-        let props = mem.memory_types[idx as usize].property_flags.contains(flags);
+        let props = mem.memory_types[idx as usize]
+            .property_flags
+            .contains(flags);
 
         if kind && props {
             return Ok(idx);
@@ -1567,11 +1990,16 @@ fn color_range() -> vk::ImageSubresourceRange {
 }
 
 fn extension_names(exts: &[vk::ExtensionProperties]) -> Vec<String> {
-    exts.iter().map(|ext| {
-        let bytes = ext.extension_name.map(|ch| ch as u8);
-        let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
-        String::from_utf8_lossy(&bytes[..end]).into_owned()
-    }).collect()
+    exts.iter()
+        .map(|ext| {
+            let bytes = ext.extension_name.map(|ch| ch as u8);
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(bytes.len());
+            String::from_utf8_lossy(&bytes[..end]).into_owned()
+        })
+        .collect()
 }
 
 fn push_name(list: &mut Vec<CString>, name: &str) {
@@ -1658,7 +2086,9 @@ fn text_attrs() -> [vk::VertexInputAttributeDescription; 3] {
 
 fn spirv(stage: naga::ShaderStage, source: &str) -> Result<Vec<u32>, String> {
     let mut frontend = naga::front::glsl::Frontend::default();
-    let module = frontend.parse(&naga::front::glsl::Options::from(stage), source).map_err(|err| format!("shader {err:?}"))?;
+    let module = frontend
+        .parse(&naga::front::glsl::Options::from(stage), source)
+        .map_err(|err| format!("shader {err:?}"))?;
     let caps = naga::valid::Capabilities::default() | naga::valid::Capabilities::IMMEDIATES;
     let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
         .validate(&module)
@@ -1669,7 +2099,8 @@ fn spirv(stage: naga::ShaderStage, source: &str) -> Result<Vec<u32>, String> {
         entry_point: "main".to_string(),
     };
 
-    naga::back::spv::write_vec(&module, &info, &options, Some(&pipeline)).map_err(|err| format!("shader {err}"))
+    naga::back::spv::write_vec(&module, &info, &options, Some(&pipeline))
+        .map_err(|err| format!("shader {err}"))
 }
 
 fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
@@ -1689,11 +2120,33 @@ fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 
     }
 }
 
-fn push_outline(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: [f32; 4]) {
+fn push_outline(
+    verts: &mut Vec<f32>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    thickness: f32,
+    color: [f32; 4],
+) {
     push_rect(verts, x, y, w, thickness, color);
     push_rect(verts, x, y + h - thickness, w, thickness, color);
-    push_rect(verts, x, y + thickness, thickness, h - 2.0 * thickness, color);
-    push_rect(verts, x + w - thickness, y + thickness, thickness, h - 2.0 * thickness, color);
+    push_rect(
+        verts,
+        x,
+        y + thickness,
+        thickness,
+        h - 2.0 * thickness,
+        color,
+    );
+    push_rect(
+        verts,
+        x + w - thickness,
+        y + thickness,
+        thickness,
+        h - 2.0 * thickness,
+        color,
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -1711,8 +2164,11 @@ struct TextFrame {
 
 impl TextFrame {
     fn new() -> Result<Self, String> {
-        let font = FontArc::try_from_slice(include_bytes!("font_default.ttf")).map_err(|err| err.to_string())?;
-        let glyphs = GlyphBrushBuilder::using_font(font).initial_cache_size((512, 512)).build();
+        let font = FontArc::try_from_slice(include_bytes!("font_default.ttf"))
+            .map_err(|err| err.to_string())?;
+        let glyphs = GlyphBrushBuilder::using_font(font)
+            .initial_cache_size((512, 512))
+            .build();
 
         Ok(Self {
             glyphs,
@@ -1745,7 +2201,8 @@ impl TextFrame {
                     let mut row = 0;
 
                     while row < height {
-                        let dst = (rect.min[1] as usize + row) * self.size.0 as usize + rect.min[0] as usize;
+                        let dst = (rect.min[1] as usize + row) * self.size.0 as usize
+                            + rect.min[0] as usize;
                         let src = row * width;
                         self.pixels[dst..dst + width].copy_from_slice(&data[src..src + width]);
                         row += 1;
@@ -1785,12 +2242,42 @@ impl TextFrame {
 fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     let color = vertex.extra.color;
     let positions = [
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.min.y, vertex.tex_coords.min.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.min.y, vertex.tex_coords.max.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.max.y, vertex.tex_coords.min.x, vertex.tex_coords.max.y],
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.max.y, vertex.tex_coords.min.x, vertex.tex_coords.max.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.min.y, vertex.tex_coords.max.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.max.y, vertex.tex_coords.max.x, vertex.tex_coords.max.y],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.max.y,
+        ],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.max.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.max.y,
+        ],
     ];
     let mut verts = [[0.0; 8]; 6];
 
@@ -1937,7 +2424,12 @@ mod tests {
                 let cx = c[0] / c[3];
                 let cy = c[1] / c[3];
                 let cz = c[2] / c[3];
-                let on_screen = ax.abs() < 1.5 && ay.abs() < 1.5 && bx.abs() < 1.5 && by.abs() < 1.5 && cx.abs() < 1.5 && cy.abs() < 1.5;
+                let on_screen = ax.abs() < 1.5
+                    && ay.abs() < 1.5
+                    && bx.abs() < 1.5
+                    && by.abs() < 1.5
+                    && cx.abs() < 1.5
+                    && cy.abs() < 1.5;
                 let in_depth = az > 0.0 && az < 1.0 && bz > 0.0 && bz < 1.0 && cz > 0.0 && cz < 1.0;
 
                 if on_screen && in_depth {

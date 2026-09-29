@@ -1,8 +1,8 @@
-use std::sync::Arc;
 use crate::console::{ConVar, ConVarValue};
-use std::collections::HashMap;
-use mlua::{Error, Function, Lua, UserData, Value};
 use mlua::prelude::LuaUserDataMethods;
+use mlua::{Error, Function, Lua, UserData, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct LuaConVar {
     pub cvar: Arc<ConVar>,
@@ -64,11 +64,12 @@ pub fn register_convar_lib(lua: &Lua, cvars: Arc<HashMap<String, Arc<ConVar>>>) 
             "get",
             lua.create_function(move |_, cvar_name: String| {
                 if let Some(cvar) = cvars.get(&cvar_name) {
-                    return Ok(LuaConVar {
-                        cvar: cvar.clone(),
-                    });
+                    return Ok(LuaConVar { cvar: cvar.clone() });
                 }
-                Err(Error::RuntimeError(format!("ConVar '{}' not found", cvar_name)))
+                Err(Error::RuntimeError(format!(
+                    "ConVar '{}' not found",
+                    cvar_name
+                )))
             })
             .expect("[engine] Failed to create cvar.get function"),
         )

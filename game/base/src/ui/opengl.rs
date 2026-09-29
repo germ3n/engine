@@ -1,8 +1,9 @@
+use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
-use crate::ui::voxel::SceneView;
 use crate::ui::Color;
 use glow::HasContext; // Exposes OpenGL methods
+use glow_glyph::{ab_glyph::FontArc, GlyphBrush, GlyphBrushBuilder, Section, Text};
 #[cfg(target_os = "android")]
 use glutin::config::Api;
 #[cfg(target_os = "android")]
@@ -16,13 +17,12 @@ use glutin::{
 };
 use glutin_winit::DisplayBuilder;
 use raw_window_handle::HasRawWindowHandle;
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use winit::{
     event_loop::{EventLoop, EventLoopWindowTarget},
     window::{Window as WinitWindow, WindowBuilder},
 };
-use glow_glyph::{GlyphBrush, GlyphBrushBuilder, Section, Text, ab_glyph::FontArc};
-use std::collections::HashMap;
 pub struct OpenGLWindow {
     pub window: WinitWindow,
     pub context: PossiblyCurrentContext,
@@ -65,17 +65,26 @@ impl OpenGLWindow {
     fn build(target: &EventLoopWindowTarget<()>) -> Self {
         let window_builder = WindowBuilder::new().with_title("Starting...");
         #[cfg(target_os = "android")]
-        let template = ConfigTemplateBuilder::new().with_depth_size(16).with_api(Api::GLES2 | Api::GLES3);
+        let template = ConfigTemplateBuilder::new()
+            .with_depth_size(16)
+            .with_api(Api::GLES2 | Api::GLES3);
         #[cfg(not(target_os = "android"))]
         let template = ConfigTemplateBuilder::new().with_depth_size(24);
         let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
 
         let (window, gl_config) = display_builder
             .build(target, template, |configs| {
-                configs.reduce(|accum, config| {
-                    if config.num_samples() > accum.num_samples() { config } else { accum }
-                }).unwrap()
-            }).unwrap();
+                configs
+                    .reduce(|accum, config| {
+                        if config.num_samples() > accum.num_samples() {
+                            config
+                        } else {
+                            accum
+                        }
+                    })
+                    .unwrap()
+            })
+            .unwrap();
 
         let window = window.expect("Failed to create winit window");
         let raw_window_handle = window.raw_window_handle();
@@ -86,7 +95,9 @@ impl OpenGLWindow {
         let attributes = attributes.with_context_api(ContextApi::Gles(Some(Version::new(3, 0))));
         let context_attributes = attributes.build(Some(raw_window_handle));
         let not_current_gl_context = unsafe {
-            gl_display.create_context(&gl_config, &context_attributes).expect("Failed to create OpenGL context")
+            gl_display
+                .create_context(&gl_config, &context_attributes)
+                .expect("Failed to create OpenGL context")
         };
 
         let (width, height): (u32, u32) = window.inner_size().into();
@@ -97,7 +108,9 @@ impl OpenGLWindow {
         );
 
         let surface = unsafe {
-            gl_display.create_window_surface(&gl_config, &surface_attributes).unwrap()
+            gl_display
+                .create_window_surface(&gl_config, &surface_attributes)
+                .unwrap()
         };
         let context = not_current_gl_context.make_current(&surface).unwrap();
         let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
@@ -146,7 +159,7 @@ impl OpenGLWindow {
 
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            
+
             // Tell OpenGL how to read our vertex data (2 floats per vertex)
             let pos_attrib = gl.get_attrib_location(program, "aPos").unwrap();
             gl.vertex_attrib_pointer_f32(pos_attrib, 2, glow::FLOAT, false, 8, 0);
@@ -157,13 +170,13 @@ impl OpenGLWindow {
 
         let colored_mesh = ColoredMesh::new(&gl);
         let mut opengl_window = Self {
-            window, 
-            context, 
-            surface, 
+            window,
+            context,
+            surface,
             event_loop: None,
-            gl, 
-            shader_program, 
-            vao, 
+            gl,
+            shader_program,
+            vao,
             vbo,
             glyph_brushes: HashMap::new(),
             colored_mesh,
@@ -175,9 +188,13 @@ impl OpenGLWindow {
         };
 
         let font_default_bytes = include_bytes!("font_default.ttf");
-        let font_default = FontArc::try_from_slice(font_default_bytes).expect("Failed to load font_default.ttf!");
-        let glyph_brush_default = GlyphBrushBuilder::using_font(font_default).build(&opengl_window.gl);
-        opengl_window.glyph_brushes.insert("default".to_string(), glyph_brush_default);
+        let font_default =
+            FontArc::try_from_slice(font_default_bytes).expect("Failed to load font_default.ttf!");
+        let glyph_brush_default =
+            GlyphBrushBuilder::using_font(font_default).build(&opengl_window.gl);
+        opengl_window
+            .glyph_brushes
+            .insert("default".to_string(), glyph_brush_default);
         opengl_window
     }
 }
@@ -212,7 +229,8 @@ impl Window for OpenGLWindow {
         unsafe {
             self.gl.depth_mask(true);
             self.gl.clear_color(red, green, blue, 1.0);
-            self.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+            self.gl
+                .clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
         }
     }
 
@@ -237,38 +255,54 @@ impl Window for OpenGLWindow {
         let size = winit::dpi::PhysicalSize::new(width, height);
         let _ = self.window.request_inner_size(size);
 
-        if let (Some(w), Some(h)) = (std::num::NonZeroU32::new(width.max(1)), std::num::NonZeroU32::new(height.max(1))) {
+        if let (Some(w), Some(h)) = (
+            std::num::NonZeroU32::new(width.max(1)),
+            std::num::NonZeroU32::new(height.max(1)),
+        ) {
             self.surface.resize(&self.context, w, h);
-            unsafe { self.gl.viewport(0, 0, width as i32, height as i32); }
+            unsafe {
+                self.gl.viewport(0, 0, width as i32, height as i32);
+            }
         }
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
         // Fallback to white if no color is provided
         let size = self.window.inner_size();
-        
+
         // Two triangles that make up the rectangle (x, y coordinates)
         let vertices: [f32; 12] = [
-            x, y,         // Top-left
-            x + w, y,     // Top-right
-            x, y + h,     // Bottom-left
-            x, y + h,     // Bottom-left
-            x + w, y,     // Top-right
-            x + w, y + h, // Bottom-right
+            x,
+            y, // Top-left
+            x + w,
+            y, // Top-right
+            x,
+            y + h, // Bottom-left
+            x,
+            y + h, // Bottom-left
+            x + w,
+            y, // Top-right
+            x + w,
+            y + h, // Bottom-right
         ];
 
         unsafe {
             // Enable blending for transparency (alpha)
             self.gl.enable(glow::BLEND);
-            self.gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            self.gl
+                .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
 
             self.gl.use_program(Some(self.shader_program));
-            
+
             // Pass the screen resolution to the shader so it scales pixels properly
-            if let Some(loc) = self.gl.get_uniform_location(self.shader_program, "uResolution") {
-                self.gl.uniform_2_f32(Some(&loc), size.width as f32, size.height as f32);
+            if let Some(loc) = self
+                .gl
+                .get_uniform_location(self.shader_program, "uResolution")
+            {
+                self.gl
+                    .uniform_2_f32(Some(&loc), size.width as f32, size.height as f32);
             }
-            
+
             // Pass the color (converted from 0-255 u8 to 0.0-1.0 f32)
             if let Some(loc) = self.gl.get_uniform_location(self.shader_program, "uColor") {
                 let [r, g, b, a] = color.as_rgba_f32();
@@ -278,24 +312,39 @@ impl Window for OpenGLWindow {
             // Bind our geometry buffer and push the new coordinates to the GPU
             self.gl.bind_vertex_array(Some(self.vao));
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            
+
             // Safely cast the f32 array into raw bytes to send to OpenGL
             let vertices_u8 = core::slice::from_raw_parts(
                 vertices.as_ptr() as *const u8,
-                vertices.len() * std::mem::size_of::<f32>()
+                vertices.len() * std::mem::size_of::<f32>(),
             );
-            self.gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::DYNAMIC_DRAW);
-            
+            self.gl
+                .buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::DYNAMIC_DRAW);
+
             // Execute the draw command (6 vertices = 2 triangles)
             self.gl.draw_arrays(glow::TRIANGLES, 0, 6);
         }
     }
 
-    fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
+    fn draw_outlined_rectangle(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    ) {
         self.draw_rectangle(x, y, w, thickness, color);
         self.draw_rectangle(x, y + h - thickness, w, thickness, color);
         self.draw_rectangle(x, y + thickness, thickness, h - 2.0 * thickness, color);
-        self.draw_rectangle(x + w - thickness, y + thickness, thickness, h - 2.0 * thickness, color);
+        self.draw_rectangle(
+            x + w - thickness,
+            y + thickness,
+            thickness,
+            h - 2.0 * thickness,
+            color,
+        );
     }
 
     fn draw_text(&mut self, font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
@@ -330,15 +379,18 @@ impl Window for OpenGLWindow {
 
     fn render_text(&mut self) {
         let size = self.window.inner_size();
-        
+
         unsafe {
             // glow_glyph needs blending enabled to draw smooth font edges
             self.gl.enable(glow::BLEND);
-            self.gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            self.gl
+                .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
         }
 
         for (_, glyph_brush) in self.glyph_brushes.iter_mut() {
-            glyph_brush.draw_queued(&self.gl, size.width, size.height).expect("Failed to draw text");
+            glyph_brush
+                .draw_queued(&self.gl, size.width, size.height)
+                .expect("Failed to draw text");
         }
     }
 }
@@ -360,11 +412,14 @@ impl OpenGLWindow {
 
         while idx < 2 {
             unsafe {
-                self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(frame[idx]));
+                self.gl
+                    .bind_framebuffer(glow::FRAMEBUFFER, Some(frame[idx]));
                 self.gl.viewport(0, 0, width, height);
                 self.gl.depth_mask(true);
-                self.gl.clear_color(self.clear[0], self.clear[1], self.clear[2], self.clear[3]);
-                self.gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
+                self.gl
+                    .clear_color(self.clear[0], self.clear[1], self.clear[2], self.clear[3]);
+                self.gl
+                    .clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             }
 
             if self.colored_mesh.vertex_count > 0 {
@@ -372,7 +427,9 @@ impl OpenGLWindow {
                 self.colored_mesh.draw(&self.gl, &matrix);
             }
 
-            unsafe { self.gl.flush(); }
+            unsafe {
+                self.gl.flush();
+            }
 
             if let Some(headset) = self.vr.as_mut() {
                 headset.submit_gl(idx, color[idx].0.get());
@@ -384,7 +441,8 @@ impl OpenGLWindow {
         let size = self.window.inner_size();
         unsafe {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
-            self.gl.viewport(0, 0, size.width.max(1) as i32, size.height.max(1) as i32);
+            self.gl
+                .viewport(0, 0, size.width.max(1) as i32, size.height.max(1) as i32);
         }
 
         if self.colored_mesh.vertex_count > 0 {
@@ -578,7 +636,8 @@ impl ColoredMesh {
         unsafe {
             gl.bind_vertex_array(Some(self.vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-            let bytes = std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * 4);
+            let bytes =
+                std::slice::from_raw_parts(vertices.as_ptr() as *const u8, vertices.len() * 4);
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
         }
     }
@@ -615,15 +674,45 @@ impl GlEyes {
             let buffer = unsafe { gl.create_framebuffer().ok()? };
             unsafe {
                 gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, width, height, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    width,
+                    height,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    None,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::LINEAR as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::LINEAR as i32,
+                );
                 gl.bind_renderbuffer(glow::RENDERBUFFER, Some(render));
                 gl.renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, width, height);
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(buffer));
-                gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(texture), 0);
-                gl.framebuffer_renderbuffer(glow::FRAMEBUFFER, glow::DEPTH_ATTACHMENT, glow::RENDERBUFFER, Some(render));
-                let complete = gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(texture),
+                    0,
+                );
+                gl.framebuffer_renderbuffer(
+                    glow::FRAMEBUFFER,
+                    glow::DEPTH_ATTACHMENT,
+                    glow::RENDERBUFFER,
+                    Some(render),
+                );
+                let complete =
+                    gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
                 gl.bind_framebuffer(glow::FRAMEBUFFER, None);
 
                 if !complete {
@@ -716,8 +805,14 @@ mod tests {
                 let cx = c[0] / c[3];
                 let cy = c[1] / c[3];
                 let cz = c[2] / c[3];
-                let on_screen = ax.abs() < 1.5 && ay.abs() < 1.5 && bx.abs() < 1.5 && by.abs() < 1.5 && cx.abs() < 1.5 && cy.abs() < 1.5;
-                let in_depth = az > -1.0 && az < 1.0 && bz > -1.0 && bz < 1.0 && cz > -1.0 && cz < 1.0;
+                let on_screen = ax.abs() < 1.5
+                    && ay.abs() < 1.5
+                    && bx.abs() < 1.5
+                    && by.abs() < 1.5
+                    && cx.abs() < 1.5
+                    && cy.abs() < 1.5;
+                let in_depth =
+                    az > -1.0 && az < 1.0 && bz > -1.0 && bz < 1.0 && cz > -1.0 && cz < 1.0;
 
                 if on_screen && in_depth {
                     visible += 1;

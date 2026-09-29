@@ -1,16 +1,16 @@
-pub mod window;
-pub mod vr;
 pub mod backend;
-#[cfg(not(target_os = "ios"))]
-pub mod opengl;
-#[cfg(not(target_os = "ios"))]
-pub mod vulkan;
+pub mod color;
+pub mod d3d;
+pub mod editor;
+pub mod menu;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod metal;
-pub mod d3d;
-pub mod color;
-pub mod menu;
+#[cfg(not(target_os = "ios"))]
+pub mod opengl;
 pub mod voxel;
-pub mod editor;
+pub mod vr;
+#[cfg(not(target_os = "ios"))]
+pub mod vulkan;
+pub mod window;
 
 pub use color::Color;

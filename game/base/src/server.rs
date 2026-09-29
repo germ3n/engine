@@ -1,24 +1,26 @@
-use std::sync::mpsc::{Receiver, Sender};
-use std::net::TcpStream;
-use std::collections::VecDeque;
-use crate::network::wait_socket;
-use crate::network::{ClientToServer, ServerToClient};
-use crate::state::GameState;
-use std::time::{Instant, Duration};
-use crate::network::server::NetworkServer;
-use crate::network::{PacketType, NetSend, FromClient, ReliableBody, RECV_BUDGET};
-use crate::network::packet::STREAM_STATE;
-use crate::network::usermessage::hash_usermessage_name;
-use crate::network::usermessage::UserMsgReader;
-use crate::network::server::ReliableSendError;
-use crate::network::events::{EntitySnapshot, NetTransform};
-use crate::network::packet::{encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart};
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::movement::{self, UserCommand};
+use crate::network::events::{EntitySnapshot, NetTransform};
+use crate::network::packet::STREAM_STATE;
+use crate::network::packet::{
+    encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart,
+};
+use crate::network::server::NetworkServer;
+use crate::network::server::ReliableSendError;
+use crate::network::usermessage::hash_usermessage_name;
+use crate::network::usermessage::UserMsgReader;
+use crate::network::wait_socket;
+use crate::network::{ClientToServer, ServerToClient};
+use crate::network::{FromClient, NetSend, PacketType, ReliableBody, RECV_BUDGET};
 use crate::r#enum::InputButtons;
 use crate::script::libs::vector3::Vector3;
+use crate::state::GameState;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::net::TcpStream;
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 
 struct RemotePlayer {
     addr: SocketAddr,
@@ -145,12 +147,19 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
                             while idx < players.len() {
                                 if players[idx].addr != addr {
-                                    let origin = game.entities.get(handle).map(|entity| entity.base().position).unwrap_or(Vector3::new(0.0, 28.0, 2.0));
-                                    game.send_reliable_to(players[idx].addr, ServerToClient::EntitySpawned {
-                                        handle,
-                                        class_hash: Player::CLASS_HASH,
-                                        position: origin,
-                                    });
+                                    let origin = game
+                                        .entities
+                                        .get(handle)
+                                        .map(|entity| entity.base().position)
+                                        .unwrap_or(Vector3::new(0.0, 28.0, 2.0));
+                                    game.send_reliable_to(
+                                        players[idx].addr,
+                                        ServerToClient::EntitySpawned {
+                                            handle,
+                                            class_hash: Player::CLASS_HASH,
+                                            position: origin,
+                                        },
+                                    );
                                 }
 
                                 idx += 1;
@@ -160,10 +169,20 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
                     emit_snapshot(&game, addr, generation);
                     emit_voxel_baseline(&game, addr);
-                    game.send_state_to(addr, ServerToClient::MapChange { map_name: game.map_name.clone() });
+                    game.send_state_to(
+                        addr,
+                        ServerToClient::MapChange {
+                            map_name: game.map_name.clone(),
+                        },
+                    );
 
                     if let Some(player) = players.iter().find(|player| player.addr == addr) {
-                        game.send_state_to(addr, ServerToClient::PlayerSpawned { handle: player.player });
+                        game.send_state_to(
+                            addr,
+                            ServerToClient::PlayerSpawned {
+                                handle: player.player,
+                            },
+                        );
                     }
                 }
                 FromClient::Disconnected { addr } => {
@@ -171,33 +190,36 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     peers.retain(|peer| *peer != addr);
                     drop_player(&mut game, addr, &mut players);
                 }
-                FromClient::Message { addr, event } => {
-                    match event {
-                        ClientToServer::UserMessage { hash, data } => {
-                            println!("[sv] usermessage {hash} from {addr}");
-                            game.run_usermessage(hash, UserMsgReader::new(data));
-                        }
-                        ClientToServer::PlayerInput { tick, buttons, movement, viewangles } => {
-                            let mut idx = 0;
-
-                            while idx < players.len() {
-                                if players[idx].addr == addr {
-                                    players[idx].push_cmd(UserCommand {
-                                        tick,
-                                        buttons,
-                                        wish: movement,
-                                        view: viewangles,
-                                    });
-
-                                    break;
-                                }
-
-                                idx += 1;
-                            }
-                        }
-                        _ => {}
+                FromClient::Message { addr, event } => match event {
+                    ClientToServer::UserMessage { hash, data } => {
+                        println!("[sv] usermessage {hash} from {addr}");
+                        game.run_usermessage(hash, UserMsgReader::new(data));
                     }
-                }
+                    ClientToServer::PlayerInput {
+                        tick,
+                        buttons,
+                        movement,
+                        viewangles,
+                    } => {
+                        let mut idx = 0;
+
+                        while idx < players.len() {
+                            if players[idx].addr == addr {
+                                players[idx].push_cmd(UserCommand {
+                                    tick,
+                                    buttons,
+                                    wish: movement,
+                                    view: viewangles,
+                                });
+
+                                break;
+                            }
+
+                            idx += 1;
+                        }
+                    }
+                    _ => {}
+                },
             }
         }
 
@@ -220,7 +242,11 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
-pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerToClient>>, mut wake: TcpStream) {
+pub fn server_network_loop(
+    tx: Sender<FromClient>,
+    rx: Receiver<NetSend<ServerToClient>>,
+    mut wake: TcpStream,
+) {
     let mut server = match NetworkServer::new(25400, 128) {
         Ok(server) => server,
         Err(err) => {
@@ -249,128 +275,172 @@ pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerTo
             };
 
             match packet {
-                    PacketType::Connect { replace } => {
-                        println!("[sv] connect");
-                        let restart = replace.map(|session| server.session_matches(from, session)).unwrap_or(false);
-                        if restart && server.disconnect_client(from) {
-                            let _ = tx.send(FromClient::Disconnected { addr: from });
-                        }
-
-                        if server.is_connected(from) {
-                            server.send_connected(from);
-                        } else {
-                            let token = server.challenge_for(from);
-                            let challenge_bytes = wincode::serialize(&PacketType::Challenge { token }).unwrap();
-                            let _ = server.send_to(from, &challenge_bytes);
-                        }
+                PacketType::Connect { replace } => {
+                    println!("[sv] connect");
+                    let restart = replace
+                        .map(|session| server.session_matches(from, session))
+                        .unwrap_or(false);
+                    if restart && server.disconnect_client(from) {
+                        let _ = tx.send(FromClient::Disconnected { addr: from });
                     }
-                    PacketType::ChallengeResponse { token } => {
-                        println!("[sv] challenge response");
-                        if server.is_connected(from) {
-                            server.send_connected(from);
-                        } else if server.verify_challenge(from, token) {
+
+                    if server.is_connected(from) {
+                        server.send_connected(from);
+                    } else {
+                        let token = server.challenge_for(from);
+                        let challenge_bytes =
+                            wincode::serialize(&PacketType::Challenge { token }).unwrap();
+                        let _ = server.send_to(from, &challenge_bytes);
+                    }
+                }
+                PacketType::ChallengeResponse { token } => {
+                    println!("[sv] challenge response");
+                    if server.is_connected(from) {
+                        server.send_connected(from);
+                    } else if server.verify_challenge(from, token) {
                         if let Some((_session, generation)) = server.add_client(from) {
                             server.send_connected(from);
                             println!("[sv] connect {}", from);
-                            let _ = tx.send(FromClient::Connected { addr: from, generation });
+                            let _ = tx.send(FromClient::Connected {
+                                addr: from,
+                                generation,
+                            });
                         }
-                        } else {
-                            let token = server.challenge_for(from);
-                            let challenge_bytes = wincode::serialize(&PacketType::Challenge { token }).unwrap();
-                            let _ = server.send_to(from, &challenge_bytes);
-                        }
+                    } else {
+                        let token = server.challenge_for(from);
+                        let challenge_bytes =
+                            wincode::serialize(&PacketType::Challenge { token }).unwrap();
+                        let _ = server.send_to(from, &challenge_bytes);
                     }
-                    PacketType::Challenge { .. } => {
-                        println!("[sv] challenge");
+                }
+                PacketType::Challenge { .. } => {
+                    println!("[sv] challenge");
+                }
+                PacketType::Connected { .. } => {}
+                PacketType::Disconnect { session } => {
+                    if server.retire_client(from, session) {
+                        let _ = tx.send(FromClient::Disconnected { addr: from });
                     }
-                    PacketType::Connected { .. } => {
-                    }
-                    PacketType::Disconnect { session } => {
-                        if server.retire_client(from, session) {
-                            let _ = tx.send(FromClient::Disconnected { addr: from });
-                        }
-                    }
-                    PacketType::Bundle { session, ack, cumulative, selective, state_cumulative, state_selective, parts } => {
-                        if server.session_matches(from, session) {
-                            server.touch_client(from);
-                            if ack {
-                                if let Some(client) = server.clients.get_mut(&from) {
-                                    client.reliable.handle_ack(cumulative, selective);
-                                    client.state.handle_ack(state_cumulative, state_selective);
-                                }
-                            }
-
-                            for part in parts {
-                                if apply_server_part(&mut server, from, session, part, &tx) {
-                                    remember_ack(&mut ack_addrs, from);
-                                }
-                            }
-                        }
-                    }
-                    PacketType::KeepAlive { session } => {
-                        if server.touch_if_session(from, session) {
-                            let bytes = wincode::serialize(&PacketType::KeepAlive { session }).unwrap();
-                            let _ = server.send_to(from, &bytes);
-                        }
-                    }
-                    PacketType::Reliable { session, stream, sequence, generation, payload } => {
-                        if accept_from_client(
-                            &mut server,
-                            from,
-                            stream,
-                            session,
-                            generation,
-                            sequence,
-                            ReliableBody::Complete(owned_payload(payload)),
-                            &tx,
-                        ) {
-                            remember_ack(&mut ack_addrs, from);
-                        }
-                    }
-                    PacketType::Ack { session, cumulative, selective, state_cumulative, state_selective } => {
-                        if server.session_matches(from, session) {
-                            server.touch_client(from);
-
+                }
+                PacketType::Bundle {
+                    session,
+                    ack,
+                    cumulative,
+                    selective,
+                    state_cumulative,
+                    state_selective,
+                    parts,
+                } => {
+                    if server.session_matches(from, session) {
+                        server.touch_client(from);
+                        if ack {
                             if let Some(client) = server.clients.get_mut(&from) {
                                 client.reliable.handle_ack(cumulative, selective);
                                 client.state.handle_ack(state_cumulative, state_selective);
                             }
                         }
-                    }
-                    PacketType::Unreliable { session, sequence, payload } => {
-                        if server.session_matches(from, session) {
-                            if let Some(payload) = take_client_unreliable(&mut server, from, sequence, owned_payload(payload)) {
-                                server.touch_client(from);
 
-                                if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
-                                    let _ = tx.send(FromClient::Message { addr: from, event });
-                                }
+                        for part in parts {
+                            if apply_server_part(&mut server, from, session, part, &tx) {
+                                remember_ack(&mut ack_addrs, from);
                             }
                         }
                     }
-                    PacketType::Fragment { session, stream, sequence, generation, packet_id, fragment_idx, total_fragments, data } => {
-                        if accept_from_client(
-                            &mut server,
-                            from,
-                            stream,
-                            session,
-                            generation,
-                            sequence,
-                            ReliableBody::Fragment {
-                                packet_id,
-                                fragment_idx,
-                                total_fragments,
-                                data: owned_payload(data),
-                            },
-                            &tx,
-                        ) {
-                            remember_ack(&mut ack_addrs, from);
+                }
+                PacketType::KeepAlive { session } => {
+                    if server.touch_if_session(from, session) {
+                        let bytes = wincode::serialize(&PacketType::KeepAlive { session }).unwrap();
+                        let _ = server.send_to(from, &bytes);
+                    }
+                }
+                PacketType::Reliable {
+                    session,
+                    stream,
+                    sequence,
+                    generation,
+                    payload,
+                } => {
+                    if accept_from_client(
+                        &mut server,
+                        from,
+                        stream,
+                        session,
+                        generation,
+                        sequence,
+                        ReliableBody::Complete(owned_payload(payload)),
+                        &tx,
+                    ) {
+                        remember_ack(&mut ack_addrs, from);
+                    }
+                }
+                PacketType::Ack {
+                    session,
+                    cumulative,
+                    selective,
+                    state_cumulative,
+                    state_selective,
+                } => {
+                    if server.session_matches(from, session) {
+                        server.touch_client(from);
+
+                        if let Some(client) = server.clients.get_mut(&from) {
+                            client.reliable.handle_ack(cumulative, selective);
+                            client.state.handle_ack(state_cumulative, state_selective);
                         }
                     }
+                }
+                PacketType::Unreliable {
+                    session,
+                    sequence,
+                    payload,
+                } => {
+                    if server.session_matches(from, session) {
+                        if let Some(payload) = take_client_unreliable(
+                            &mut server,
+                            from,
+                            sequence,
+                            owned_payload(payload),
+                        ) {
+                            server.touch_client(from);
+
+                            if let Ok(event) = wincode::deserialize::<ClientToServer>(&payload) {
+                                let _ = tx.send(FromClient::Message { addr: from, event });
+                            }
+                        }
+                    }
+                }
+                PacketType::Fragment {
+                    session,
+                    stream,
+                    sequence,
+                    generation,
+                    packet_id,
+                    fragment_idx,
+                    total_fragments,
+                    data,
+                } => {
+                    if accept_from_client(
+                        &mut server,
+                        from,
+                        stream,
+                        session,
+                        generation,
+                        sequence,
+                        ReliableBody::Fragment {
+                            packet_id,
+                            fragment_idx,
+                            total_fragments,
+                            data: owned_payload(data),
+                        },
+                        &tx,
+                    ) {
+                        remember_ack(&mut ack_addrs, from);
+                    }
+                }
             }
         }
 
-        // This catches the WouldBlock timeout. 
+        // This catches the WouldBlock timeout.
         // Leaving this empty allows the loop to continue to pump_reliable().
         let flush_addrs: Vec<SocketAddr> = server.clients.keys().copied().collect();
         for addr in flush_addrs {
@@ -504,39 +574,53 @@ fn apply_server_part(
     tx: &Sender<FromClient>,
 ) -> bool {
     match part {
-        BundlePart::Reliable { stream, sequence, generation, payload } => {
-            accept_from_client(
-                server,
-                from,
-                stream,
-                session,
-                generation,
-                sequence,
-                ReliableBody::Complete(owned_payload(payload)),
-                tx,
-            )
-        }
-        BundlePart::Fragment { stream, sequence, generation, packet_id, fragment_idx, total_fragments, data } => {
-            accept_from_client(
-                server,
-                from,
-                stream,
-                session,
-                generation,
-                sequence,
-                ReliableBody::Fragment {
-                    packet_id,
-                    fragment_idx,
-                    total_fragments,
-                    data: owned_payload(data),
-                },
-                tx,
-            )
-        }
+        BundlePart::Reliable {
+            stream,
+            sequence,
+            generation,
+            payload,
+        } => accept_from_client(
+            server,
+            from,
+            stream,
+            session,
+            generation,
+            sequence,
+            ReliableBody::Complete(owned_payload(payload)),
+            tx,
+        ),
+        BundlePart::Fragment {
+            stream,
+            sequence,
+            generation,
+            packet_id,
+            fragment_idx,
+            total_fragments,
+            data,
+        } => accept_from_client(
+            server,
+            from,
+            stream,
+            session,
+            generation,
+            sequence,
+            ReliableBody::Fragment {
+                packet_id,
+                fragment_idx,
+                total_fragments,
+                data: owned_payload(data),
+            },
+            tx,
+        ),
         BundlePart::Unreliable { sequence, payload } => {
             deliver_client_unreliable(server, from, session, sequence, owned_payload(payload), tx)
         }
-        BundlePart::UnreliableFragment { sequence, fragment_idx, total_fragments, data } => {
+        BundlePart::UnreliableFragment {
+            sequence,
+            fragment_idx,
+            total_fragments,
+            data,
+        } => {
             if !server.session_matches(from, session) {
                 return false;
             }
@@ -546,7 +630,13 @@ fn apply_server_part(
                     return false;
                 };
 
-                client.unreliable_assembly.push(&mut client.unreliable_in, sequence, fragment_idx, total_fragments, owned_payload(data))
+                client.unreliable_assembly.push(
+                    &mut client.unreliable_in,
+                    sequence,
+                    fragment_idx,
+                    total_fragments,
+                    owned_payload(data),
+                )
             };
 
             if let Some(payload) = payload {
@@ -595,20 +685,36 @@ fn take_client_unreliable(
 ) -> Option<Vec<u8>> {
     let client = server.clients.get_mut(&from)?;
 
-    crate::network::take_unreliable(&mut client.unreliable_in, &mut client.unreliable_assembly, sequence, payload)
+    crate::network::take_unreliable(
+        &mut client.unreliable_in,
+        &mut client.unreliable_assembly,
+        sequence,
+        payload,
+    )
 }
 
 #[cfg(feature = "server")]
 fn spawn_player(game: &mut GameState<FromClient, ServerToClient>, slot: usize) -> EntityHandle {
-    let mut origin = game.brush_world.spawns().first().copied().unwrap_or(Vector3::new(0.0, 28.0, 2.0));
+    let mut origin = game
+        .brush_world
+        .spawns()
+        .first()
+        .copied()
+        .unwrap_or(Vector3::new(0.0, 28.0, 2.0));
     origin.x += slot as f64 * 0.9;
     let mut player = Player::new();
     player.base.position = origin;
 
-    game.entities.spawn(Box::new(player)).unwrap_or(EntityHandle::NULL)
+    game.entities
+        .spawn(Box::new(player))
+        .unwrap_or(EntityHandle::NULL)
 }
 
-fn drop_player(game: &mut GameState<FromClient, ServerToClient>, addr: SocketAddr, players: &mut Vec<RemotePlayer>) {
+fn drop_player(
+    game: &mut GameState<FromClient, ServerToClient>,
+    addr: SocketAddr,
+    players: &mut Vec<RemotePlayer>,
+) {
     let mut idx = 0;
 
     while idx < players.len() {
@@ -625,7 +731,10 @@ fn drop_player(game: &mut GameState<FromClient, ServerToClient>, addr: SocketAdd
     }
 }
 
-fn simulate_players(game: &mut GameState<FromClient, ServerToClient>, players: &mut [RemotePlayer]) {
+fn simulate_players(
+    game: &mut GameState<FromClient, ServerToClient>,
+    players: &mut [RemotePlayer],
+) {
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
     let mut idx = 0;
@@ -666,7 +775,17 @@ fn apply_command(
 
         (base.position, base.velocity, base.angles)
     };
-    movement::step(&mut position, &mut velocity, &mut angles, cmd, prev, dt, gravity, &game.brush_world, &game.voxel_world);
+    movement::step(
+        &mut position,
+        &mut velocity,
+        &mut angles,
+        cmd,
+        prev,
+        dt,
+        gravity,
+        &game.brush_world,
+        &game.voxel_world,
+    );
 
     let Some(entity) = game.entities.get_mut(handle) else {
         return false;
@@ -695,7 +814,12 @@ fn player_ack(players: &[RemotePlayer], handle: EntityHandle) -> u64 {
 }
 
 fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
-    game.send_state_to(addr, ServerToClient::VoxelScale { scale: game.voxel_world.scale() });
+    game.send_state_to(
+        addr,
+        ServerToClient::VoxelScale {
+            scale: game.voxel_world.scale(),
+        },
+    );
 
     for update in game.voxel_world.baseline() {
         game.send_state_to(addr, ServerToClient::VoxelChunk(update));
@@ -768,13 +892,16 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
 
     let part_count = batches.len() as u16;
     for (idx, entities) in batches.into_iter().enumerate() {
-        game.send_state_to(addr, ServerToClient::WorldSnapshot {
-            generation,
-            reset: idx == 0,
-            part: idx as u16,
-            parts: part_count,
-            entities,
-        });
+        game.send_state_to(
+            addr,
+            ServerToClient::WorldSnapshot {
+                generation,
+                reset: idx == 0,
+                part: idx as u16,
+                parts: part_count,
+                entities,
+            },
+        );
     }
 }
 
@@ -848,7 +975,13 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
 }
 
 #[cfg(feature = "server")]
-fn snapshot_fits(generation: u32, reset: bool, part: u16, parts: u16, entities: &[EntitySnapshot]) -> bool {
+fn snapshot_fits(
+    generation: u32,
+    reset: bool,
+    part: u16,
+    parts: u16,
+    entities: &[EntitySnapshot],
+) -> bool {
     let event = ServerToClient::WorldSnapshot {
         generation,
         reset,

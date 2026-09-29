@@ -1,12 +1,12 @@
-use crate::entities::EntityList;
-use crate::world::{BrushMap, VoxelWorld};
-use crate::network::NetSend;
 use crate::console::{ConVar, ConVarValue};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
-use std::net::SocketAddr;
-use std::collections::HashMap;
-use crate::script::{ScriptEngine, Realm};
+use crate::entities::EntityList;
+use crate::network::NetSend;
 use crate::network::NetWake;
+use crate::script::{Realm, ScriptEngine};
+use crate::world::{BrushMap, VoxelWorld};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 
 pub struct GameState<In, Out> {
@@ -37,15 +37,17 @@ impl<In, Out> GameState<In, Out> {
         let mut cvars = HashMap::new();
         cvars.insert(
             "sv_gravity".to_string(),
-            Arc::new(ConVar::new("sv_gravity", ConVarValue::Float(24.0), "World gravity", Some(false), Some(true))),
+            Arc::new(ConVar::new(
+                "sv_gravity",
+                ConVarValue::Float(24.0),
+                "World gravity",
+                Some(false),
+                Some(true),
+            )),
         );
 
         let cvars = Arc::new(cvars);
-        let script_engine = ScriptEngine::new(
-            realm,
-            tick_interval,
-            cvars.clone()
-        );
+        let script_engine = ScriptEngine::new(realm, tick_interval, cvars.clone());
 
         Self {
             realm,
@@ -66,11 +68,23 @@ impl<In, Out> GameState<In, Out> {
     }
 
     pub fn run_hook<A: mlua::IntoLuaMulti>(&self, hook_name: &str, args: A) {
-        self.script_engine.run_hook(hook_name, self.cur_time, self.frame_time, self.tick_count, args);
+        self.script_engine.run_hook(
+            hook_name,
+            self.cur_time,
+            self.frame_time,
+            self.tick_count,
+            args,
+        );
     }
 
     pub fn run_usermessage<A: mlua::IntoLuaMulti>(&self, hash: u32, args: A) {
-        self.script_engine.run_usermessage(hash, self.cur_time, self.frame_time, self.tick_count, args);
+        self.script_engine.run_usermessage(
+            hash,
+            self.cur_time,
+            self.frame_time,
+            self.tick_count,
+            args,
+        );
     }
 
     pub fn send_reliable(&self, event: Out) {

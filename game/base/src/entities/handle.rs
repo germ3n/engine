@@ -1,6 +1,6 @@
-use wincode::{SchemaRead, SchemaWrite};
-use mlua::{Error, FromLua, Lua, Result, UserData, UserDataMethods, Value};
 use mlua::MetaMethod;
+use mlua::{Error, FromLua, Lua, Result, UserData, UserDataMethods, Value};
+use wincode::{SchemaRead, SchemaWrite};
 
 const INDEX_BITS: u32 = 21;
 const GENERATION_BITS: u32 = 11;
@@ -68,20 +68,18 @@ impl UserData for EntityHandle {
         methods.add_method("generation", |_, this, ()| Ok(this.generation()));
         methods.add_method("raw", |_, this, ()| Ok(this.0));
         methods.add_method("is_null", |_, this, ()| Ok(this.is_null()));
-        methods.add_meta_method(MetaMethod::Eq, |_, this, other: Self| {
-            Ok(this.0 == other.0)
-        });
-        methods.add_meta_method(MetaMethod::Lt, |_, this, other: Self| {
-            Ok(this.0 < other.0)
-        });
-        methods.add_meta_method(MetaMethod::Le, |_, this, other: Self| {
-            Ok(this.0 <= other.0)
-        });
+        methods.add_meta_method(MetaMethod::Eq, |_, this, other: Self| Ok(this.0 == other.0));
+        methods.add_meta_method(MetaMethod::Lt, |_, this, other: Self| Ok(this.0 < other.0));
+        methods.add_meta_method(MetaMethod::Le, |_, this, other: Self| Ok(this.0 <= other.0));
         methods.add_meta_method(MetaMethod::ToString, |_, this, ()| {
             if this.is_null() {
                 return Ok("EntityHandle[null]".to_string());
             }
-            Ok(format!("EntityHandle[{}:{}]", this.index(), this.generation()))
+            Ok(format!(
+                "EntityHandle[{}:{}]",
+                this.index(),
+                this.generation()
+            ))
         });
     }
 }

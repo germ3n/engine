@@ -1,8 +1,8 @@
 pub mod client;
-pub mod server;
 pub mod events;
 pub mod packet;
 pub mod reliable;
+pub mod server;
 pub mod steam;
 pub mod usermessage;
 
@@ -18,7 +18,9 @@ pub struct NetWake {
 
 impl NetWake {
     pub fn new(writer: TcpStream) -> Self {
-        Self { writer: Mutex::new(writer) }
+        Self {
+            writer: Mutex::new(writer),
+        }
     }
 
     pub fn poke(&self) {
@@ -32,10 +34,18 @@ pub fn wake_pair() -> (TcpStream, TcpStream) {
     let addr = listener.local_addr().expect("Failed to read wake port");
     let writer = TcpStream::connect(addr).expect("Failed to connect wake");
     let (reader, _) = listener.accept().expect("Failed to accept wake");
-    reader.set_nonblocking(true).expect("Failed to set wake nonblocking");
-    writer.set_nonblocking(true).expect("Failed to set wake nonblocking");
-    reader.set_nodelay(true).expect("Failed to set wake nodelay");
-    writer.set_nodelay(true).expect("Failed to set wake nodelay");
+    reader
+        .set_nonblocking(true)
+        .expect("Failed to set wake nonblocking");
+    writer
+        .set_nonblocking(true)
+        .expect("Failed to set wake nonblocking");
+    reader
+        .set_nodelay(true)
+        .expect("Failed to set wake nodelay");
+    writer
+        .set_nodelay(true)
+        .expect("Failed to set wake nodelay");
 
     (reader, writer)
 }
@@ -64,8 +74,16 @@ fn wait_ready(socket: &UdpSocket, wake: &TcpStream) -> bool {
     use std::os::fd::AsRawFd;
 
     let mut fds = [
-        libc::pollfd { fd: socket.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-        libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd {
+            fd: socket.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
     ];
     let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 2) };
 
@@ -91,16 +109,27 @@ fn wait_ready(socket: &UdpSocket, wake: &TcpStream) -> bool {
     }
 
     let mut fds = [
-        PollFd { fd: socket.as_raw_socket() as usize, events: POLLIN, revents: 0 },
-        PollFd { fd: wake.as_raw_socket() as usize, events: POLLIN, revents: 0 },
+        PollFd {
+            fd: socket.as_raw_socket() as usize,
+            events: POLLIN,
+            revents: 0,
+        },
+        PollFd {
+            fd: wake.as_raw_socket() as usize,
+            events: POLLIN,
+            revents: 0,
+        },
     ];
     let ready = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, 2) };
 
     ready > 0
 }
-pub use events::{ClientToServer, ServerToClient, NetSend, FromClient, FromServer};
+pub use events::{ClientToServer, FromClient, FromServer, NetSend, ServerToClient};
 pub use packet::PacketType;
-pub use reliable::{EnqueueStatus, ReliableChannel, ReliableBody, UnreliableAssembly, UnreliableInbox, take_unreliable};
+pub use reliable::{
+    take_unreliable, EnqueueStatus, ReliableBody, ReliableChannel, UnreliableAssembly,
+    UnreliableInbox,
+};
 
 pub const OUTBOUND_CAP: usize = 1024;
 pub const RECV_BUDGET: usize = 64;

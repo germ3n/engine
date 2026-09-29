@@ -8,8 +8,7 @@ const MAX_ENTRIES: usize = 65_536;
 const MAX_RAW_SIZE: u64 = 256 * 1024 * 1024;
 
 #[derive(SchemaWrite, SchemaRead)]
-struct Entry
-{
+struct Entry {
     name: String,
     offset: u64,
     compressed: u64,
@@ -17,22 +16,18 @@ struct Entry
 }
 
 #[derive(SchemaWrite, SchemaRead)]
-struct Catalog
-{
+struct Catalog {
     version: u32,
     entries: Vec<Entry>,
 }
 
-pub struct Archive
-{
+pub struct Archive {
     map: memmap2::Mmap,
     entries: Vec<Entry>,
 }
 
-impl Archive
-{
-    pub fn create(path: &Path, files: &[(&str, &[u8])]) -> Result<(), String>
-    {
+impl Archive {
+    pub fn create(path: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
         let bytes = encode(files)?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &bytes).map_err(io_err)?;
@@ -42,42 +37,49 @@ impl Archive
         return Ok(());
     }
 
-    pub fn open(path: &Path) -> Result<Self, String>
-    {
+    pub fn open(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(io_err)?;
         let map = unsafe { memmap2::Mmap::map(&file).map_err(io_err)? };
 
-        if map.len() < 4 || &map[..4] != MAGIC
-        {
+        if map.len() < 4 || &map[..4] != MAGIC {
             return Err("plugin archive header is invalid".to_string());
         }
 
-        let catalog: Catalog = wincode::deserialize(&map[4..]).map_err(|err| format!("plugin archive: {err}"))?;
+        let catalog: Catalog =
+            wincode::deserialize(&map[4..]).map_err(|err| format!("plugin archive: {err}"))?;
 
-        if catalog.version != VERSION
-        {
-            return Err(format!("plugin archive version {} is unsupported", catalog.version));
+        if catalog.version != VERSION {
+            return Err(format!(
+                "plugin archive version {} is unsupported",
+                catalog.version
+            ));
         }
 
-        if catalog.entries.len() > MAX_ENTRIES
-        {
-            return Err(format!("plugin archive has {} entries", catalog.entries.len()));
+        if catalog.entries.len() > MAX_ENTRIES {
+            return Err(format!(
+                "plugin archive has {} entries",
+                catalog.entries.len()
+            ));
         }
 
         let mut idx = 0;
 
-        while idx < catalog.entries.len()
-        {
+        while idx < catalog.entries.len() {
             check_name(&catalog.entries[idx].name)?;
-            check_sizes(&catalog.entries[idx].name, catalog.entries[idx].compressed, catalog.entries[idx].raw_size)?;
+            check_sizes(
+                &catalog.entries[idx].name,
+                catalog.entries[idx].compressed,
+                catalog.entries[idx].raw_size,
+            )?;
 
             let mut other = 0;
 
-            while other < idx
-            {
-                if catalog.entries[other].name == catalog.entries[idx].name
-                {
-                    return Err(format!("plugin path {} is duplicated", catalog.entries[idx].name));
+            while other < idx {
+                if catalog.entries[other].name == catalog.entries[idx].name {
+                    return Err(format!(
+                        "plugin path {} is duplicated",
+                        catalog.entries[idx].name
+                    ));
                 }
 
                 other += 1;
@@ -86,43 +88,47 @@ impl Archive
             idx += 1;
         }
 
-        let toc_len = wincode::serialized_size(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
-        let toc_end = 4u64.checked_add(toc_len).ok_or_else(|| "plugin archive is too large".to_string())?;
+        let toc_len =
+            wincode::serialized_size(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
+        let toc_end = 4u64
+            .checked_add(toc_len)
+            .ok_or_else(|| "plugin archive is too large".to_string())?;
 
-        if toc_end > map.len() as u64
-        {
+        if toc_end > map.len() as u64 {
             return Err("plugin archive header is invalid".to_string());
         }
 
         check_layout(&catalog.entries, toc_end, map.len() as u64)?;
 
-        return Ok(Self { map, entries: catalog.entries });
+        return Ok(Self {
+            map,
+            entries: catalog.entries,
+        });
     }
 
-    pub fn len(&self) -> usize
-    {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool
-    {
+    pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    pub fn names(&self) -> impl Iterator<Item = &str> + '_
-    {
+    pub fn names(&self) -> impl Iterator<Item = &str> + '_ {
         self.entries.iter().map(|entry| entry.name.as_str())
     }
 
-    pub fn read(&self, name: &str) -> Result<Vec<u8>, String>
-    {
+    pub fn read(&self, name: &str) -> Result<Vec<u8>, String> {
         let mut idx = 0;
 
-        while idx < self.entries.len()
-        {
-            if self.entries[idx].name == name
-            {
-                return read_frame(&self.map, self.entries[idx].offset, self.entries[idx].compressed, self.entries[idx].raw_size);
+        while idx < self.entries.len() {
+            if self.entries[idx].name == name {
+                return read_frame(
+                    &self.map,
+                    self.entries[idx].offset,
+                    self.entries[idx].compressed,
+                    self.entries[idx].raw_size,
+                );
             }
 
             idx += 1;
@@ -132,51 +138,47 @@ impl Archive
     }
 }
 
-struct Plugin
-{
+struct Plugin {
     name: String,
     archive: Archive,
 }
 
-pub struct Registry
-{
+pub struct Registry {
     plugins: Vec<Plugin>,
 }
 
-impl Registry
-{
-    pub fn new() -> Self
-    {
-        Self { plugins: Vec::new() }
+impl Registry {
+    pub fn new() -> Self {
+        Self {
+            plugins: Vec::new(),
+        }
     }
 
-    pub fn mount(&mut self, path: &Path) -> Result<String, String>
-    {
+    pub fn mount(&mut self, path: &Path) -> Result<String, String> {
         let name = plugin_name(path)?;
 
-        if self.find(&name).is_some()
-        {
+        if self.find(&name).is_some() {
             return Err(format!("plugin {name} is already mounted"));
         }
 
         let archive = Archive::open(path)?;
-        self.plugins.push(Plugin { name: name.clone(), archive });
+        self.plugins.push(Plugin {
+            name: name.clone(),
+            archive,
+        });
 
         return Ok(name);
     }
 
-    pub fn mount_dir(&mut self, dir: &Path) -> Result<Vec<String>, String>
-    {
+    pub fn mount_dir(&mut self, dir: &Path) -> Result<Vec<String>, String> {
         let mut paths = Vec::new();
         let listing = std::fs::read_dir(dir).map_err(io_err)?;
 
-        for entry in listing
-        {
+        for entry in listing {
             let entry = entry.map_err(io_err)?;
             let path = entry.path();
 
-            if is_plug(&path)
-            {
+            if is_plug(&path) {
                 paths.push(path);
             }
         }
@@ -185,17 +187,13 @@ impl Registry
         let mut names = Vec::new();
         let mut idx = 0;
 
-        while idx < paths.len()
-        {
-            match self.mount(&paths[idx])
-            {
+        while idx < paths.len() {
+            match self.mount(&paths[idx]) {
                 Ok(name) => names.push(name),
-                Err(err) =>
-                {
+                Err(err) => {
                     let mut mounted = 0;
 
-                    while mounted < names.len()
-                    {
+                    while mounted < names.len() {
                         let _ = self.unmount(&names[mounted]);
                         mounted += 1;
                     }
@@ -210,10 +208,8 @@ impl Registry
         return Ok(names);
     }
 
-    pub fn unmount(&mut self, name: &str) -> Result<(), String>
-    {
-        let Some(idx) = self.find(name) else
-        {
+    pub fn unmount(&mut self, name: &str) -> Result<(), String> {
+        let Some(idx) = self.find(name) else {
             return Err(format!("plugin {name} is not mounted"));
         };
 
@@ -222,44 +218,35 @@ impl Registry
         return Ok(());
     }
 
-    pub fn is_mounted(&self, name: &str) -> bool
-    {
+    pub fn is_mounted(&self, name: &str) -> bool {
         self.find(name).is_some()
     }
 
-    pub fn plugins(&self) -> impl Iterator<Item = &str> + '_
-    {
+    pub fn plugins(&self) -> impl Iterator<Item = &str> + '_ {
         self.plugins.iter().map(|plugin| plugin.name.as_str())
     }
 
-    pub fn names<'a>(&'a self, plugin: &str) -> Result<impl Iterator<Item = &'a str> + 'a, String>
-    {
-        let Some(idx) = self.find(plugin) else
-        {
+    pub fn names<'a>(&'a self, plugin: &str) -> Result<impl Iterator<Item = &'a str> + 'a, String> {
+        let Some(idx) = self.find(plugin) else {
             return Err(format!("plugin {plugin} is not mounted"));
         };
 
         return Ok(self.plugins[idx].archive.names());
     }
 
-    pub fn read(&self, plugin: &str, name: &str) -> Result<Vec<u8>, String>
-    {
-        let Some(idx) = self.find(plugin) else
-        {
+    pub fn read(&self, plugin: &str, name: &str) -> Result<Vec<u8>, String> {
+        let Some(idx) = self.find(plugin) else {
             return Err(format!("plugin {plugin} is not mounted"));
         };
 
         return self.plugins[idx].archive.read(name);
     }
 
-    fn find(&self, name: &str) -> Option<usize>
-    {
+    fn find(&self, name: &str) -> Option<usize> {
         let mut idx = 0;
 
-        while idx < self.plugins.len()
-        {
-            if self.plugins[idx].name == name
-            {
+        while idx < self.plugins.len() {
+            if self.plugins[idx].name == name {
                 return Some(idx);
             }
 
@@ -270,40 +257,35 @@ impl Registry
     }
 }
 
-fn plugin_name(path: &Path) -> Result<String, String>
-{
-    let stem = path.file_stem().and_then(|stem| stem.to_str()).ok_or_else(|| format!("plugin path {} is invalid", path.display()))?;
+fn plugin_name(path: &Path) -> Result<String, String> {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("plugin path {} is invalid", path.display()))?;
     check_name(stem)?;
 
     return Ok(stem.to_string());
 }
 
-fn is_plug(path: &Path) -> bool
-{
-    match path.extension().and_then(|ext| ext.to_str())
-    {
+fn is_plug(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
         Some(ext) => ext.eq_ignore_ascii_case("plug"),
         None => false,
     }
 }
 
-fn encode(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String>
-{
-    if files.len() > MAX_ENTRIES
-    {
+fn encode(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
+    if files.len() > MAX_ENTRIES {
         return Err(format!("plugin archive has {} entries", files.len()));
     }
 
     let mut idx = 0;
 
-    while idx < files.len()
-    {
+    while idx < files.len() {
         let mut other = 0;
 
-        while other < idx
-        {
-            if files[other].0 == files[idx].0
-            {
+        while other < idx {
+            if files[other].0 == files[idx].0 {
                 return Err(format!("plugin path {} is duplicated", files[idx].0));
             }
 
@@ -316,19 +298,16 @@ fn encode(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String>
     let mut frames = Vec::with_capacity(files.len());
     let mut entries = Vec::with_capacity(files.len());
 
-    for (name, bytes) in files
-    {
+    for (name, bytes) in files {
         check_name(name)?;
 
-        if bytes.len() as u64 > MAX_RAW_SIZE
-        {
+        if bytes.len() as u64 > MAX_RAW_SIZE {
             return Err(format!("plugin entry {name} is {} bytes", bytes.len()));
         }
 
         let frame = zstd::bulk::compress(bytes, zstd::DEFAULT_COMPRESSION_LEVEL).map_err(io_err)?;
 
-        if frame.len() as u64 > max_compressed(bytes.len() as u64)
-        {
+        if frame.len() as u64 > max_compressed(bytes.len() as u64) {
             return Err(format!("plugin entry {name} did not compress"));
         }
 
@@ -341,29 +320,31 @@ fn encode(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String>
         frames.push(frame);
     }
 
-    let mut catalog = Catalog { version: VERSION, entries };
-    let toc_len = wincode::serialized_size(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
+    let mut catalog = Catalog {
+        version: VERSION,
+        entries,
+    };
+    let toc_len =
+        wincode::serialized_size(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
     let mut cursor = align8(4 + toc_len);
     idx = 0;
 
-    while idx < catalog.entries.len()
-    {
+    while idx < catalog.entries.len() {
         catalog.entries[idx].offset = cursor;
         cursor = align8(cursor + catalog.entries[idx].compressed);
         idx += 1;
     }
 
-    let again = wincode::serialized_size(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
+    let again =
+        wincode::serialized_size(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
 
-    if again != toc_len
-    {
+    if again != toc_len {
         return Err("plugin archive layout changed".to_string());
     }
 
     let toc = wincode::serialize(&catalog).map_err(|err| format!("plugin archive: {err}"))?;
 
-    if toc.len() as u64 != toc_len
-    {
+    if toc.len() as u64 != toc_len {
         return Err("plugin archive layout changed".to_string());
     }
 
@@ -372,8 +353,7 @@ fn encode(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String>
     out.extend_from_slice(&toc);
     idx = 0;
 
-    while idx < frames.len()
-    {
+    while idx < frames.len() {
         pad(&mut out, catalog.entries[idx].offset)?;
         out.extend_from_slice(&frames[idx]);
         idx += 1;
@@ -382,49 +362,47 @@ fn encode(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String>
     return Ok(out);
 }
 
-fn read_frame(map: &[u8], offset: u64, compressed: u64, raw_size: u64) -> Result<Vec<u8>, String>
-{
+fn read_frame(map: &[u8], offset: u64, compressed: u64, raw_size: u64) -> Result<Vec<u8>, String> {
     let start = usize::try_from(offset).map_err(|_| "plugin entry is too large".to_string())?;
     let len = usize::try_from(compressed).map_err(|_| "plugin entry is too large".to_string())?;
-    let end = start.checked_add(len).ok_or_else(|| "plugin entry is too large".to_string())?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| "plugin entry is too large".to_string())?;
 
-    if end > map.len()
-    {
+    if end > map.len() {
         return Err("plugin entry extends past the archive".to_string());
     }
 
     let cap = usize::try_from(raw_size).map_err(|_| "plugin entry is too large".to_string())?;
     let raw = zstd::bulk::decompress(&map[start..end], cap).map_err(io_err)?;
 
-    if raw.len() as u64 != raw_size
-    {
+    if raw.len() as u64 != raw_size {
         return Err("plugin entry size does not match".to_string());
     }
 
     return Ok(raw);
 }
 
-fn check_layout(entries: &[Entry], toc_end: u64, file_len: u64) -> Result<(), String>
-{
+fn check_layout(entries: &[Entry], toc_end: u64, file_len: u64) -> Result<(), String> {
     let data_start = align8(toc_end);
     let mut order: Vec<usize> = (0..entries.len()).collect();
     order.sort_by_key(|idx| entries[*idx].offset);
     let mut end = data_start;
     let mut idx = 0;
 
-    while idx < order.len()
-    {
+    while idx < order.len() {
         let entry = &entries[order[idx]];
 
-        if entry.offset < data_start || entry.offset % 8 != 0 || entry.offset < end
-        {
+        if entry.offset < data_start || entry.offset % 8 != 0 || entry.offset < end {
             return Err("plugin archive entries overlap".to_string());
         }
 
-        let next = entry.offset.checked_add(entry.compressed).ok_or_else(|| "plugin entry is too large".to_string())?;
+        let next = entry
+            .offset
+            .checked_add(entry.compressed)
+            .ok_or_else(|| "plugin entry is too large".to_string())?;
 
-        if next > file_len
-        {
+        if next > file_len {
             return Err("plugin entry extends past the archive".to_string());
         }
 
@@ -435,10 +413,8 @@ fn check_layout(entries: &[Entry], toc_end: u64, file_len: u64) -> Result<(), St
     return Ok(());
 }
 
-fn check_name(name: &str) -> Result<(), String>
-{
-    if name.is_empty() || name.len() > u16::MAX as usize || name.chars().any(|ch| ch.is_control())
-    {
+fn check_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.len() > u16::MAX as usize || name.chars().any(|ch| ch.is_control()) {
         return Err(format!("plugin path {name} is invalid"));
     }
 
@@ -447,10 +423,8 @@ fn check_name(name: &str) -> Result<(), String>
         return Err(format!("plugin path {name} is invalid"));
     }
 
-    for part in name.split('/')
-    {
-        if part.is_empty() || part == "." || part == ".."
-        {
+    for part in name.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
             return Err(format!("plugin path {name} is invalid"));
         }
     }
@@ -458,53 +432,43 @@ fn check_name(name: &str) -> Result<(), String>
     return Ok(());
 }
 
-fn check_sizes(name: &str, compressed: u64, raw_size: u64) -> Result<(), String>
-{
-    if raw_size > MAX_RAW_SIZE || compressed == 0 || compressed > max_compressed(raw_size)
-    {
+fn check_sizes(name: &str, compressed: u64, raw_size: u64) -> Result<(), String> {
+    if raw_size > MAX_RAW_SIZE || compressed == 0 || compressed > max_compressed(raw_size) {
         return Err(format!("plugin entry {name} is {raw_size} bytes"));
     }
 
     return Ok(());
 }
 
-fn max_compressed(raw_size: u64) -> u64
-{
+fn max_compressed(raw_size: u64) -> u64 {
     raw_size + raw_size / 256 + 64
 }
 
-fn align8(value: u64) -> u64
-{
+fn align8(value: u64) -> u64 {
     (value + 7) & !7
 }
 
-fn pad(out: &mut Vec<u8>, offset: u64) -> Result<(), String>
-{
-    if (out.len() as u64) > offset
-    {
+fn pad(out: &mut Vec<u8>, offset: u64) -> Result<(), String> {
+    if (out.len() as u64) > offset {
         return Err("plugin archive layout overflowed".to_string());
     }
 
-    while (out.len() as u64) < offset
-    {
+    while (out.len() as u64) < offset {
         out.push(0);
     }
 
     return Ok(());
 }
 
-fn io_err(err: std::io::Error) -> String
-{
+fn io_err(err: std::io::Error) -> String {
     format!("plugin archive: {err}")
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> std::path::PathBuf
-    {
+    fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("engine-plugin-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -513,13 +477,16 @@ mod tests
     }
 
     #[test]
-    fn roundtrip_reads_one_entry_from_the_file()
-    {
+    fn roundtrip_reads_one_entry_from_the_file() {
         let dir = scratch("roundtrip");
         let path = dir.join("mod.plug");
         let script = b"print('hi')";
         let blob = vec![7u8; 4096];
-        Archive::create(&path, &[("scripts/init.lua", script), ("data/blob.bin", &blob)]).unwrap();
+        Archive::create(
+            &path,
+            &[("scripts/init.lua", script), ("data/blob.bin", &blob)],
+        )
+        .unwrap();
 
         let archive = Archive::open(&path).unwrap();
         let names: Vec<&str> = archive.names().collect();
@@ -540,8 +507,7 @@ mod tests
     }
 
     #[test]
-    fn create_rejects_unsafe_paths()
-    {
+    fn create_rejects_unsafe_paths() {
         let dir = scratch("paths");
         let path = dir.join("mod.plug");
         assert!(Archive::create(&path, &[("../secret.lua", b"x")]).is_err());
@@ -554,8 +520,7 @@ mod tests
     }
 
     #[test]
-    fn open_rejects_an_entry_bigger_than_the_cap()
-    {
+    fn open_rejects_an_entry_bigger_than_the_cap() {
         let dir = scratch("cap");
         let path = dir.join("mod.plug");
         let catalog = Catalog {
@@ -577,8 +542,7 @@ mod tests
     }
 
     #[test]
-    fn open_rejects_a_bad_header()
-    {
+    fn open_rejects_a_bad_header() {
         let dir = scratch("header");
         let path = dir.join("mod.plug");
         std::fs::write(&path, b"NOPE").unwrap();
@@ -592,8 +556,7 @@ mod tests
     }
 
     #[test]
-    fn registry_mounts_and_unmounts()
-    {
+    fn registry_mounts_and_unmounts() {
         let dir = scratch("registry");
         let hello = dir.join("hello.plug");
         let world = dir.join("world.plug");
@@ -604,14 +567,23 @@ mod tests
         let names = registry.mount_dir(&dir).unwrap();
         assert_eq!(names, ["hello", "world"]);
         assert!(registry.is_mounted("hello"));
-        assert_eq!(registry.read("hello", "scripts/init.lua").unwrap(), b"hello");
-        assert_eq!(registry.read("world", "scripts/init.lua").unwrap(), b"world");
+        assert_eq!(
+            registry.read("hello", "scripts/init.lua").unwrap(),
+            b"hello"
+        );
+        assert_eq!(
+            registry.read("world", "scripts/init.lua").unwrap(),
+            b"world"
+        );
         assert!(registry.mount(&hello).is_err());
 
         registry.unmount("hello").unwrap();
         assert!(!registry.is_mounted("hello"));
         assert!(registry.read("hello", "scripts/init.lua").is_err());
-        assert_eq!(registry.read("world", "scripts/init.lua").unwrap(), b"world");
+        assert_eq!(
+            registry.read("world", "scripts/init.lua").unwrap(),
+            b"world"
+        );
         assert!(registry.unmount("hello").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

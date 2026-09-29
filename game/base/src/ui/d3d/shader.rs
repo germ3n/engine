@@ -271,7 +271,9 @@ pub fn ps3(source: &str) -> Result<ID3DBlob, String> {
 }
 
 pub fn blob_bytes(blob: &ID3DBlob) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize()) }
+    unsafe {
+        std::slice::from_raw_parts(blob.GetBufferPointer() as *const u8, blob.GetBufferSize())
+    }
 }
 
 pub fn blob_text(blob: &ID3DBlob) -> String {

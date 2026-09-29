@@ -1,5 +1,5 @@
-use mlua::{Error, FromLua, IntoLua, Lua, Function, Result, Table, Value};
-use wincode::{SchemaWrite, SchemaRead};
+use mlua::{Error, FromLua, Function, IntoLua, Lua, Result, Table, Value};
+use wincode::{SchemaRead, SchemaWrite};
 
 #[repr(C)]
 #[derive(SchemaWrite, SchemaRead, Copy, Clone, Debug, Default, PartialEq)]
@@ -54,13 +54,17 @@ impl IntoLua for Angle3 {
 }
 
 pub fn register_angle3_lib(lua: &Lua) {
-    let exports: Table = crate::script::bundle::load_bytecode(lua, "angle3.lua", crate::script::bundle::ANGLE3)
-        .eval()
-        .expect("Failed to execute angle3.lua");
+    let exports: Table =
+        crate::script::bundle::load_bytecode(lua, "angle3.lua", crate::script::bundle::ANGLE3)
+            .eval()
+            .expect("Failed to execute angle3.lua");
 
     let ctor: Function = exports.get("ctor").expect("Failed to get Angle3Ctor");
     let module: Table = exports.get("module").expect("Failed to get module");
 
-    lua.set_named_registry_value("Angle3Ctor", ctor).expect("Failed to set Angle3Ctor");
-    lua.globals().set("Angle3", module).expect("Failed to get Angle3");
+    lua.set_named_registry_value("Angle3Ctor", ctor)
+        .expect("Failed to set Angle3Ctor");
+    lua.globals()
+        .set("Angle3", module)
+        .expect("Failed to get Angle3");
 }

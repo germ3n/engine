@@ -56,11 +56,33 @@ pub fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f
     }
 }
 
-pub fn push_outline(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: [f32; 4]) {
+pub fn push_outline(
+    verts: &mut Vec<f32>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    thickness: f32,
+    color: [f32; 4],
+) {
     push_rect(verts, x, y, w, thickness, color);
     push_rect(verts, x, y + h - thickness, w, thickness, color);
-    push_rect(verts, x, y + thickness, thickness, h - 2.0 * thickness, color);
-    push_rect(verts, x + w - thickness, y + thickness, thickness, h - 2.0 * thickness, color);
+    push_rect(
+        verts,
+        x,
+        y + thickness,
+        thickness,
+        h - 2.0 * thickness,
+        color,
+    );
+    push_rect(
+        verts,
+        x + w - thickness,
+        y + thickness,
+        thickness,
+        h - 2.0 * thickness,
+        color,
+    );
 }
 
 pub fn grow(current: u32, needed: u32) -> u32 {
@@ -88,7 +110,8 @@ pub struct TextFrame {
 
 impl TextFrame {
     pub fn new() -> Result<Self, String> {
-        let font = FontArc::try_from_slice(include_bytes!("../font_default.ttf")).map_err(|err| err.to_string())?;
+        let font = FontArc::try_from_slice(include_bytes!("../font_default.ttf"))
+            .map_err(|err| err.to_string())?;
         let glyphs = GlyphBrushBuilder::using_font(font)
             .initial_cache_size((512, 512))
             .build();
@@ -124,7 +147,8 @@ impl TextFrame {
                     let mut row = 0;
 
                     while row < height {
-                        let dst = (rect.min[1] as usize + row) * self.size.0 as usize + rect.min[0] as usize;
+                        let dst = (rect.min[1] as usize + row) * self.size.0 as usize
+                            + rect.min[0] as usize;
                         let src = row * width;
                         self.pixels[dst..dst + width].copy_from_slice(&data[src..src + width]);
                         row += 1;
@@ -164,12 +188,42 @@ impl TextFrame {
 fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     let color = vertex.extra.color;
     let positions = [
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.min.y, vertex.tex_coords.min.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.min.y, vertex.tex_coords.max.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.max.y, vertex.tex_coords.min.x, vertex.tex_coords.max.y],
-        [vertex.pixel_coords.min.x, vertex.pixel_coords.max.y, vertex.tex_coords.min.x, vertex.tex_coords.max.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.min.y, vertex.tex_coords.max.x, vertex.tex_coords.min.y],
-        [vertex.pixel_coords.max.x, vertex.pixel_coords.max.y, vertex.tex_coords.max.x, vertex.tex_coords.max.y],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.max.y,
+        ],
+        [
+            vertex.pixel_coords.min.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.min.x,
+            vertex.tex_coords.max.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.min.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.min.y,
+        ],
+        [
+            vertex.pixel_coords.max.x,
+            vertex.pixel_coords.max.y,
+            vertex.tex_coords.max.x,
+            vertex.tex_coords.max.y,
+        ],
     ];
     let mut verts = [[0.0; 8]; 6];
 

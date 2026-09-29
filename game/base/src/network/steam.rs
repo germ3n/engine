@@ -1,54 +1,74 @@
 use std::net::SocketAddr;
 
-pub fn startup(lobby: Option<u64>, connect: Option<&str>)
-{
-    #[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn startup(lobby: Option<u64>, connect: Option<&str>) {
+    #[cfg(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
     {
         live::startup(lobby, connect);
 
         return;
     }
 
-    #[cfg(not(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos"))))]
+    #[cfg(not(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
     {
         let _ = (lobby, connect);
     }
 }
 
-pub fn join_generation() -> u64
-{
-    #[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn join_generation() -> u64 {
+    #[cfg(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
     {
         return live::join_generation();
     }
 
-    #[cfg(not(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos"))))]
+    #[cfg(not(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
     {
         0
     }
 }
 
-pub fn pop_host() -> Option<(Vec<u8>, SocketAddr)>
-{
-    #[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn pop_host() -> Option<(Vec<u8>, SocketAddr)> {
+    #[cfg(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
     {
         return live::pop_host();
     }
 
-    #[cfg(not(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos"))))]
+    #[cfg(not(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
     {
         None
     }
 }
 
-pub fn send_host(addr: SocketAddr, message: &[u8]) -> bool
-{
-    #[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn send_host(addr: SocketAddr, message: &[u8]) -> bool {
+    #[cfg(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
     {
         return live::send_host(addr, message);
     }
 
-    #[cfg(not(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos"))))]
+    #[cfg(not(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
     {
         let _ = (addr, message);
 
@@ -56,27 +76,37 @@ pub fn send_host(addr: SocketAddr, message: &[u8]) -> bool
     }
 }
 
-pub fn pop_client() -> Option<Vec<u8>>
-{
-    #[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn pop_client() -> Option<Vec<u8>> {
+    #[cfg(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
     {
         return live::pop_client();
     }
 
-    #[cfg(not(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos"))))]
+    #[cfg(not(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
     {
         None
     }
 }
 
-pub fn send_client(message: &[u8]) -> bool
-{
-    #[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+pub fn send_client(message: &[u8]) -> bool {
+    #[cfg(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ))]
     {
         return live::send_client(message);
     }
 
-    #[cfg(not(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos"))))]
+    #[cfg(not(all(
+        feature = "steam",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )))]
     {
         let _ = message;
 
@@ -84,19 +114,26 @@ pub fn send_client(message: &[u8]) -> bool
     }
 }
 
-#[cfg(all(feature = "steam", any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-mod live
-{
+#[cfg(all(
+    feature = "steam",
+    any(target_os = "linux", target_os = "windows", target_os = "macos")
+))]
+mod live {
     use std::collections::{HashMap, VecDeque};
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
     use steamworks::networking_sockets::{ListenSocket, NetConnection};
-    use steamworks::networking_types::{ListenSocketEvent, NetworkingConfigEntry, NetworkingConnectionState, NetworkingIdentity, SendFlags};
-    use steamworks::{AppId, Client, GameLobbyJoinRequested, GameRichPresenceJoinRequested, LobbyId, SteamId};
+    use steamworks::networking_types::{
+        ListenSocketEvent, NetworkingConfigEntry, NetworkingConnectionState, NetworkingIdentity,
+        SendFlags,
+    };
     #[cfg(feature = "server")]
     use steamworks::LobbyType;
+    use steamworks::{
+        AppId, Client, GameLobbyJoinRequested, GameRichPresenceJoinRequested, LobbyId, SteamId,
+    };
 
     const PIPE_CAP: usize = 256;
 
@@ -111,24 +148,19 @@ mod live
         client_out: VecDeque::new(),
     });
 
-    struct Pipe
-    {
+    struct Pipe {
         host_in: VecDeque<(Vec<u8>, SocketAddr)>,
         host_out: VecDeque<(u64, Vec<u8>)>,
         client_in: VecDeque<Vec<u8>>,
         client_out: VecDeque<Vec<u8>>,
     }
 
-    pub fn startup(lobby: Option<u64>, connect: Option<&str>)
-    {
-        let client = match open_client()
-        {
+    pub fn startup(lobby: Option<u64>, connect: Option<&str>) {
+        let client = match open_client() {
             Ok(client) => client,
-            Err(err) =>
-            {
+            Err(err) => {
                 println!("[steam] {err}");
-                if lobby.is_some() || connect.is_some()
-                {
+                if lobby.is_some() || connect.is_some() {
                     println!("[steam] friend join unavailable");
                 }
 
@@ -136,39 +168,32 @@ mod live
             }
         };
 
-        if let Some(id) = lobby
-        {
+        if let Some(id) = lobby {
             note_lobby(id);
         }
 
-        if let Some(text) = connect
-        {
+        if let Some(text) = connect {
             note_connect(text);
         }
 
         let spawned = std::thread::Builder::new()
             .name("steam".to_string())
             .spawn(move || run(client));
-        if let Err(err) = spawned
-        {
+        if let Err(err) = spawned {
             println!("[steam] thread failed: {err}");
         }
     }
 
-    pub fn join_generation() -> u64
-    {
+    pub fn join_generation() -> u64 {
         JOIN_GEN.load(Ordering::Acquire)
     }
 
-    pub fn pop_host() -> Option<(Vec<u8>, SocketAddr)>
-    {
+    pub fn pop_host() -> Option<(Vec<u8>, SocketAddr)> {
         PIPE.lock().unwrap().host_in.pop_front()
     }
 
-    pub fn send_host(addr: SocketAddr, message: &[u8]) -> bool
-    {
-        let Some(id) = steam_of(addr) else
-        {
+    pub fn send_host(addr: SocketAddr, message: &[u8]) -> bool {
+        let Some(id) = steam_of(addr) else {
             return false;
         };
 
@@ -178,15 +203,12 @@ mod live
         true
     }
 
-    pub fn pop_client() -> Option<Vec<u8>>
-    {
+    pub fn pop_client() -> Option<Vec<u8>> {
         PIPE.lock().unwrap().client_in.pop_front()
     }
 
-    pub fn send_client(message: &[u8]) -> bool
-    {
-        if !CLIENT_READY.load(Ordering::Acquire)
-        {
+    pub fn send_client(message: &[u8]) -> bool {
+        if !CLIENT_READY.load(Ordering::Acquire) {
             return false;
         }
 
@@ -196,11 +218,12 @@ mod live
         true
     }
 
-    fn open_client() -> Result<Client, String>
-    {
-        if let Ok(text) = std::env::var("ENGINE_STEAM_APPID")
-        {
-            let id = text.trim().parse::<u32>().map_err(|_| "ENGINE_STEAM_APPID is not a number".to_string())?;
+    fn open_client() -> Result<Client, String> {
+        if let Ok(text) = std::env::var("ENGINE_STEAM_APPID") {
+            let id = text
+                .trim()
+                .parse::<u32>()
+                .map_err(|_| "ENGINE_STEAM_APPID is not a number".to_string())?;
 
             return Client::init_app(AppId(id)).map_err(init_message);
         }
@@ -208,16 +231,12 @@ mod live
         Client::init().map_err(init_message)
     }
 
-    fn init_message(err: steamworks::SteamAPIInitError) -> String
-    {
-        match err
-        {
+    fn init_message(err: steamworks::SteamAPIInitError) -> String {
+        match err {
             steamworks::SteamAPIInitError::FailedGeneric(text)
             | steamworks::SteamAPIInitError::NoSteamClient(text)
-            | steamworks::SteamAPIInitError::VersionMismatch(text) =>
-            {
-                if text.is_empty()
-                {
+            | steamworks::SteamAPIInitError::VersionMismatch(text) => {
+                if text.is_empty() {
                     return "Steam is not running".to_string();
                 }
 
@@ -226,10 +245,8 @@ mod live
         }
     }
 
-    fn note_lobby(id: u64)
-    {
-        if id == 0
-        {
+    fn note_lobby(id: u64) {
+        if id == 0 {
             return;
         }
 
@@ -237,12 +254,10 @@ mod live
         JOIN_GEN.fetch_add(1, Ordering::Release);
     }
 
-    fn note_connect(text: &str)
-    {
+    fn note_connect(text: &str) {
         let text = text.trim();
         let id_text = text.strip_prefix("lobby:").unwrap_or(text);
-        let Ok(id) = id_text.parse::<u64>() else
-        {
+        let Ok(id) = id_text.parse::<u64>() else {
             println!("[steam] connect string {text}");
 
             return;
@@ -251,8 +266,7 @@ mod live
         note_lobby(id);
     }
 
-    fn run(client: Client)
-    {
+    fn run(client: Client) {
         println!("[steam] {}", client.user().steam_id().raw());
         client.networking_utils().init_relay_network_access();
         let _ = client.networking_sockets().init_authentication();
@@ -266,12 +280,9 @@ mod live
         });
 
         #[cfg(feature = "server")]
-        let listen = if PENDING.load(Ordering::Acquire) == 0
-        {
+        let listen = if PENDING.load(Ordering::Acquire) == 0 {
             begin_host(&client)
-        }
-        else
-        {
+        } else {
             None
         };
         #[cfg(not(feature = "server"))]
@@ -282,26 +293,18 @@ mod live
         let mut seen_gen = 0u64;
         let mut dial_after = Instant::now();
 
-        loop
-        {
+        loop {
             client.run_callbacks();
-            if let Some(sock) = listen.as_ref()
-            {
-                while let Some(event) = sock.try_receive_event()
-                {
-                    match event
-                    {
-                        ListenSocketEvent::Connecting(request) =>
-                        {
-                            if let Err(err) = request.accept()
-                            {
+            if let Some(sock) = listen.as_ref() {
+                while let Some(event) = sock.try_receive_event() {
+                    match event {
+                        ListenSocketEvent::Connecting(request) => {
+                            if let Err(err) = request.accept() {
                                 println!("[steam] accept failed: {err}");
                             }
                         }
-                        ListenSocketEvent::Connected(event) =>
-                        {
-                            let Some(id) = event.remote().steam_id() else
-                            {
+                        ListenSocketEvent::Connected(event) => {
+                            let Some(id) = event.remote().steam_id() else {
                                 continue;
                             };
 
@@ -309,10 +312,8 @@ mod live
                             peers.insert(id, event.take_connection());
                             println!("[steam] peer {id}");
                         }
-                        ListenSocketEvent::Disconnected(event) =>
-                        {
-                            let Some(id) = event.remote().steam_id() else
-                            {
+                        ListenSocketEvent::Disconnected(event) => {
+                            let Some(id) = event.remote().steam_id() else {
                                 continue;
                             };
 
@@ -325,60 +326,55 @@ mod live
             }
 
             let gen = JOIN_GEN.load(Ordering::Acquire);
-            if gen != seen_gen
-            {
+            if gen != seen_gen {
                 seen_gen = gen;
                 let pending = PENDING.load(Ordering::Acquire);
-                if pending != 0
-                {
+                if pending != 0 {
                     dial = None;
                     CLIENT_READY.store(false, Ordering::Release);
                     DIAL_ID.store(0, Ordering::Release);
                     client.friends().clear_rich_presence();
                     let hosted = client.clone();
-                    client.matchmaking().join_lobby(LobbyId::from_raw(pending), move |result| {
-                        if JOIN_GEN.load(Ordering::Acquire) != gen
-                        {
-                            return;
-                        }
+                    client
+                        .matchmaking()
+                        .join_lobby(LobbyId::from_raw(pending), move |result| {
+                            if JOIN_GEN.load(Ordering::Acquire) != gen {
+                                return;
+                            }
 
-                        match result
-                        {
-                            Ok(lobby) =>
-                            {
-                                let host = lobby_host(&hosted, lobby);
-                                if host == 0
-                                {
-                                    println!("[steam] lobby {pending} has no host");
+                            match result {
+                                Ok(lobby) => {
+                                    let host = lobby_host(&hosted, lobby);
+                                    if host == 0 {
+                                        println!("[steam] lobby {pending} has no host");
 
-                                    return;
+                                        return;
+                                    }
+
+                                    DIAL_ID.store(host, Ordering::Release);
+                                    println!("[steam] joined lobby {pending}");
                                 }
-
-                                DIAL_ID.store(host, Ordering::Release);
-                                println!("[steam] joined lobby {pending}");
+                                Err(()) => {
+                                    println!("[steam] lobby join failed");
+                                }
                             }
-                            Err(()) =>
-                            {
-                                println!("[steam] lobby join failed");
-                            }
-                        }
-                    });
+                        });
                 }
             }
 
             let want = DIAL_ID.load(Ordering::Acquire);
-            if want != 0 && dial.is_none() && Instant::now() >= dial_after
-            {
+            if want != 0 && dial.is_none() && Instant::now() >= dial_after {
                 let identity = NetworkingIdentity::new_steam_id(SteamId::from_raw(want));
-                match client.networking_sockets().connect_p2p(identity, 0, std::iter::empty::<NetworkingConfigEntry>())
-                {
-                    Ok(conn) =>
-                    {
+                match client.networking_sockets().connect_p2p(
+                    identity,
+                    0,
+                    std::iter::empty::<NetworkingConfigEntry>(),
+                ) {
+                    Ok(conn) => {
                         dial = Some(conn);
                         println!("[steam] dialing {want}");
                     }
-                    Err(_) =>
-                    {
+                    Err(_) => {
                         println!("[steam] dial failed");
                         dial_after = Instant::now() + Duration::from_secs(2);
                     }
@@ -386,17 +382,15 @@ mod live
             }
 
             let mut closed = false;
-            if let Some(conn) = dial.as_ref()
-            {
-                while let Some(event) = conn.try_receive_event()
-                {
-                    if event.new_state == NetworkingConnectionState::Connected
-                    {
+            if let Some(conn) = dial.as_ref() {
+                while let Some(event) = conn.try_receive_event() {
+                    if event.new_state == NetworkingConnectionState::Connected {
                         CLIENT_READY.store(true, Ordering::Release);
                         println!("[steam] connected");
                     }
 
-                    if event.new_state == NetworkingConnectionState::ClosedByPeer || event.new_state == NetworkingConnectionState::ProblemDetectedLocally
+                    if event.new_state == NetworkingConnectionState::ClosedByPeer
+                        || event.new_state == NetworkingConnectionState::ProblemDetectedLocally
                     {
                         CLIENT_READY.store(false, Ordering::Release);
                         closed = true;
@@ -405,8 +399,7 @@ mod live
                 }
             }
 
-            if closed
-            {
+            if closed {
                 dial = None;
                 dial_after = Instant::now() + Duration::from_secs(1);
             }
@@ -418,30 +411,24 @@ mod live
                     pipe.client_out.drain(..).collect::<Vec<_>>(),
                 )
             };
-            for (id, bytes) in host_out
-            {
-                let Some(conn) = peers.get(&id) else
-                {
+            for (id, bytes) in host_out {
+                let Some(conn) = peers.get(&id) else {
                     continue;
                 };
 
                 let _ = conn.send_message(&bytes, SendFlags::UNRELIABLE_NO_NAGLE);
             }
 
-            if CLIENT_READY.load(Ordering::Acquire)
-            {
-                if let Some(conn) = dial.as_ref()
-                {
-                    for bytes in client_out
-                    {
+            if CLIENT_READY.load(Ordering::Acquire) {
+                if let Some(conn) = dial.as_ref() {
+                    for bytes in client_out {
                         let _ = conn.send_message(&bytes, SendFlags::UNRELIABLE_NO_NAGLE);
                     }
                 }
             }
 
             let mut host_in = Vec::new();
-            for (id, conn) in peers.iter_mut()
-            {
+            for (id, conn) in peers.iter_mut() {
                 let addr = peer_addr(*id);
                 conn.receive_messages_with(|message| {
                     host_in.push((message.data().to_vec(), addr));
@@ -449,8 +436,7 @@ mod live
             }
 
             let mut client_in = Vec::new();
-            if let Some(conn) = dial.as_mut()
-            {
+            if let Some(conn) = dial.as_mut() {
                 conn.receive_messages_with(|message| {
                     client_in.push(message.data().to_vec());
                 });
@@ -467,25 +453,23 @@ mod live
     }
 
     #[cfg(feature = "server")]
-    fn begin_host(client: &Client) -> Option<ListenSocket>
-    {
-        match client.networking_sockets().create_listen_socket_p2p(0, std::iter::empty::<NetworkingConfigEntry>())
+    fn begin_host(client: &Client) -> Option<ListenSocket> {
+        match client
+            .networking_sockets()
+            .create_listen_socket_p2p(0, std::iter::empty::<NetworkingConfigEntry>())
         {
-            Ok(listen) =>
-            {
+            Ok(listen) => {
                 let hosted = client.clone();
-                client.matchmaking().create_lobby(LobbyType::FriendsOnly, 32, move |result| {
-                    match result
-                    {
+                client
+                    .matchmaking()
+                    .create_lobby(LobbyType::FriendsOnly, 32, move |result| match result {
                         Ok(lobby) => publish_lobby(&hosted, lobby),
                         Err(err) => println!("[steam] lobby failed: {err}"),
-                    }
-                });
+                    });
 
                 Some(listen)
             }
-            Err(_) =>
-            {
+            Err(_) => {
                 println!("[steam] listen failed");
 
                 None
@@ -494,11 +478,12 @@ mod live
     }
 
     #[cfg(feature = "server")]
-    fn publish_lobby(client: &Client, lobby: LobbyId)
-    {
+    fn publish_lobby(client: &Client, lobby: LobbyId) {
         let id = lobby.raw();
         let steam_id = client.user().steam_id().raw();
-        client.matchmaking().set_lobby_data(lobby, "host", &steam_id.to_string());
+        client
+            .matchmaking()
+            .set_lobby_data(lobby, "host", &steam_id.to_string());
         let connect = format!("lobby:{id}");
         let friends = client.friends();
         friends.set_rich_presence("connect", Some(&connect));
@@ -506,15 +491,11 @@ mod live
         println!("[steam] lobby {id}");
     }
 
-    fn lobby_host(client: &Client, lobby: LobbyId) -> u64
-    {
+    fn lobby_host(client: &Client, lobby: LobbyId) -> u64 {
         let mut host = client.matchmaking().lobby_owner(lobby).raw();
-        if let Some(text) = client.matchmaking().lobby_data(lobby, "host")
-        {
-            if let Ok(id) = text.parse::<u64>()
-            {
-                if id != 0
-                {
+        if let Some(text) = client.matchmaking().lobby_data(lobby, "host") {
+            if let Ok(id) = text.parse::<u64>() {
+                if id != 0 {
                     host = id;
                 }
             }
@@ -523,8 +504,7 @@ mod live
         host
     }
 
-    fn peer_addr(id: u64) -> SocketAddr
-    {
+    fn peer_addr(id: u64) -> SocketAddr {
         let ip = Ipv6Addr::new(
             0xfd7a,
             0x57ea,
@@ -539,21 +519,17 @@ mod live
         SocketAddr::V6(SocketAddrV6::new(ip, 1, 0, 0))
     }
 
-    fn steam_of(addr: SocketAddr) -> Option<u64>
-    {
-        let SocketAddr::V6(v6) = addr else
-        {
+    fn steam_of(addr: SocketAddr) -> Option<u64> {
+        let SocketAddr::V6(v6) = addr else {
             return None;
         };
 
-        if v6.port() != 1
-        {
+        if v6.port() != 1 {
             return None;
         }
 
         let seg = v6.ip().segments();
-        if seg[0] != 0xfd7a || seg[1] != 0x57ea || seg[2] != 0x0001 || seg[3] != 0
-        {
+        if seg[0] != 0xfd7a || seg[1] != 0x57ea || seg[2] != 0x0001 || seg[3] != 0 {
             return None;
         }
 
@@ -561,28 +537,23 @@ mod live
             | ((seg[5] as u64) << 32)
             | ((seg[6] as u64) << 16)
             | (seg[7] as u64);
-        if id == 0
-        {
+        if id == 0 {
             return None;
         }
 
         Some(id)
     }
 
-    fn push_cap<T>(queue: &mut VecDeque<T>, item: T)
-    {
-        if queue.len() >= PIPE_CAP
-        {
+    fn push_cap<T>(queue: &mut VecDeque<T>, item: T) {
+        if queue.len() >= PIPE_CAP {
             queue.pop_front();
         }
 
         queue.push_back(item);
     }
 
-    fn extend_cap<T>(queue: &mut VecDeque<T>, items: impl IntoIterator<Item = T>)
-    {
-        for item in items
-        {
+    fn extend_cap<T>(queue: &mut VecDeque<T>, items: impl IntoIterator<Item = T>) {
+        for item in items {
             push_cap(queue, item);
         }
     }

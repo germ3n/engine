@@ -1,7 +1,7 @@
+use crate::script::libs::vector3::Vector3;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use wincode::{SchemaRead, SchemaWrite};
-use crate::script::libs::vector3::Vector3;
 
 pub const CHUNK_EDGE: i32 = 16;
 const VOLUME: usize = (CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE) as usize;
@@ -113,7 +113,9 @@ struct Chunk {
 
 impl Chunk {
     fn empty() -> Self {
-        Self { blocks: vec![0; VOLUME].into_boxed_slice() }
+        Self {
+            blocks: vec![0; VOLUME].into_boxed_slice(),
+        }
     }
 
     fn index(local_x: i32, local_y: i32, local_z: i32) -> usize {
@@ -136,7 +138,10 @@ impl Chunk {
                 end += 1;
             }
 
-            runs.push(ChunkRun { block, len: (end - idx) as u16 });
+            runs.push(ChunkRun {
+                block,
+                len: (end - idx) as u16,
+            });
             idx = end;
         }
 
@@ -231,7 +236,11 @@ impl VoxelWorld {
     pub fn block_at(&self, point: Vector3) -> BlockPos {
         let scale = self.scale;
 
-        BlockPos::from_world(Vector3::new(point.x / scale, point.y / scale, point.z / scale))
+        BlockPos::from_world(Vector3::new(
+            point.x / scale,
+            point.y / scale,
+            point.z / scale,
+        ))
     }
 
     pub fn clear(&mut self) {
@@ -323,7 +332,11 @@ impl VoxelWorld {
     }
 
     pub fn apply(&mut self, update: &ChunkUpdate) -> bool {
-        let pos = ChunkPos { x: update.x, y: update.y, z: update.z };
+        let pos = ChunkPos {
+            x: update.x,
+            y: update.y,
+            z: update.z,
+        };
 
         if update.runs.is_empty() {
             if self.chunks.remove(&pos).is_some() {
@@ -360,7 +373,12 @@ impl VoxelWorld {
             return true;
         }
 
-        self.chunks.insert(pos, Chunk { blocks: blocks.into_boxed_slice() });
+        self.chunks.insert(
+            pos,
+            Chunk {
+                blocks: blocks.into_boxed_slice(),
+            },
+        );
         self.touch();
 
         true
@@ -424,7 +442,8 @@ impl VoxelWorld {
 
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|err| format!("voxels {}: {err}", parent.display()))?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("voxels {}: {err}", parent.display()))?;
             }
         }
 
@@ -437,7 +456,8 @@ impl VoxelWorld {
     }
 
     pub fn load_file(&mut self, path: &Path) -> Result<(), String> {
-        let bytes = std::fs::read(path).map_err(|err| format!("voxels {}: {err}", path.display()))?;
+        let bytes =
+            std::fs::read(path).map_err(|err| format!("voxels {}: {err}", path.display()))?;
         let stored = decode_voxels(&bytes)?;
 
         if finite_scale(stored.scale).is_none() {
@@ -448,7 +468,10 @@ impl VoxelWorld {
 
         for update in &stored.chunks {
             if !loaded.apply(update) {
-                return Err(format!("voxel chunk {}, {}, {} is invalid", update.x, update.y, update.z));
+                return Err(format!(
+                    "voxel chunk {}, {}, {} is invalid",
+                    update.x, update.y, update.z
+                ));
             }
         }
 
@@ -473,11 +496,21 @@ impl VoxelWorld {
             block: hit.block,
             face: hit.face,
             distance: hit.distance * scale,
-            position: Vector3::new(hit.position.x * scale, hit.position.y * scale, hit.position.z * scale),
+            position: Vector3::new(
+                hit.position.x * scale,
+                hit.position.y * scale,
+                hit.position.z * scale,
+            ),
         })
     }
 
-    pub fn sweep(&self, start: Vector3, end: Vector3, mins: Vector3, maxs: Vector3) -> Option<TraceHit> {
+    pub fn sweep(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        mins: Vector3,
+        maxs: Vector3,
+    ) -> Option<TraceHit> {
         if !is_finite(start) || !is_finite(end) || !is_finite(mins) || !is_finite(maxs) {
             return None;
         }
@@ -551,19 +584,38 @@ impl VoxelWorld {
                     let pos = BlockPos { x, y, z };
 
                     if self.is_solid(pos) {
-                        let cell_min = Vector3::new(x as f64 * scale, y as f64 * scale, z as f64 * scale);
-                        let cell_max = Vector3::new(cell_min.x + scale, cell_min.y + scale, cell_min.z + scale);
-                        let box_min = Vector3::new(cell_min.x - maxs.x, cell_min.y - maxs.y, cell_min.z - maxs.z);
-                        let box_max = Vector3::new(cell_max.x - mins.x, cell_max.y - mins.y, cell_max.z - mins.z);
+                        let cell_min =
+                            Vector3::new(x as f64 * scale, y as f64 * scale, z as f64 * scale);
+                        let cell_max = Vector3::new(
+                            cell_min.x + scale,
+                            cell_min.y + scale,
+                            cell_min.z + scale,
+                        );
+                        let box_min = Vector3::new(
+                            cell_min.x - maxs.x,
+                            cell_min.y - maxs.y,
+                            cell_min.z - maxs.z,
+                        );
+                        let box_max = Vector3::new(
+                            cell_max.x - mins.x,
+                            cell_max.y - mins.y,
+                            cell_max.z - mins.z,
+                        );
 
-                        if let Some((distance, normal)) = ray_box(start, dir_x, dir_y, dir_z, max_dist, box_min, box_max) {
+                        if let Some((distance, normal)) =
+                            ray_box(start, dir_x, dir_y, dir_z, max_dist, box_min, box_max)
+                        {
                             if distance < best_dist {
                                 best_dist = distance;
                                 best = Some(TraceHit {
                                     block: pos,
                                     face: normal_face(normal),
                                     distance,
-                                    position: Vector3::new(start.x + dir_x * distance, start.y + dir_y * distance, start.z + dir_z * distance),
+                                    position: Vector3::new(
+                                        start.x + dir_x * distance,
+                                        start.y + dir_y * distance,
+                                        start.z + dir_z * distance,
+                                    ),
                                 });
                             }
                         }
@@ -613,7 +665,11 @@ impl VoxelWorld {
         let mut x = axis(start.x, dir_x);
         let mut y = axis(start.y, dir_y);
         let mut z = axis(start.z, dir_z);
-        let origin = BlockPos { x: x.cell, y: y.cell, z: z.cell };
+        let origin = BlockPos {
+            x: x.cell,
+            y: y.cell,
+            z: z.cell,
+        };
 
         if self.is_solid(origin) {
             return Some(TraceHit {
@@ -658,14 +714,22 @@ impl VoxelWorld {
                 z.t_max += z.t_delta;
             }
 
-            let block = BlockPos { x: x.cell, y: y.cell, z: z.cell };
+            let block = BlockPos {
+                x: x.cell,
+                y: y.cell,
+                z: z.cell,
+            };
 
             if self.is_solid(block) {
                 return Some(TraceHit {
                     block,
                     face: Some(face),
                     distance: t_hit,
-                    position: Vector3::new(start.x + dir_x * t_hit, start.y + dir_y * t_hit, start.z + dir_z * t_hit),
+                    position: Vector3::new(
+                        start.x + dir_x * t_hit,
+                        start.y + dir_y * t_hit,
+                        start.z + dir_z * t_hit,
+                    ),
                 });
             }
         }
@@ -677,14 +741,24 @@ impl VoxelWorld {
             None => Vec::new(),
         };
 
-        ChunkUpdate { x: pos.x, y: pos.y, z: pos.z, runs }
+        ChunkUpdate {
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+            runs,
+        }
     }
 }
 
 pub fn find_voxel_file(name: &str) -> Option<PathBuf> {
     let given = PathBuf::from(name);
 
-    if given.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("vmap")) && given.exists() {
+    if given
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vmap"))
+        && given.exists()
+    {
         return Some(given);
     }
 
@@ -702,7 +776,10 @@ pub fn find_voxel_file(name: &str) -> Option<PathBuf> {
 }
 
 fn voxel_stem(name: &str) -> &str {
-    let file = Path::new(name).file_name().and_then(|file| file.to_str()).unwrap_or(name);
+    let file = Path::new(name)
+        .file_name()
+        .and_then(|file| file.to_str())
+        .unwrap_or(name);
 
     file.strip_suffix(".vmap")
         .or_else(|| file.strip_suffix(".map"))
@@ -793,7 +870,15 @@ fn push_block(vertices: &mut Vec<f32>, world: &VoxelWorld, pos: BlockPos, id: u1
     }
 }
 
-fn push_tri(vertices: &mut Vec<f32>, a: [f32; 3], b: [f32; 3], c: [f32; 3], red: f32, green: f32, blue: f32) {
+fn push_tri(
+    vertices: &mut Vec<f32>,
+    a: [f32; 3],
+    b: [f32; 3],
+    c: [f32; 3],
+    red: f32,
+    green: f32,
+    blue: f32,
+) {
     push_vert(vertices, a, red, green, blue);
     push_vert(vertices, b, red, green, blue);
     push_vert(vertices, c, red, green, blue);
@@ -857,7 +942,12 @@ fn is_finite(point: Vector3) -> bool {
 }
 
 fn point_inside(point: Vector3, min: Vector3, max: Vector3) -> bool {
-    point.x > min.x + 1e-8 && point.x < max.x - 1e-8 && point.y > min.y + 1e-8 && point.y < max.y - 1e-8 && point.z > min.z + 1e-8 && point.z < max.z - 1e-8
+    point.x > min.x + 1e-8
+        && point.x < max.x - 1e-8
+        && point.y > min.y + 1e-8
+        && point.y < max.y - 1e-8
+        && point.z > min.z + 1e-8
+        && point.z < max.z - 1e-8
 }
 
 fn normal_face(normal: Vector3) -> Option<Face> {
@@ -888,7 +978,15 @@ fn normal_face(normal: Vector3) -> Option<Face> {
     None
 }
 
-fn ray_box(start: Vector3, dir_x: f64, dir_y: f64, dir_z: f64, max_dist: f64, min: Vector3, max: Vector3) -> Option<(f64, Vector3)> {
+fn ray_box(
+    start: Vector3,
+    dir_x: f64,
+    dir_y: f64,
+    dir_z: f64,
+    max_dist: f64,
+    min: Vector3,
+    max: Vector3,
+) -> Option<(f64, Vector3)> {
     if min.x >= max.x || min.y >= max.y || min.z >= max.z {
         return None;
     }
@@ -905,9 +1003,30 @@ fn ray_box(start: Vector3, dir_x: f64, dir_y: f64, dir_z: f64, max_dist: f64, mi
     let mut t_max = max_dist;
     let mut normal = Vector3::new(0.0, 0.0, 0.0);
     let axes = [
-        (start.x, dir_x, min.x, max.x, Vector3::new(-1.0, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)),
-        (start.y, dir_y, min.y, max.y, Vector3::new(0.0, -1.0, 0.0), Vector3::new(0.0, 1.0, 0.0)),
-        (start.z, dir_z, min.z, max.z, Vector3::new(0.0, 0.0, -1.0), Vector3::new(0.0, 0.0, 1.0)),
+        (
+            start.x,
+            dir_x,
+            min.x,
+            max.x,
+            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+        ),
+        (
+            start.y,
+            dir_y,
+            min.y,
+            max.y,
+            Vector3::new(0.0, -1.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ),
+        (
+            start.z,
+            dir_z,
+            min.z,
+            max.z,
+            Vector3::new(0.0, 0.0, -1.0),
+            Vector3::new(0.0, 0.0, 1.0),
+        ),
     ];
     let mut idx = 0;
 
@@ -974,7 +1093,12 @@ fn axis(origin: f64, dir: f64) -> Axis {
             t_max = 0.0;
         }
 
-        return Axis { cell, step: 1, t_max, t_delta: 1.0 / dir };
+        return Axis {
+            cell,
+            step: 1,
+            t_max,
+            t_delta: 1.0 / dir,
+        };
     }
 
     if dir < 0.0 {
@@ -985,10 +1109,20 @@ fn axis(origin: f64, dir: f64) -> Axis {
             t_max = 0.0;
         }
 
-        return Axis { cell, step: -1, t_max, t_delta: -1.0 / dir };
+        return Axis {
+            cell,
+            step: -1,
+            t_max,
+            t_delta: -1.0 / dir,
+        };
     }
 
-    Axis { cell, step: 0, t_max: f64::INFINITY, t_delta: f64::INFINITY }
+    Axis {
+        cell,
+        step: 0,
+        t_max: f64::INFINITY,
+        t_delta: f64::INFINITY,
+    }
 }
 
 #[cfg(test)]
@@ -1068,14 +1202,18 @@ mod tests {
     fn trace_hits_the_entered_face() {
         let mut world = VoxelWorld::new();
         world.set(BlockPos::new(0, 0, 0), Block(1));
-        let hit = world.trace(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5)).unwrap();
+        let hit = world
+            .trace(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(hit.block, BlockPos::new(0, 0, 0));
         assert_eq!(hit.face, Some(Face::NegX));
         assert!(near(hit.distance, 1.5));
         assert!(near(hit.position.x, 0.0));
 
-        let down = world.trace(Vector3::new(0.5, 0.5, 2.5), Vector3::new(0.5, 0.5, -1.0)).unwrap();
+        let down = world
+            .trace(Vector3::new(0.5, 0.5, 2.5), Vector3::new(0.5, 0.5, -1.0))
+            .unwrap();
 
         assert_eq!(down.block, BlockPos::new(0, 0, 0));
         assert_eq!(down.face, Some(Face::PosZ));
@@ -1089,7 +1227,14 @@ mod tests {
         world.set(BlockPos::new(0, 0, 0), Block(1));
         let mins = Vector3::new(-0.3, -0.3, 0.0);
         let maxs = Vector3::new(0.3, 0.3, 1.6);
-        let hit = world.sweep(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5), mins, maxs).unwrap();
+        let hit = world
+            .sweep(
+                Vector3::new(-1.5, 0.5, 0.5),
+                Vector3::new(1.5, 0.5, 0.5),
+                mins,
+                maxs,
+            )
+            .unwrap();
 
         assert_eq!(hit.face, Some(Face::NegX));
         assert!(near(hit.distance, 1.2));
@@ -1100,12 +1245,16 @@ mod tests {
     fn trace_from_inside_and_misses() {
         let mut world = VoxelWorld::new();
         world.set(BlockPos::new(0, 0, 0), Block(1));
-        let inside = world.trace(Vector3::new(0.5, 0.5, 0.5), Vector3::new(4.0, 0.5, 0.5)).unwrap();
+        let inside = world
+            .trace(Vector3::new(0.5, 0.5, 0.5), Vector3::new(4.0, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(inside.block, BlockPos::new(0, 0, 0));
         assert_eq!(inside.face, None);
         assert!(near(inside.distance, 0.0));
-        assert!(world.trace(Vector3::new(1.5, 0.5, 0.5), Vector3::new(3.5, 0.5, 0.5)).is_none());
+        assert!(world
+            .trace(Vector3::new(1.5, 0.5, 0.5), Vector3::new(3.5, 0.5, 0.5))
+            .is_none());
     }
 
     #[test]
@@ -1113,13 +1262,17 @@ mod tests {
         let mut world = VoxelWorld::new();
         world.set(BlockPos::new(16, 0, 0), Block(1));
         world.set(BlockPos::new(-1, 0, 0), Block(1));
-        let forward = world.trace(Vector3::new(15.5, 0.5, 0.5), Vector3::new(17.5, 0.5, 0.5)).unwrap();
+        let forward = world
+            .trace(Vector3::new(15.5, 0.5, 0.5), Vector3::new(17.5, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(forward.block, BlockPos::new(16, 0, 0));
         assert_eq!(forward.face, Some(Face::NegX));
         assert!(near(forward.distance, 0.5));
 
-        let back = world.trace(Vector3::new(0.5, 0.5, 0.5), Vector3::new(-1.5, 0.5, 0.5)).unwrap();
+        let back = world
+            .trace(Vector3::new(0.5, 0.5, 0.5), Vector3::new(-1.5, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(back.block, BlockPos::new(-1, 0, 0));
         assert_eq!(back.face, Some(Face::PosX));
@@ -1135,10 +1288,21 @@ mod tests {
         assert!(!world.set_scale(f64::NAN));
         assert_eq!(world.scale(), 0.5);
         world.set(BlockPos::new(0, 0, 0), Block(1));
-        assert_eq!(world.block_at(Vector3::new(0.49, 0.0, 0.0)), BlockPos::new(0, 0, 0));
-        assert_eq!(world.block_at(Vector3::new(0.5, 0.0, 0.0)), BlockPos::new(1, 0, 0));
+        assert_eq!(
+            world.block_at(Vector3::new(0.49, 0.0, 0.0)),
+            BlockPos::new(0, 0, 0)
+        );
+        assert_eq!(
+            world.block_at(Vector3::new(0.5, 0.0, 0.0)),
+            BlockPos::new(1, 0, 0)
+        );
 
-        let hit = world.trace(Vector3::new(-0.25, 0.25, 0.25), Vector3::new(1.0, 0.25, 0.25)).unwrap();
+        let hit = world
+            .trace(
+                Vector3::new(-0.25, 0.25, 0.25),
+                Vector3::new(1.0, 0.25, 0.25),
+            )
+            .unwrap();
 
         assert_eq!(hit.block, BlockPos::new(0, 0, 0));
         assert_eq!(hit.face, Some(Face::NegX));
@@ -1150,10 +1314,18 @@ mod tests {
         assert_eq!(world.take_scale(), Some(2.0));
         assert!(world.take_scale().is_none());
         world.set(BlockPos::new(0, 0, 0), Block(1));
-        assert_eq!(world.block_at(Vector3::new(1.9, 0.0, 0.0)), BlockPos::new(0, 0, 0));
-        assert_eq!(world.block_at(Vector3::new(2.0, 0.0, 0.0)), BlockPos::new(1, 0, 0));
+        assert_eq!(
+            world.block_at(Vector3::new(1.9, 0.0, 0.0)),
+            BlockPos::new(0, 0, 0)
+        );
+        assert_eq!(
+            world.block_at(Vector3::new(2.0, 0.0, 0.0)),
+            BlockPos::new(1, 0, 0)
+        );
 
-        let hit = world.trace(Vector3::new(-1.0, 1.0, 1.0), Vector3::new(4.0, 1.0, 1.0)).unwrap();
+        let hit = world
+            .trace(Vector3::new(-1.0, 1.0, 1.0), Vector3::new(4.0, 1.0, 1.0))
+            .unwrap();
 
         assert_eq!(hit.block, BlockPos::new(0, 0, 0));
         assert_eq!(hit.face, Some(Face::NegX));

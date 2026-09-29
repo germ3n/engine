@@ -1,5 +1,5 @@
-use mlua::{Error, FromLua, IntoLua, Lua, Function, Result, Table, Value};
-use wincode::{SchemaWrite, SchemaRead};
+use mlua::{Error, FromLua, Function, IntoLua, Lua, Result, Table, Value};
+use wincode::{SchemaRead, SchemaWrite};
 
 #[repr(C)]
 #[derive(SchemaWrite, SchemaRead, Copy, Clone, Debug, Default, PartialEq)]
@@ -84,13 +84,17 @@ impl IntoLua for Vector3 {
 }
 
 pub fn register_vector3_lib(lua: &Lua) {
-    let exports: Table = crate::script::bundle::load_bytecode(lua, "vector3.lua", crate::script::bundle::VECTOR3)
-        .eval()
-        .expect("Failed to execute vector3.lua");
+    let exports: Table =
+        crate::script::bundle::load_bytecode(lua, "vector3.lua", crate::script::bundle::VECTOR3)
+            .eval()
+            .expect("Failed to execute vector3.lua");
 
     let ctor: Function = exports.get("ctor").expect("Failed to get Vector3Ctor");
     let module: Table = exports.get("module").expect("Failed to get module");
 
-    lua.set_named_registry_value("Vector3Ctor", ctor).expect("Failed to set Vector3Ctor");
-    lua.globals().set("Vector3", module).expect("Failed to get Vector3");
+    lua.set_named_registry_value("Vector3Ctor", ctor)
+        .expect("Failed to set Vector3Ctor");
+    lua.globals()
+        .set("Vector3", module)
+        .expect("Failed to get Vector3");
 }

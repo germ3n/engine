@@ -1,12 +1,15 @@
+use crate::network::packet::{
+    bundle_part, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, MAX_DATAGRAM,
+    STREAM_STATE,
+};
 use crate::network::reliable::{EnqueueStatus, ReliableChannel, UnreliableAssembly};
 use crate::network::{PacketType, UnreliableInbox, OUTBOUND_CAP};
+use std::collections::hash_map::{DefaultHasher, RandomState};
+use std::collections::{HashMap, VecDeque};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::collections::{HashMap, VecDeque};
-use std::collections::hash_map::{DefaultHasher, RandomState};
-use std::hash::{BuildHasher, Hash, Hasher};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use crate::network::packet::{bundle_part, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, MAX_DATAGRAM, STREAM_STATE};
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
 
@@ -17,7 +20,9 @@ fn bind_port(port: u16) -> Result<UdpSocket, String> {
     let addr = format!("[::]:{port}");
 
     let socket = UdpSocket::bind(&addr).map_err(|err| format!("bind {addr}: {err}"))?;
-    socket.set_nonblocking(true).map_err(|err| format!("bind {addr}: {err}"))?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|err| format!("bind {addr}: {err}"))?;
 
     Ok(socket)
 }
@@ -104,7 +109,9 @@ impl NetworkServer {
         });
 
         let timeout = CONNECTION_TIMEOUT;
-        let idle: Vec<SocketAddr> = self.clients.iter()
+        let idle: Vec<SocketAddr> = self
+            .clients
+            .iter()
             .filter(|(_, client)| client.last_seen.elapsed() >= timeout)
             .map(|(addr, _)| *addr)
             .collect();
@@ -136,7 +143,10 @@ impl NetworkServer {
             }
         };
 
-        Some((wincode::deserialize(&self.recv_buf[..amt]).map_err(|_| ()), src))
+        Some((
+            wincode::deserialize(&self.recv_buf[..amt]).map_err(|_| ()),
+            src,
+        ))
     }
 
     pub fn add_client(&mut self, addr: SocketAddr) -> Option<(u64, u32)> {
@@ -154,28 +164,39 @@ impl NetworkServer {
         reliable.set_session(session);
         let mut state = ReliableChannel::with_stream(STREAM_STATE);
         state.set_session(session);
-        self.clients.insert(addr, ConnectedClient {
-            reliable,
-            state,
-            outbound: VecDeque::new(),
-            state_outbound: VecDeque::new(),
-            last_seen: Instant::now(),
-            session,
-            generation,
-            unreliable_out: 0,
-            unreliable_in: UnreliableInbox::new(),
-            unreliable_assembly: UnreliableAssembly::new(),
-        });
+        self.clients.insert(
+            addr,
+            ConnectedClient {
+                reliable,
+                state,
+                outbound: VecDeque::new(),
+                state_outbound: VecDeque::new(),
+                last_seen: Instant::now(),
+                session,
+                generation,
+                unreliable_out: 0,
+                unreliable_in: UnreliableInbox::new(),
+                unreliable_assembly: UnreliableAssembly::new(),
+            },
+        );
 
         Some((session, generation))
     }
 
     pub fn send_connected(&self, addr: SocketAddr) {
-        let Some((session, generation)) = self.clients.get(&addr).map(|client| (client.session, client.generation)) else {
+        let Some((session, generation)) = self
+            .clients
+            .get(&addr)
+            .map(|client| (client.session, client.generation))
+        else {
             return;
         };
 
-        let bytes = wincode::serialize(&PacketType::Connected { session, generation }).unwrap();
+        let bytes = wincode::serialize(&PacketType::Connected {
+            session,
+            generation,
+        })
+        .unwrap();
         let _ = self.send_to(addr, &bytes);
     }
 
@@ -255,7 +276,8 @@ impl NetworkServer {
             selective: ack.selective,
             state_cumulative: state_ack.cumulative,
             state_selective: state_ack.selective,
-        }).unwrap();
+        })
+        .unwrap();
         let _ = self.send_to(addr, &bytes);
     }
 
@@ -264,23 +286,35 @@ impl NetworkServer {
             return Ok(());
         }
 
-        self.socket.send_to(message, addr).map_err(|e| e.to_string())?;
+        self.socket
+            .send_to(message, addr)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub fn send_message(&self, message: &[u8]) -> Result<(), String> {
         for addr in self.clients.keys() {
-            self.socket.send_to(message, addr).map_err(|e| e.to_string())?;
+            self.socket
+                .send_to(message, addr)
+                .map_err(|e| e.to_string())?;
         }
 
         Ok(())
     }
 
-    pub fn enqueue_reliable(&mut self, addr: SocketAddr, payload: &[u8]) -> Result<(), ReliableSendError> {
+    pub fn enqueue_reliable(
+        &mut self,
+        addr: SocketAddr,
+        payload: &[u8],
+    ) -> Result<(), ReliableSendError> {
         self.enqueue_shared(addr, Arc::new(payload.to_vec()), false)
     }
 
-    pub fn enqueue_state(&mut self, addr: SocketAddr, payload: &[u8]) -> Result<(), ReliableSendError> {
+    pub fn enqueue_state(
+        &mut self,
+        addr: SocketAddr,
+        payload: &[u8],
+    ) -> Result<(), ReliableSendError> {
         self.enqueue_shared(addr, Arc::new(payload.to_vec()), true)
     }
 
@@ -308,7 +342,12 @@ impl NetworkServer {
         stalled
     }
 
-    fn enqueue_shared(&mut self, addr: SocketAddr, payload: Arc<Vec<u8>>, state: bool) -> Result<(), ReliableSendError> {
+    fn enqueue_shared(
+        &mut self,
+        addr: SocketAddr,
+        payload: Arc<Vec<u8>>,
+        state: bool,
+    ) -> Result<(), ReliableSendError> {
         let generation = match self.clients.get(&addr) {
             Some(client) => client.generation,
             None => {
@@ -474,7 +513,11 @@ impl NetworkServer {
     }
 }
 
-fn drain_outbound(outbound: &mut VecDeque<Vec<u8>>, channel: &mut ReliableChannel, generation: u32) {
+fn drain_outbound(
+    outbound: &mut VecDeque<Vec<u8>>,
+    channel: &mut ReliableChannel,
+    generation: u32,
+) {
     channel.set_generation(generation);
     loop {
         let Some(payload) = outbound.front().cloned() else {

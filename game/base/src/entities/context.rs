@@ -8,10 +8,20 @@ pub struct FrameInfo {
 }
 
 pub enum EntityCommand {
-    Spawn { entity: Box<DynEntity> },
-    SpawnAt { handle: EntityHandle, entity: Box<DynEntity> },
-    Remove { handle: EntityHandle },
-    SetThink { handle: EntityHandle, enabled: bool },
+    Spawn {
+        entity: Box<DynEntity>,
+    },
+    SpawnAt {
+        handle: EntityHandle,
+        entity: Box<DynEntity>,
+    },
+    Remove {
+        handle: EntityHandle,
+    },
+    SetThink {
+        handle: EntityHandle,
+        enabled: bool,
+    },
 }
 
 pub struct TickContext<'a> {
@@ -26,7 +36,11 @@ impl<'a> TickContext<'a> {
         entities: &'a EntityList,
         commands: &'a mut Vec<EntityCommand>,
     ) -> Self {
-        Self { frame, entities, commands }
+        Self {
+            frame,
+            entities,
+            commands,
+        }
     }
 
     pub fn entities(&self) -> &EntityList {
@@ -46,7 +60,8 @@ impl<'a> TickContext<'a> {
     }
 
     pub fn spawn_at(&mut self, handle: EntityHandle, entity: Box<DynEntity>) {
-        self.commands.push(EntityCommand::SpawnAt { handle, entity });
+        self.commands
+            .push(EntityCommand::SpawnAt { handle, entity });
     }
 
     pub fn remove(&mut self, handle: EntityHandle) {
@@ -54,6 +69,7 @@ impl<'a> TickContext<'a> {
     }
 
     pub fn set_think(&mut self, handle: EntityHandle, enabled: bool) {
-        self.commands.push(EntityCommand::SetThink { handle, enabled });
+        self.commands
+            .push(EntityCommand::SetThink { handle, enabled });
     }
 }

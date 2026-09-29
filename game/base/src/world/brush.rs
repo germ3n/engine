@@ -1,6 +1,6 @@
+use crate::script::libs::vector3::Vector3;
 use std::path::{Path, PathBuf};
 use wincode::{SchemaRead, SchemaWrite};
-use crate::script::libs::vector3::Vector3;
 
 const MAX_PLANES: usize = 64;
 const MAX_BRUSHES: usize = 4096;
@@ -98,12 +98,30 @@ impl Brush {
 
         Self::convex(
             vec![
-                BrushPlane { normal: Vector3::new(1.0, 0.0, 0.0), distance: max.x },
-                BrushPlane { normal: Vector3::new(-1.0, 0.0, 0.0), distance: -min.x },
-                BrushPlane { normal: Vector3::new(0.0, 1.0, 0.0), distance: max.y },
-                BrushPlane { normal: Vector3::new(0.0, -1.0, 0.0), distance: -min.y },
-                BrushPlane { normal: Vector3::new(0.0, 0.0, 1.0), distance: max.z },
-                BrushPlane { normal: Vector3::new(0.0, 0.0, -1.0), distance: -min.z },
+                BrushPlane {
+                    normal: Vector3::new(1.0, 0.0, 0.0),
+                    distance: max.x,
+                },
+                BrushPlane {
+                    normal: Vector3::new(-1.0, 0.0, 0.0),
+                    distance: -min.x,
+                },
+                BrushPlane {
+                    normal: Vector3::new(0.0, 1.0, 0.0),
+                    distance: max.y,
+                },
+                BrushPlane {
+                    normal: Vector3::new(0.0, -1.0, 0.0),
+                    distance: -min.y,
+                },
+                BrushPlane {
+                    normal: Vector3::new(0.0, 0.0, 1.0),
+                    distance: max.z,
+                },
+                BrushPlane {
+                    normal: Vector3::new(0.0, 0.0, -1.0),
+                    distance: -min.z,
+                },
             ],
             material,
         )
@@ -186,7 +204,8 @@ impl BrushMap {
             } else {
                 ensure_compiled(&path)?
             };
-            let bytes = std::fs::read(&compiled_path).map_err(|err| format!("map {}: {err}", compiled_path.display()))?;
+            let bytes = std::fs::read(&compiled_path)
+                .map_err(|err| format!("map {}: {err}", compiled_path.display()))?;
 
             return self.install_compiled(&bytes);
         }
@@ -300,7 +319,11 @@ impl BrushMap {
                 continue;
             };
 
-            if best.as_ref().map(|hit| distance < hit.distance).unwrap_or(true) {
+            if best
+                .as_ref()
+                .map(|hit| distance < hit.distance)
+                .unwrap_or(true)
+            {
                 best = Some(BrushHit {
                     brush: idx,
                     distance,
@@ -317,7 +340,13 @@ impl BrushMap {
         best
     }
 
-    pub fn sweep(&self, start: Vector3, end: Vector3, mins: Vector3, maxs: Vector3) -> Option<BrushHit> {
+    pub fn sweep(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        mins: Vector3,
+        maxs: Vector3,
+    ) -> Option<BrushHit> {
         if !finite(start) || !finite(end) || !finite(mins) || !finite(maxs) {
             return None;
         }
@@ -352,11 +381,19 @@ impl BrushMap {
                 continue;
             };
 
-            if best.as_ref().map(|hit| distance < hit.distance).unwrap_or(true) {
+            if best
+                .as_ref()
+                .map(|hit| distance < hit.distance)
+                .unwrap_or(true)
+            {
                 best = Some(BrushHit {
                     brush: idx,
                     distance,
-                    position: Vector3::new(start.x + dir.x * distance, start.y + dir.y * distance, start.z + dir.z * distance),
+                    position: Vector3::new(
+                        start.x + dir.x * distance,
+                        start.y + dir.y * distance,
+                        start.z + dir.z * distance,
+                    ),
                     normal,
                 });
             }
@@ -394,7 +431,10 @@ fn find_map(name: &str) -> Option<PathBuf> {
 }
 
 fn bundled_map(name: &str) -> Option<&'static [u8]> {
-    let stem = Path::new(name).file_stem().and_then(|stem| stem.to_str()).unwrap_or(name);
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(name);
 
     if stem.eq_ignore_ascii_case("hall") {
         return Some(include_bytes!("../../maps/hall.cmap"));
@@ -412,7 +452,10 @@ fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 
     let want_compiled = name.ends_with(".cmap");
     let want_source = name.ends_with(".map");
-    let stem = name.strip_suffix(".map").or_else(|| name.strip_suffix(".cmap")).unwrap_or(name);
+    let stem = name
+        .strip_suffix(".map")
+        .or_else(|| name.strip_suffix(".cmap"))
+        .unwrap_or(name);
 
     for dir in dirs {
         if !want_compiled {
@@ -456,18 +499,24 @@ fn ensure_compiled(source: &Path) -> Result<PathBuf, String> {
 }
 
 fn compiled_is_fresh(source: &Path, dest: &Path) -> Result<bool, String> {
-    let source_meta = std::fs::metadata(source).map_err(|err| format!("map {}: {err}", source.display()))?;
+    let source_meta =
+        std::fs::metadata(source).map_err(|err| format!("map {}: {err}", source.display()))?;
     let Ok(dest_meta) = std::fs::metadata(dest) else {
         return Ok(false);
     };
-    let source_time = source_meta.modified().map_err(|err| format!("map {}: {err}", source.display()))?;
-    let dest_time = dest_meta.modified().map_err(|err| format!("map {}: {err}", dest.display()))?;
+    let source_time = source_meta
+        .modified()
+        .map_err(|err| format!("map {}: {err}", source.display()))?;
+    let dest_time = dest_meta
+        .modified()
+        .map_err(|err| format!("map {}: {err}", dest.display()))?;
 
     Ok(dest_time >= source_time)
 }
 
 fn write_compiled(source: &Path, dest: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(source).map_err(|err| format!("map {}: {err}", source.display()))?;
+    let text = std::fs::read_to_string(source)
+        .map_err(|err| format!("map {}: {err}", source.display()))?;
     let entities = parse_source(&text)?;
     let bytes = encode_compiled(&compile_source(&entities))?;
     let tmp = dest.with_extension("tmp");
@@ -486,7 +535,10 @@ fn compile_source(entities: &[SourceEntity]) -> CompiledMap {
         let mut keys = Vec::with_capacity(entity.keys.len());
 
         for (key, value) in &entity.keys {
-            keys.push(CompiledPair { key: key.clone(), value: value.clone() });
+            keys.push(CompiledPair {
+                key: key.clone(),
+                value: value.clone(),
+            });
         }
 
         let mut brushes = Vec::with_capacity(entity.brushes.len());
@@ -572,7 +624,10 @@ impl CompiledMap {
     pub fn worldspawn() -> Self {
         Self {
             entities: vec![CompiledEntity {
-                keys: vec![CompiledPair { key: "classname".to_string(), value: "worldspawn".to_string() }],
+                keys: vec![CompiledPair {
+                    key: "classname".to_string(),
+                    value: "worldspawn".to_string(),
+                }],
                 brushes: Vec::new(),
             }],
         }
@@ -582,13 +637,15 @@ impl CompiledMap {
         let path = find_map(name).ok_or_else(|| format!("map {name} was not found"))?;
 
         if is_compiled(&path) {
-            let bytes = std::fs::read(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
+            let bytes =
+                std::fs::read(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
             let map = decode_compiled(&bytes)?;
 
             return Ok((path.with_extension("map"), map));
         }
 
-        let text = std::fs::read_to_string(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|err| format!("map {}: {err}", path.display()))?;
         let entities = parse_source(&text)?;
 
         Ok((path, compile_source(&entities)))
@@ -597,13 +654,16 @@ impl CompiledMap {
     pub fn save_source(&self, path: &Path) -> Result<PathBuf, String> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|err| format!("map {}: {err}", parent.display()))?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| format!("map {}: {err}", parent.display()))?;
             }
         }
 
         let text = map_text(self)?;
         std::fs::write(path, text).map_err(|err| format!("map {}: {err}", path.display()))?;
-        let text_path = path.to_str().ok_or_else(|| "map path is not utf-8".to_string())?;
+        let text_path = path
+            .to_str()
+            .ok_or_else(|| "map path is not utf-8".to_string())?;
 
         compile_map(text_path)
     }
@@ -619,7 +679,10 @@ impl CompiledMap {
     }
 
     pub fn add_box(&mut self, min: Vector3, max: Vector3, texture: &str) -> Option<usize> {
-        if self.brush_count() >= MAX_BRUSHES || Brush::aabb(min, max, 1).is_none() || !valid_texture(texture) {
+        if self.brush_count() >= MAX_BRUSHES
+            || Brush::aabb(min, max, 1).is_none()
+            || !valid_texture(texture)
+        {
             return None;
         }
 
@@ -654,7 +717,9 @@ impl CompiledMap {
         }
 
         flat += self.entities[entity_index].brushes.len();
-        self.entities[entity_index].brushes.push(CompiledBrush { faces });
+        self.entities[entity_index]
+            .brushes
+            .push(CompiledBrush { faces });
 
         Some(flat)
     }
@@ -685,7 +750,8 @@ impl CompiledMap {
         };
 
         for face in &mut brush.faces {
-            face.distance += face.normal.x * delta.x + face.normal.y * delta.y + face.normal.z * delta.z;
+            face.distance +=
+                face.normal.x * delta.x + face.normal.y * delta.y + face.normal.z * delta.z;
         }
 
         true
@@ -710,10 +776,16 @@ impl CompiledMap {
             idx += 1;
         }
 
-        self.entities.insert(0, CompiledEntity {
-            keys: vec![CompiledPair { key: "classname".to_string(), value: "worldspawn".to_string() }],
-            brushes: Vec::new(),
-        });
+        self.entities.insert(
+            0,
+            CompiledEntity {
+                keys: vec![CompiledPair {
+                    key: "classname".to_string(),
+                    value: "worldspawn".to_string(),
+                }],
+                brushes: Vec::new(),
+            },
+        );
 
         0
     }
@@ -759,7 +831,8 @@ fn map_text(map: &CompiledMap) -> Result<String, String> {
                     return Err(format!("texture {} cannot be written", face.texture));
                 }
 
-                let (p0, p1, p2) = face_points(face.normal, face.distance).ok_or_else(|| "face plane is invalid".to_string())?;
+                let (p0, p1, p2) = face_points(face.normal, face.distance)
+                    .ok_or_else(|| "face plane is invalid".to_string())?;
                 out.push_str(&format!(
                     "( {} {} {} ) ( {} {} {} ) ( {} {} {} ) {} 0 0 0 1 1\n",
                     format_component(p0.x),
@@ -792,7 +865,11 @@ fn face_points(normal: Vector3, distance: f64) -> Option<(Vector3, Vector3, Vect
     }
 
     let inv = 1.0 / len_sq;
-    let origin = Vector3::new(normal.x * distance * inv, normal.y * distance * inv, normal.z * distance * inv);
+    let origin = Vector3::new(
+        normal.x * distance * inv,
+        normal.y * distance * inv,
+        normal.z * distance * inv,
+    );
     let len = len_sq.sqrt();
     let unit_normal = Vector3::new(normal.x / len, normal.y / len, normal.z / len);
     let (tangent, bitangent) = basis(unit_normal);
@@ -803,8 +880,16 @@ fn face_points(normal: Vector3, distance: f64) -> Option<(Vector3, Vector3, Vect
 
     Some((
         origin,
-        Vector3::new(origin.x + tangent.x, origin.y + tangent.y, origin.z + tangent.z),
-        Vector3::new(origin.x + bitangent.x, origin.y + bitangent.y, origin.z + bitangent.z),
+        Vector3::new(
+            origin.x + tangent.x,
+            origin.y + tangent.y,
+            origin.z + tangent.z,
+        ),
+        Vector3::new(
+            origin.x + bitangent.x,
+            origin.y + bitangent.y,
+            origin.z + bitangent.z,
+        ),
     ))
 }
 
@@ -852,7 +937,11 @@ fn push_escaped(out: &mut String, text: &str) {
 
 fn parse_source(text: &str) -> Result<Vec<SourceEntity>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut parser = Parser { text, idx: 0, line: 1 };
+    let mut parser = Parser {
+        text,
+        idx: 0,
+        line: 1,
+    };
     let mut entities = Vec::new();
     parser.skip();
 
@@ -1058,7 +1147,9 @@ impl<'a> Parser<'a> {
             return Err(self.err("expected a number"));
         }
 
-        self.text[start..self.idx].parse().map_err(|_| self.err("bad number"))
+        self.text[start..self.idx]
+            .parse()
+            .map_err(|_| self.err("bad number"))
     }
 
     fn expect(&mut self, want: char) -> Result<(), String> {
@@ -1317,7 +1408,11 @@ fn polygons(brush: &Brush) -> Vec<Poly> {
         }
 
         order_face(plane.normal, &mut face);
-        polys.push(Poly { normal: plane.normal, points: face, material: plane.material });
+        polys.push(Poly {
+            normal: plane.normal,
+            points: face,
+            material: plane.material,
+        });
     }
 
     polys
@@ -1340,7 +1435,9 @@ fn order_face(normal: Vector3, points: &mut Vec<Vector3>) {
     points.sort_by(|left, right| {
         let left_angle = angle(*left, center, tangent, bitangent);
         let right_angle = angle(*right, center, tangent, bitangent);
-        left_angle.partial_cmp(&right_angle).unwrap_or(std::cmp::Ordering::Equal)
+        left_angle
+            .partial_cmp(&right_angle)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 }
 
@@ -1424,7 +1521,15 @@ fn tri_area(a: Vector3, b: Vector3, c: Vector3) -> f64 {
     ab.cross(ac).len_sq()
 }
 
-fn push_tri(vertices: &mut Vec<f32>, a: Vector3, b: Vector3, c: Vector3, red: f32, green: f32, blue: f32) {
+fn push_tri(
+    vertices: &mut Vec<f32>,
+    a: Vector3,
+    b: Vector3,
+    c: Vector3,
+    red: f32,
+    green: f32,
+    blue: f32,
+) {
     push_vert(vertices, a, red, green, blue);
     push_vert(vertices, b, red, green, blue);
     push_vert(vertices, c, red, green, blue);
@@ -1450,7 +1555,12 @@ fn material_rgb(id: u16) -> [f32; 3] {
     [red, green, blue]
 }
 
-fn hit_brush(brush: &Brush, start: Vector3, dir: Vector3, max_dist: f64) -> Option<(f64, Option<Vector3>)> {
+fn hit_brush(
+    brush: &Brush,
+    start: Vector3,
+    dir: Vector3,
+    max_dist: f64,
+) -> Option<(f64, Option<Vector3>)> {
     hit_planes(&brush.planes, start, dir, max_dist)
 }
 
@@ -1469,7 +1579,9 @@ fn expand_brush(brush: &Brush, mins: Vector3, maxs: Vector3) -> Vec<Plane> {
 }
 
 fn hull_min_dot(normal: Vector3, mins: Vector3, maxs: Vector3) -> f64 {
-    axis_extent(normal.x, mins.x, maxs.x) + axis_extent(normal.y, mins.y, maxs.y) + axis_extent(normal.z, mins.z, maxs.z)
+    axis_extent(normal.x, mins.x, maxs.x)
+        + axis_extent(normal.y, mins.y, maxs.y)
+        + axis_extent(normal.z, mins.z, maxs.z)
 }
 
 fn axis_extent(normal: f64, min: f64, max: f64) -> f64 {
@@ -1515,7 +1627,12 @@ fn player_start(entity: &CompiledEntity) -> Option<Vector3> {
     }
 }
 
-fn hit_planes(planes: &[Plane], start: Vector3, dir: Vector3, max_dist: f64) -> Option<(f64, Option<Vector3>)> {
+fn hit_planes(
+    planes: &[Plane],
+    start: Vector3,
+    dir: Vector3,
+    max_dist: f64,
+) -> Option<(f64, Option<Vector3>)> {
     let mut t_enter = 0.0;
     let mut t_exit = max_dist;
     let mut enter_normal = None;
@@ -1613,7 +1730,9 @@ mod tests {
         let mesh = map.mesh();
 
         assert_eq!(mesh.len(), 360);
-        let hit = map.trace(Vector3::new(-1.0, 0.5, 0.5), Vector3::new(3.0, 0.5, 0.5)).unwrap();
+        let hit = map
+            .trace(Vector3::new(-1.0, 0.5, 0.5), Vector3::new(3.0, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(hit.brush, 0);
         assert!(near(hit.distance, 1.0));
@@ -1624,7 +1743,9 @@ mod tests {
     #[test]
     fn trace_hits_the_entered_face() {
         let map = box_map();
-        let hit = map.trace(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5)).unwrap();
+        let hit = map
+            .trace(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(hit.brush, 0);
         assert!(near(hit.distance, 1.5));
@@ -1633,7 +1754,9 @@ mod tests {
         assert!(near(hit.normal.unwrap().y, 0.0));
         assert!(near(hit.normal.unwrap().z, 0.0));
 
-        let down = map.trace(Vector3::new(0.5, 0.5, 2.5), Vector3::new(0.5, 0.5, -1.0)).unwrap();
+        let down = map
+            .trace(Vector3::new(0.5, 0.5, 2.5), Vector3::new(0.5, 0.5, -1.0))
+            .unwrap();
 
         assert!(near(down.distance, 1.5));
         assert!(near(down.position.z, 1.0));
@@ -1645,7 +1768,14 @@ mod tests {
         let map = box_map();
         let mins = Vector3::new(-0.3, -0.3, 0.0);
         let maxs = Vector3::new(0.3, 0.3, 1.6);
-        let hit = map.sweep(Vector3::new(-1.5, 0.5, 0.5), Vector3::new(1.5, 0.5, 0.5), mins, maxs).unwrap();
+        let hit = map
+            .sweep(
+                Vector3::new(-1.5, 0.5, 0.5),
+                Vector3::new(1.5, 0.5, 0.5),
+                mins,
+                maxs,
+            )
+            .unwrap();
 
         assert!(near(hit.distance, 1.2));
         assert!(near(hit.position.x, -0.3));
@@ -1657,8 +1787,14 @@ mod tests {
         let mut compiled = CompiledMap::worldspawn();
         compiled.entities.push(CompiledEntity {
             keys: vec![
-                CompiledPair { key: "classname".to_string(), value: "info_player_start".to_string() },
-                CompiledPair { key: "origin".to_string(), value: "0 28 2".to_string() },
+                CompiledPair {
+                    key: "classname".to_string(),
+                    value: "info_player_start".to_string(),
+                },
+                CompiledPair {
+                    key: "origin".to_string(),
+                    value: "0 28 2".to_string(),
+                },
             ],
             brushes: Vec::new(),
         });
@@ -1674,12 +1810,21 @@ mod tests {
     #[test]
     fn trace_from_inside_and_misses() {
         let map = box_map();
-        let inside = map.trace(Vector3::new(0.5, 0.5, 0.5), Vector3::new(4.0, 0.5, 0.5)).unwrap();
+        let inside = map
+            .trace(Vector3::new(0.5, 0.5, 0.5), Vector3::new(4.0, 0.5, 0.5))
+            .unwrap();
 
         assert_eq!(inside.normal, None);
         assert!(near(inside.distance, 0.0));
-        assert!(map.trace(Vector3::new(1.5, 0.5, 0.5), Vector3::new(3.5, 0.5, 0.5)).is_none());
-        assert!(map.trace(Vector3::new(f64::NAN, 0.0, 0.0), Vector3::new(1.0, 0.0, 0.0)).is_none());
+        assert!(map
+            .trace(Vector3::new(1.5, 0.5, 0.5), Vector3::new(3.5, 0.5, 0.5))
+            .is_none());
+        assert!(map
+            .trace(
+                Vector3::new(f64::NAN, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 0.0)
+            )
+            .is_none());
     }
 
     #[test]
@@ -1687,12 +1832,30 @@ mod tests {
         let mut map = BrushMap::new();
         assert!(map.add_convex(
             vec![
-                BrushPlane { normal: Vector3::new(0.0, 0.0, -1.0), distance: 0.0 },
-                BrushPlane { normal: Vector3::new(0.0, -1.0, 0.0), distance: 0.0 },
-                BrushPlane { normal: Vector3::new(0.0, 1.0, 0.0), distance: 2.0 },
-                BrushPlane { normal: Vector3::new(-1.0, 0.0, 0.0), distance: 0.0 },
-                BrushPlane { normal: Vector3::new(1.0, 0.0, 0.0), distance: 4.0 },
-                BrushPlane { normal: Vector3::new(-1.0, 0.0, 1.0), distance: 0.0 },
+                BrushPlane {
+                    normal: Vector3::new(0.0, 0.0, -1.0),
+                    distance: 0.0
+                },
+                BrushPlane {
+                    normal: Vector3::new(0.0, -1.0, 0.0),
+                    distance: 0.0
+                },
+                BrushPlane {
+                    normal: Vector3::new(0.0, 1.0, 0.0),
+                    distance: 2.0
+                },
+                BrushPlane {
+                    normal: Vector3::new(-1.0, 0.0, 0.0),
+                    distance: 0.0
+                },
+                BrushPlane {
+                    normal: Vector3::new(1.0, 0.0, 0.0),
+                    distance: 4.0
+                },
+                BrushPlane {
+                    normal: Vector3::new(-1.0, 0.0, 1.0),
+                    distance: 0.0
+                },
             ],
             8,
         ));
@@ -1701,25 +1864,40 @@ mod tests {
         assert_eq!(mesh.len(), 144);
         assert!(faces_point_outward(&mesh, [2.0, 1.0, 0.5]));
 
-        let hit = map.trace(Vector3::new(-1.0, 1.0, 0.5), Vector3::new(6.0, 1.0, 0.5)).unwrap();
+        let hit = map
+            .trace(Vector3::new(-1.0, 1.0, 0.5), Vector3::new(6.0, 1.0, 0.5))
+            .unwrap();
 
         assert!(near(hit.distance, 1.5));
         assert!(near(hit.position.x, 0.5));
         assert!(near(hit.position.z, 0.5));
         assert!(near(hit.normal.unwrap().x, -1.0 / 2.0_f64.sqrt()));
         assert!(near(hit.normal.unwrap().z, 1.0 / 2.0_f64.sqrt()));
-        assert!(map.trace(Vector3::new(2.0, 1.0, 5.0), Vector3::new(2.0, 1.0, 6.0)).is_none());
+        assert!(map
+            .trace(Vector3::new(2.0, 1.0, 5.0), Vector3::new(2.0, 1.0, 6.0))
+            .is_none());
     }
 
     #[test]
     fn rejected_brushes_leave_the_map_alone() {
         assert!(Brush::aabb(Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 1.0), 1).is_none());
-        assert!(Brush::aabb(Vector3::new(f64::NAN, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), 1).is_none());
+        assert!(Brush::aabb(
+            Vector3::new(f64::NAN, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            1
+        )
+        .is_none());
         assert!(Brush::convex(vec![], 1).is_none());
 
         let mut map = box_map();
 
-        assert!(!map.add_convex(vec![BrushPlane { normal: Vector3::new(0.0, 0.0, 1.0), distance: 1.0 }], 4));
+        assert!(!map.add_convex(
+            vec![BrushPlane {
+                normal: Vector3::new(0.0, 0.0, 1.0),
+                distance: 1.0
+            }],
+            4
+        ));
         assert_eq!(map.len(), 1);
         assert_eq!(map.mesh().len(), 216);
         assert!(map.load_file("missing_brush_map").is_err());
@@ -1753,7 +1931,9 @@ mod tests {
         assert_eq!(mesh.len(), 216);
         assert!(faces_point_outward(&mesh, [0.5, 0.5, 0.5]));
 
-        let hit = map.trace(Vector3::new(-1.0, 0.5, 0.5), Vector3::new(2.0, 0.5, 0.5)).unwrap();
+        let hit = map
+            .trace(Vector3::new(-1.0, 0.5, 0.5), Vector3::new(2.0, 0.5, 0.5))
+            .unwrap();
 
         assert!(near(hit.position.x, 0.0));
         assert!(near(hit.normal.unwrap().x, -1.0));
@@ -1787,7 +1967,10 @@ mod tests {
         assert_eq!(compiled.entities.len(), 2);
         assert_eq!(compiled.entities[0].keys[0].key, "classname");
         assert_eq!(compiled.entities[0].keys[0].value, "worldspawn");
-        assert_eq!(compiled.entities[0].brushes[0].faces[0].texture, "city/floor");
+        assert_eq!(
+            compiled.entities[0].brushes[0].faces[0].texture,
+            "city/floor"
+        );
         assert_eq!(compiled.entities[1].keys[0].value, "info_player_start");
         assert_eq!(compiled.entities[1].keys[1].value, "0 0 1");
 
@@ -1822,7 +2005,8 @@ mod tests {
 }
 }
 "#,
-        ).unwrap();
+        )
+        .unwrap();
         let compiled = compile_map(source.to_str().unwrap()).unwrap();
 
         assert_eq!(compiled, dir.join("box.cmap"));
@@ -1896,18 +2080,24 @@ mod tests {
 
         assert_eq!(map.len(), 8);
 
-        let floor = map.trace(Vector3::new(0.0, 28.0, 4.0), Vector3::new(0.0, 28.0, -1.0)).unwrap();
+        let floor = map
+            .trace(Vector3::new(0.0, 28.0, 4.0), Vector3::new(0.0, 28.0, -1.0))
+            .unwrap();
 
         assert!(near(floor.distance, 3.0));
         assert!(near(floor.position.z, 1.0));
         assert!(near(floor.normal.unwrap().z, 1.0));
 
-        let inside = map.trace(Vector3::new(0.0, 30.0, 0.5), Vector3::new(0.0, 30.0, 3.0)).unwrap();
+        let inside = map
+            .trace(Vector3::new(0.0, 30.0, 0.5), Vector3::new(0.0, 30.0, 3.0))
+            .unwrap();
 
         assert!(near(inside.distance, 0.0));
         assert_eq!(inside.normal, None);
 
-        let ramp = map.trace(Vector3::new(10.0, 0.0, 1.0), Vector3::new(40.0, 0.0, 1.0)).unwrap();
+        let ramp = map
+            .trace(Vector3::new(10.0, 0.0, 1.0), Vector3::new(40.0, 0.0, 1.0))
+            .unwrap();
 
         assert!(near(ramp.distance, 8.0));
         assert!(near(ramp.position.x, 18.0));
@@ -1953,7 +2143,14 @@ mod tests {
         let source = dir.join("box.map");
         let mut map = CompiledMap::worldspawn();
 
-        assert_eq!(map.add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(2.0, 3.0, 4.0), "crate"), Some(0));
+        assert_eq!(
+            map.add_box(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(2.0, 3.0, 4.0),
+                "crate"
+            ),
+            Some(0)
+        );
         assert!(map.translate_brush(0, Vector3::new(5.0, 0.0, 0.0)));
 
         let compiled = map.save_source(&source).unwrap();
@@ -1962,13 +2159,21 @@ mod tests {
 
         let mut brushes = BrushMap::new();
         brushes.load_file(source.to_str().unwrap()).unwrap();
-        let hit = brushes.trace(Vector3::new(0.0, 1.0, 1.0), Vector3::new(20.0, 1.0, 1.0)).unwrap();
+        let hit = brushes
+            .trace(Vector3::new(0.0, 1.0, 1.0), Vector3::new(20.0, 1.0, 1.0))
+            .unwrap();
 
         assert!(near(hit.position.x, 5.0));
         assert!(map.remove_brush(0));
         assert_eq!(map.brush_count(), 0);
         assert!(!map.remove_brush(0));
-        assert!(map.add_box(Vector3::new(1.0, 1.0, 1.0), Vector3::new(1.0, 2.0, 2.0), "crate").is_none());
+        assert!(map
+            .add_box(
+                Vector3::new(1.0, 1.0, 1.0),
+                Vector3::new(1.0, 2.0, 2.0),
+                "crate"
+            )
+            .is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

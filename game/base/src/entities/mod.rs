@@ -1,11 +1,11 @@
 pub mod base;
-pub mod player;
-pub mod list;
-pub mod handle;
 pub mod context;
+pub mod handle;
+pub mod list;
+pub mod player;
 
 pub use base::DynEntity;
-pub use player::Player;
-pub use list::EntityList;
+pub use context::{EntityCommand, FrameInfo, TickContext};
 pub use handle::EntityHandle;
-pub use context::{TickContext, EntityCommand, FrameInfo};
+pub use list::EntityList;
+pub use player::Player;

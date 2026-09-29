@@ -68,7 +68,15 @@ impl FlyCamera {
         }
     }
 
-    pub fn fly_facing(&mut self, yaw: f32, wish_forward: f32, wish_right: f32, wish_up: f32, dt: f32, speed: f32) {
+    pub fn fly_facing(
+        &mut self,
+        yaw: f32,
+        wish_forward: f32,
+        wish_right: f32,
+        wish_up: f32,
+        dt: f32,
+        speed: f32,
+    ) {
         let fx = yaw.cos();
         let fy = yaw.sin();
         let rx = fy;

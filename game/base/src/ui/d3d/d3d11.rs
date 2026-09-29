@@ -7,11 +7,13 @@ use windows::Win32::Graphics::Dxgi::*;
 use winit::event_loop::EventLoop;
 use winit::window::Window as WinitWindow;
 
-use crate::ui::d3d::draw::{bytes_of, grow, open_desktop, push_outline, push_rect, Desktop, TextFrame};
+use crate::ui::d3d::draw::{
+    bytes_of, grow, open_desktop, push_outline, push_rect, Desktop, TextFrame,
+};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
-use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::voxel::SceneView;
+use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::Color;
 
@@ -173,7 +175,8 @@ impl D3D11Window {
         }
 
         unsafe {
-            self.context.OMSetRenderTargets(None, None::<&ID3D11DepthStencilView>);
+            self.context
+                .OMSetRenderTargets(None, None::<&ID3D11DepthStencilView>);
             self.context.Flush();
         }
 
@@ -182,7 +185,13 @@ impl D3D11Window {
         self.depth = None;
         unsafe {
             self.swap
-                .ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
+                .ResizeBuffers(
+                    0,
+                    width,
+                    height,
+                    DXGI_FORMAT_UNKNOWN,
+                    DXGI_SWAP_CHAIN_FLAG(0),
+                )
                 .map_err(|err| err.to_string())?;
         }
         let (rtv, depth, dsv) = targets(&self.device, &self.swap, width, height)?;
@@ -198,7 +207,13 @@ impl D3D11Window {
     fn upload_mesh(&mut self, vertices: &[f32]) -> Result<(), String> {
         let bytes = bytes_of(vertices);
         let buffer = self.mesh.take();
-        self.mesh = Some(write_dynamic(&self.device, &self.context, buffer, bytes, 24)?);
+        self.mesh = Some(write_dynamic(
+            &self.device,
+            &self.context,
+            buffer,
+            bytes,
+            24,
+        )?);
 
         Ok(())
     }
@@ -246,7 +261,10 @@ impl Window for D3D11Window {
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let _ = self.desktop.window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        let _ = self
+            .desktop
+            .window
+            .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
 
         if let Err(err) = self.resize(w, h) {
             println!("[gfx] d3d11 resize {err}");
@@ -294,7 +312,15 @@ impl Window for D3D11Window {
         push_rect(&mut self.ui, x, y, w, h, color.as_rgba_f32());
     }
 
-    fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
+    fn draw_outlined_rectangle(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    ) {
         push_outline(&mut self.ui, x, y, w, h, thickness, color.as_rgba_f32());
     }
 
@@ -335,8 +361,20 @@ impl Window for D3D11Window {
             return;
         }
 
-        let ui = write_dynamic(&self.device, &self.context, self.ui_buf.take(), bytes_of(&self.ui), 24);
-        let text = write_dynamic(&self.device, &self.context, self.text_buf.take(), bytes_of(&self.text.verts), 32);
+        let ui = write_dynamic(
+            &self.device,
+            &self.context,
+            self.ui_buf.take(),
+            bytes_of(&self.ui),
+            24,
+        );
+        let text = write_dynamic(
+            &self.device,
+            &self.context,
+            self.text_buf.take(),
+            bytes_of(&self.text.verts),
+            32,
+        );
         self.ui_buf = ui.ok();
         self.text_buf = text.ok();
         let _ = write_constants(&self.context, &self.view_cb, &self.view);
@@ -347,8 +385,14 @@ impl Window for D3D11Window {
 
         unsafe {
             self.context.OMSetRenderTargets(Some(&[Some(rtv)]), &dsv);
-            self.context.ClearRenderTargetView(self.rtv.as_ref().unwrap(), &self.clear);
-            self.context.ClearDepthStencilView(self.dsv.as_ref().unwrap(), D3D11_CLEAR_DEPTH.0, 1.0, 0);
+            self.context
+                .ClearRenderTargetView(self.rtv.as_ref().unwrap(), &self.clear);
+            self.context.ClearDepthStencilView(
+                self.dsv.as_ref().unwrap(),
+                D3D11_CLEAR_DEPTH.0,
+                1.0,
+                0,
+            );
             self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                 TopLeftX: 0.0,
                 TopLeftY: 0.0,
@@ -357,7 +401,8 @@ impl Window for D3D11Window {
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             }]));
-            self.context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            self.context
+                .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         }
 
         if self.draw_mesh {
@@ -447,9 +492,11 @@ impl D3D11Window {
             let matrix = view_proj(&frame.views[idx]);
             let _ = write_constants(&self.context, &self.view_cb, &matrix);
             unsafe {
-                self.context.OMSetRenderTargets(Some(&[Some(rtv[idx].clone())]), &dsv[idx]);
+                self.context
+                    .OMSetRenderTargets(Some(&[Some(rtv[idx].clone())]), &dsv[idx]);
                 self.context.ClearRenderTargetView(&rtv[idx], &self.clear);
-                self.context.ClearDepthStencilView(&dsv[idx], D3D11_CLEAR_DEPTH.0, 1.0, 0);
+                self.context
+                    .ClearDepthStencilView(&dsv[idx], D3D11_CLEAR_DEPTH.0, 1.0, 0);
                 self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                     TopLeftX: 0.0,
                     TopLeftY: 0.0,
@@ -458,7 +505,8 @@ impl D3D11Window {
                     MinDepth: 0.0,
                     MaxDepth: 1.0,
                 }]));
-                self.context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                self.context
+                    .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             }
 
             if self.draw_mesh {
@@ -481,7 +529,9 @@ impl D3D11Window {
             idx += 1;
         }
 
-        unsafe { self.context.Flush(); }
+        unsafe {
+            self.context.Flush();
+        }
 
         if let Some(headset) = self.vr.as_mut() {
             headset.submit_d3d11(0, color[0].as_raw());
@@ -550,17 +600,26 @@ impl D3D11Window {
 
         unsafe {
             self.context.IASetInputLayout(layout);
-            self.context.IASetVertexBuffers(0, 1, Some(buffers.as_ptr()), Some(&stride), Some(&offset));
+            self.context.IASetVertexBuffers(
+                0,
+                1,
+                Some(buffers.as_ptr()),
+                Some(&stride),
+                Some(&offset),
+            );
             self.context.VSSetShader(vs, None);
             self.context.PSSetShader(ps, None);
-            self.context.VSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
+            self.context
+                .VSSetConstantBuffers(0, Some(&[Some(constants.clone())]));
             self.context.OMSetDepthStencilState(depth, 0);
-            self.context.OMSetBlendState(blend, Some(&[0.0, 0.0, 0.0, 0.0]), u32::MAX);
+            self.context
+                .OMSetBlendState(blend, Some(&[0.0, 0.0, 0.0, 0.0]), u32::MAX);
             self.context.RSSetState(raster);
 
             if let Some(texture) = texture {
                 self.context.PSSetShaderResources(0, Some(&[Some(texture)]));
-                self.context.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+                self.context
+                    .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             }
 
             self.context.Draw(vertices, 0);
@@ -568,7 +627,11 @@ impl D3D11Window {
     }
 }
 
-fn device_swap(hwnd: HWND, width: u32, height: u32) -> Result<(ID3D11Device, ID3D11DeviceContext, IDXGISwapChain), String> {
+fn device_swap(
+    hwnd: HWND,
+    width: u32,
+    height: u32,
+) -> Result<(ID3D11Device, ID3D11DeviceContext, IDXGISwapChain), String> {
     let levels = [
         D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1,
@@ -617,12 +680,18 @@ fn swap_desc(hwnd: HWND, width: u32, height: u32) -> DXGI_SWAP_CHAIN_DESC {
         BufferDesc: DXGI_MODE_DESC {
             Width: width,
             Height: height,
-            RefreshRate: DXGI_RATIONAL { Numerator: 0, Denominator: 1 },
+            RefreshRate: DXGI_RATIONAL {
+                Numerator: 0,
+                Denominator: 1,
+            },
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
             ScanlineOrdering: DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
             Scaling: DXGI_MODE_SCALING_UNSPECIFIED,
         },
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
         BufferCount: 1,
         OutputWindow: hwnd,
@@ -638,47 +707,77 @@ impl Drop for D3D11Window {
     }
 }
 
-fn eye_color(device: &ID3D11Device, width: u32, height: u32) -> Result<(ID3D11Texture2D, ID3D11RenderTargetView), String> {
+fn eye_color(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<(ID3D11Texture2D, ID3D11RenderTargetView), String> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
         Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         Usage: D3D11_USAGE_DEFAULT,
         BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
         CPUAccessFlags: 0,
         MiscFlags: D3D11_RESOURCE_MISC_SHARED.0 as u32,
     };
     let mut texture = None;
-    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)).map_err(|err| err.to_string())?; }
+    unsafe {
+        device
+            .CreateTexture2D(&desc, None, Some(&mut texture))
+            .map_err(|err| err.to_string())?;
+    }
     let texture = texture.ok_or_else(|| "vr color".to_string())?;
     let mut view = None;
-    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut view)).map_err(|err| err.to_string())?; }
+    unsafe {
+        device
+            .CreateRenderTargetView(&texture, None, Some(&mut view))
+            .map_err(|err| err.to_string())?;
+    }
     let view = view.ok_or_else(|| "vr color view".to_string())?;
 
     Ok((texture, view))
 }
 
-fn eye_depth(device: &ID3D11Device, width: u32, height: u32) -> Result<(ID3D11Texture2D, ID3D11DepthStencilView), String> {
+fn eye_depth(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<(ID3D11Texture2D, ID3D11DepthStencilView), String> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
         Format: DXGI_FORMAT_D32_FLOAT,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         Usage: D3D11_USAGE_DEFAULT,
         BindFlags: D3D11_BIND_DEPTH_STENCIL.0 as u32,
         CPUAccessFlags: 0,
         MiscFlags: 0,
     };
     let mut texture = None;
-    unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)).map_err(|err| err.to_string())?; }
+    unsafe {
+        device
+            .CreateTexture2D(&desc, None, Some(&mut texture))
+            .map_err(|err| err.to_string())?;
+    }
     let texture = texture.ok_or_else(|| "vr depth".to_string())?;
     let mut view = None;
-    unsafe { device.CreateDepthStencilView(&texture, None, Some(&mut view)).map_err(|err| err.to_string())?; }
+    unsafe {
+        device
+            .CreateDepthStencilView(&texture, None, Some(&mut view))
+            .map_err(|err| err.to_string())?;
+    }
     let view = view.ok_or_else(|| "vr depth view".to_string())?;
 
     Ok((texture, view))
@@ -689,7 +788,14 @@ fn targets(
     swap: &IDXGISwapChain,
     width: u32,
     height: u32,
-) -> Result<(ID3D11RenderTargetView, ID3D11Texture2D, ID3D11DepthStencilView), String> {
+) -> Result<
+    (
+        ID3D11RenderTargetView,
+        ID3D11Texture2D,
+        ID3D11DepthStencilView,
+    ),
+    String,
+> {
     let back: ID3D11Texture2D = unsafe { swap.GetBuffer(0).map_err(|err| err.to_string())? };
     let mut rtv = None;
     unsafe {
@@ -705,7 +811,10 @@ fn targets(
         MipLevels: 1,
         ArraySize: 1,
         Format: DXGI_FORMAT_D32_FLOAT,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         Usage: D3D11_USAGE_DEFAULT,
         BindFlags: D3D11_BIND_DEPTH_STENCIL.0 as u32,
         CPUAccessFlags: 0,
@@ -728,29 +837,47 @@ fn targets(
     Ok((rtv, depth, dsv))
 }
 
-fn vertex_shader(device: &ID3D11Device, blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> Result<ID3D11VertexShader, String> {
+fn vertex_shader(
+    device: &ID3D11Device,
+    blob: &windows::Win32::Graphics::Direct3D::ID3DBlob,
+) -> Result<ID3D11VertexShader, String> {
     let mut shader = None;
     unsafe {
         device
-            .CreateVertexShader(blob_bytes(blob), None::<&ID3D11ClassLinkage>, Some(&mut shader))
+            .CreateVertexShader(
+                blob_bytes(blob),
+                None::<&ID3D11ClassLinkage>,
+                Some(&mut shader),
+            )
             .map_err(|err| err.to_string())?;
     }
 
     shader.ok_or_else(|| "vertex shader".to_string())
 }
 
-fn pixel_shader(device: &ID3D11Device, blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> Result<ID3D11PixelShader, String> {
+fn pixel_shader(
+    device: &ID3D11Device,
+    blob: &windows::Win32::Graphics::Direct3D::ID3DBlob,
+) -> Result<ID3D11PixelShader, String> {
     let mut shader = None;
     unsafe {
         device
-            .CreatePixelShader(blob_bytes(blob), None::<&ID3D11ClassLinkage>, Some(&mut shader))
+            .CreatePixelShader(
+                blob_bytes(blob),
+                None::<&ID3D11ClassLinkage>,
+                Some(&mut shader),
+            )
             .map_err(|err| err.to_string())?;
     }
 
     shader.ok_or_else(|| "pixel shader".to_string())
 }
 
-fn input_layout(device: &ID3D11Device, blob: &windows::Win32::Graphics::Direct3D::ID3DBlob, elements: &[D3D11_INPUT_ELEMENT_DESC]) -> Result<ID3D11InputLayout, String> {
+fn input_layout(
+    device: &ID3D11Device,
+    blob: &windows::Win32::Graphics::Direct3D::ID3DBlob,
+    elements: &[D3D11_INPUT_ELEMENT_DESC],
+) -> Result<ID3D11InputLayout, String> {
     let mut layout = None;
     unsafe {
         device
@@ -761,7 +888,11 @@ fn input_layout(device: &ID3D11Device, blob: &windows::Win32::Graphics::Direct3D
     layout.ok_or_else(|| "input layout".to_string())
 }
 
-fn element(name: windows::core::PCSTR, format: DXGI_FORMAT, offset: u32) -> D3D11_INPUT_ELEMENT_DESC {
+fn element(
+    name: windows::core::PCSTR,
+    format: DXGI_FORMAT,
+    offset: u32,
+) -> D3D11_INPUT_ELEMENT_DESC {
     D3D11_INPUT_ELEMENT_DESC {
         SemanticName: name,
         SemanticIndex: 0,
@@ -806,7 +937,9 @@ fn constant_buffer(device: &ID3D11Device, bytes: u32) -> Result<ID3D11Buffer, St
     };
     let mut buffer = None;
     unsafe {
-        device.CreateBuffer(&desc, None, Some(&mut buffer)).map_err(|err| err.to_string())?;
+        device
+            .CreateBuffer(&desc, None, Some(&mut buffer))
+            .map_err(|err| err.to_string())?;
     }
 
     buffer.ok_or_else(|| "constant buffer".to_string())
@@ -823,7 +956,9 @@ fn vertex_buffer(device: &ID3D11Device, bytes: u32) -> Result<ID3D11Buffer, Stri
     };
     let mut buffer = None;
     unsafe {
-        device.CreateBuffer(&desc, None, Some(&mut buffer)).map_err(|err| err.to_string())?;
+        device
+            .CreateBuffer(&desc, None, Some(&mut buffer))
+            .map_err(|err| err.to_string())?;
     }
 
     buffer.ok_or_else(|| "vertex buffer".to_string())
@@ -858,7 +993,13 @@ fn write_dynamic(
     unsafe {
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         context
-            .Map(&buffer.buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))
+            .Map(
+                &buffer.buffer,
+                0,
+                D3D11_MAP_WRITE_DISCARD,
+                0,
+                Some(&mut mapped),
+            )
             .map_err(|err| err.to_string())?;
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.pData as *mut u8, bytes.len());
         context.Unmap(&buffer.buffer, 0);
@@ -867,7 +1008,11 @@ fn write_dynamic(
     Ok(buffer)
 }
 
-fn write_constants(context: &ID3D11DeviceContext, buffer: &ID3D11Buffer, values: &[f32; 16]) -> Result<(), String> {
+fn write_constants(
+    context: &ID3D11DeviceContext,
+    buffer: &ID3D11Buffer,
+    values: &[f32; 16],
+) -> Result<(), String> {
     let bytes = bytes_of(values);
     unsafe {
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
@@ -881,14 +1026,21 @@ fn write_constants(context: &ID3D11DeviceContext, buffer: &ID3D11Buffer, values:
     Ok(())
 }
 
-fn atlas_texture(device: &ID3D11Device, width: u32, height: u32) -> Result<ID3D11Texture2D, String> {
+fn atlas_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<ID3D11Texture2D, String> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width.max(1),
         Height: height.max(1),
         MipLevels: 1,
         ArraySize: 1,
         Format: DXGI_FORMAT_R8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         Usage: D3D11_USAGE_DEFAULT,
         BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
         CPUAccessFlags: 0,
@@ -896,13 +1048,18 @@ fn atlas_texture(device: &ID3D11Device, width: u32, height: u32) -> Result<ID3D1
     };
     let mut texture = None;
     unsafe {
-        device.CreateTexture2D(&desc, None, Some(&mut texture)).map_err(|err| err.to_string())?;
+        device
+            .CreateTexture2D(&desc, None, Some(&mut texture))
+            .map_err(|err| err.to_string())?;
     }
 
     texture.ok_or_else(|| "atlas".to_string())
 }
 
-fn atlas_view(device: &ID3D11Device, texture: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView, String> {
+fn atlas_view(
+    device: &ID3D11Device,
+    texture: &ID3D11Texture2D,
+) -> Result<ID3D11ShaderResourceView, String> {
     let mut desc = D3D11_SHADER_RESOURCE_VIEW_DESC::default();
     desc.Format = DXGI_FORMAT_R8_UNORM;
     desc.ViewDimension = D3D_SRV_DIMENSION_TEXTURE2D;
@@ -935,7 +1092,9 @@ fn sampler_state(device: &ID3D11Device) -> Result<ID3D11SamplerState, String> {
     };
     let mut sampler = None;
     unsafe {
-        device.CreateSamplerState(&desc, Some(&mut sampler)).map_err(|err| err.to_string())?;
+        device
+            .CreateSamplerState(&desc, Some(&mut sampler))
+            .map_err(|err| err.to_string())?;
     }
 
     sampler.ok_or_else(|| "sampler".to_string())
@@ -950,8 +1109,16 @@ fn depth_state(device: &ID3D11Device, enabled: bool) -> Result<ID3D11DepthStenci
     };
     let desc = D3D11_DEPTH_STENCIL_DESC {
         DepthEnable: enabled.into(),
-        DepthWriteMask: if enabled { D3D11_DEPTH_WRITE_MASK_ALL } else { D3D11_DEPTH_WRITE_MASK_ZERO },
-        DepthFunc: if enabled { D3D11_COMPARISON_LESS } else { D3D11_COMPARISON_ALWAYS },
+        DepthWriteMask: if enabled {
+            D3D11_DEPTH_WRITE_MASK_ALL
+        } else {
+            D3D11_DEPTH_WRITE_MASK_ZERO
+        },
+        DepthFunc: if enabled {
+            D3D11_COMPARISON_LESS
+        } else {
+            D3D11_COMPARISON_ALWAYS
+        },
         StencilEnable: false.into(),
         StencilReadMask: 0,
         StencilWriteMask: 0,
@@ -960,7 +1127,9 @@ fn depth_state(device: &ID3D11Device, enabled: bool) -> Result<ID3D11DepthStenci
     };
     let mut state = None;
     unsafe {
-        device.CreateDepthStencilState(&desc, Some(&mut state)).map_err(|err| err.to_string())?;
+        device
+            .CreateDepthStencilState(&desc, Some(&mut state))
+            .map_err(|err| err.to_string())?;
     }
 
     state.ok_or_else(|| "depth state".to_string())
@@ -980,13 +1149,18 @@ fn blend_state(device: &ID3D11Device, enabled: bool) -> Result<ID3D11BlendState,
     };
     let mut state = None;
     unsafe {
-        device.CreateBlendState(&desc, Some(&mut state)).map_err(|err| err.to_string())?;
+        device
+            .CreateBlendState(&desc, Some(&mut state))
+            .map_err(|err| err.to_string())?;
     }
 
     state.ok_or_else(|| "blend state".to_string())
 }
 
-fn rasterizer(device: &ID3D11Device, cull: D3D11_CULL_MODE) -> Result<ID3D11RasterizerState, String> {
+fn rasterizer(
+    device: &ID3D11Device,
+    cull: D3D11_CULL_MODE,
+) -> Result<ID3D11RasterizerState, String> {
     let desc = D3D11_RASTERIZER_DESC {
         FillMode: D3D11_FILL_SOLID,
         CullMode: cull,
@@ -1001,7 +1175,9 @@ fn rasterizer(device: &ID3D11Device, cull: D3D11_CULL_MODE) -> Result<ID3D11Rast
     };
     let mut state = None;
     unsafe {
-        device.CreateRasterizerState(&desc, Some(&mut state)).map_err(|err| err.to_string())?;
+        device
+            .CreateRasterizerState(&desc, Some(&mut state))
+            .map_err(|err| err.to_string())?;
     }
 
     state.ok_or_else(|| "rasterizer".to_string())

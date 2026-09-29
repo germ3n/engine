@@ -1,10 +1,10 @@
 #[cfg(not(target_os = "ios"))]
 use crate::ui::opengl::OpenGLWindow;
+use crate::ui::voxel::SceneView;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::vulkan::VulkanWindow;
 use crate::ui::window::Window;
 use crate::ui::Color;
-use crate::ui::voxel::SceneView;
 
 pub enum GfxWindow {
     #[cfg(not(target_os = "ios"))]
@@ -175,19 +175,30 @@ impl Window for GfxWindow {
     }
 
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
-        each_window!(self, |window| window.draw_colored_mesh(vertices, revision, view))
+        each_window!(self, |window| window
+            .draw_colored_mesh(vertices, revision, view))
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
         each_window!(self, |window| window.draw_rectangle(x, y, w, h, color))
     }
 
-    fn draw_outlined_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, thickness: f32, color: Color) {
-        each_window!(self, |window| window.draw_outlined_rectangle(x, y, w, h, thickness, color))
+    fn draw_outlined_rectangle(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: Color,
+    ) {
+        each_window!(self, |window| window
+            .draw_outlined_rectangle(x, y, w, h, thickness, color))
     }
 
     fn draw_text(&mut self, font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
-        each_window!(self, |window| window.draw_text(font, text, x, y, scale, color))
+        each_window!(self, |window| window
+            .draw_text(font, text, x, y, scale, color))
     }
 
     fn render_text(&mut self) {

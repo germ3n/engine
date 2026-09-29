@@ -54,7 +54,12 @@ pub struct Headset {
     warned: bool,
 }
 
-pub fn connect(slot: &mut Option<Headset>, failed: &mut bool, enabled: bool, view: &SceneView) -> Option<EyeViews> {
+pub fn connect(
+    slot: &mut Option<Headset>,
+    failed: &mut bool,
+    enabled: bool,
+    view: &SceneView,
+) -> Option<EyeViews> {
     if !enabled {
         return None;
     }
@@ -157,7 +162,10 @@ impl Headset {
             wait_poses,
             submit,
             handoff_fn,
-            input: VrInput { active: true, ..VrInput::default() },
+            input: VrInput {
+                active: true,
+                ..VrInput::default()
+            },
             anchor: None,
             submitted: false,
             warned: false,
@@ -202,10 +210,21 @@ impl Headset {
             idx += 1;
         }
 
-        Some(EyeViews { views, width, height })
+        Some(EyeViews {
+            views,
+            width,
+            height,
+        })
     }
 
-    fn eye_view(&self, scene: &SceneView, head: &[[f32; 4]; 3], anchor: [f32; 3], yaw: f32, eye: i32) -> SceneView {
+    fn eye_view(
+        &self,
+        scene: &SceneView,
+        head: &[[f32; 4]; 3],
+        anchor: [f32; 3],
+        yaw: f32,
+        eye: i32,
+    ) -> SceneView {
         let mut eye_to_head = [0.0; 12];
         unsafe { vr_eye_to_head(self.eye_to_head, eye, eye_to_head.as_mut_ptr()) };
         let eye_m = mul34(*head, rows(&eye_to_head));
@@ -217,7 +236,16 @@ impl Headset {
         let mut right = 0.0;
         let mut top = 0.0;
         let mut bottom = 0.0;
-        unsafe { vr_projection_raw(self.projection_raw, eye, &mut left, &mut right, &mut top, &mut bottom) };
+        unsafe {
+            vr_projection_raw(
+                self.projection_raw,
+                eye,
+                &mut left,
+                &mut right,
+                &mut top,
+                &mut bottom,
+            )
+        };
         let forward = yaw_rotate(yaw, to_engine(neg(column(&eye_m, 2))));
         let up = yaw_rotate(yaw, to_engine(column(&eye_m, 1)));
 
@@ -314,7 +342,10 @@ fn registry_path() -> Option<std::path::PathBuf> {
     {
         let home = std::env::var_os("HOME")?;
 
-        return Some(std::path::PathBuf::from(home).join("Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath"));
+        return Some(
+            std::path::PathBuf::from(home)
+                .join("Library/Application Support/OpenVR/.openvr/openvrpaths.vrpath"),
+        );
     }
 
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -346,7 +377,8 @@ pub fn vulkan_instance_extensions() -> Vec<String> {
 
         return Vec::new();
     };
-    let names = read_vulkan_extensions(|buf, len| unsafe { vr_vulkan_instance_extensions(func, buf, len) });
+    let names =
+        read_vulkan_extensions(|buf, len| unsafe { vr_vulkan_instance_extensions(func, buf, len) });
     unsafe { VR_ShutdownInternal() };
 
     names
@@ -361,7 +393,9 @@ pub fn vulkan_device_extensions(physical: *mut c_void) -> Vec<String> {
 
         return Vec::new();
     };
-    let names = read_vulkan_extensions(|buf, len| unsafe { vr_vulkan_device_extensions(func, physical, buf, len) });
+    let names = read_vulkan_extensions(|buf, len| unsafe {
+        vr_vulkan_device_extensions(func, physical, buf, len)
+    });
     unsafe { VR_ShutdownInternal() };
 
     names
@@ -393,7 +427,9 @@ fn read_vulkan_extensions(query: impl FnOnce(*mut i8, u32) -> u32) -> Vec<String
 
     let text = String::from_utf8_lossy(&buf[..end]);
 
-    text.split_whitespace().map(|name| name.to_string()).collect()
+    text.split_whitespace()
+        .map(|name| name.to_string())
+        .collect()
 }
 
 fn interface(name: &[u8]) -> Option<*mut c_void> {
@@ -440,11 +476,16 @@ fn mul34(parent: [[f32; 4]; 3], child: [[f32; 4]; 3]) -> [[f32; 4]; 3] {
         let mut col = 0;
 
         while col < 3 {
-            out[row][col] = parent[row][0] * child[0][col] + parent[row][1] * child[1][col] + parent[row][2] * child[2][col];
+            out[row][col] = parent[row][0] * child[0][col]
+                + parent[row][1] * child[1][col]
+                + parent[row][2] * child[2][col];
             col += 1;
         }
 
-        out[row][3] = parent[row][0] * child[0][3] + parent[row][1] * child[1][3] + parent[row][2] * child[2][3] + parent[row][3];
+        out[row][3] = parent[row][0] * child[0][3]
+            + parent[row][1] * child[1][3]
+            + parent[row][2] * child[2][3]
+            + parent[row][3];
         row += 1;
     }
 
@@ -463,7 +504,11 @@ fn yaw_rotate(yaw: f32, value: [f32; 3]) -> [f32; 3] {
     let c = yaw.cos();
     let s = yaw.sin();
 
-    [c * value[0] - s * value[1], s * value[0] + c * value[1], value[2]]
+    [
+        c * value[0] - s * value[1],
+        s * value[0] + c * value[1],
+        value[2],
+    ]
 }
 
 fn planar_yaw(forward: [f32; 3]) -> f32 {
@@ -513,10 +558,22 @@ fn projection(view: &SceneView) -> [f32; 16] {
     let nf = 1.0 / (near - far);
 
     [
-        2.0 * near / width, 0.0, 0.0, 0.0,
-        0.0, 2.0 * near / height, 0.0, 0.0,
-        (right + left) / width, (top + bottom) / height, (far + near) * nf, -1.0,
-        0.0, 0.0, (2.0 * far * near) * nf, 0.0,
+        2.0 * near / width,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        2.0 * near / height,
+        0.0,
+        0.0,
+        (right + left) / width,
+        (top + bottom) / height,
+        (far + near) * nf,
+        -1.0,
+        0.0,
+        0.0,
+        (2.0 * far * near) * nf,
+        0.0,
     ]
 }
 
@@ -527,10 +584,22 @@ fn look_forward(eye: [f32; 3], forward: [f32; 3], up: [f32; 3]) -> [f32; 16] {
     let yaxis = cross(zaxis, xaxis);
 
     [
-        xaxis[0], yaxis[0], zaxis[0], 0.0,
-        xaxis[1], yaxis[1], zaxis[1], 0.0,
-        xaxis[2], yaxis[2], zaxis[2], 0.0,
-        -dot(xaxis, eye), -dot(yaxis, eye), -dot(zaxis, eye), 1.0,
+        xaxis[0],
+        yaxis[0],
+        zaxis[0],
+        0.0,
+        xaxis[1],
+        yaxis[1],
+        zaxis[1],
+        0.0,
+        xaxis[2],
+        yaxis[2],
+        zaxis[2],
+        0.0,
+        -dot(xaxis, eye),
+        -dot(yaxis, eye),
+        -dot(zaxis, eye),
+        1.0,
     ]
 }
 
@@ -584,17 +653,34 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 extern "C" {
     fn vr_target_size(func: *mut c_void, width: *mut u32, height: *mut u32);
-    fn vr_projection_raw(func: *mut c_void, eye: i32, left: *mut f32, right: *mut f32, top: *mut f32, bottom: *mut f32);
+    fn vr_projection_raw(
+        func: *mut c_void,
+        eye: i32,
+        left: *mut f32,
+        right: *mut f32,
+        top: *mut f32,
+        bottom: *mut f32,
+    );
     fn vr_eye_to_head(func: *mut c_void, eye: i32, matrix: *mut f32);
     fn vr_role_index(func: *mut c_void, role: i32) -> u32;
     fn vr_controller_axis(func: *mut c_void, index: u32, x: *mut f32, y: *mut f32) -> i32;
     fn vr_set_tracking_space(func: *mut c_void, origin: i32);
     fn vr_wait_hmd(func: *mut c_void, matrix: *mut f32, valid: *mut i32) -> i32;
     fn vr_submit(func: *mut c_void, eye: i32, handle: *mut c_void, kind: i32) -> i32;
-    fn vr_submit_d3d12(func: *mut c_void, eye: i32, resource: *mut c_void, queue: *mut c_void) -> i32;
+    fn vr_submit_d3d12(
+        func: *mut c_void,
+        eye: i32,
+        resource: *mut c_void,
+        queue: *mut c_void,
+    ) -> i32;
     fn vr_handoff(func: *mut c_void);
     fn vr_vulkan_instance_extensions(func: *mut c_void, value: *mut i8, size: u32) -> u32;
-    fn vr_vulkan_device_extensions(func: *mut c_void, physical: *mut c_void, value: *mut i8, size: u32) -> u32;
+    fn vr_vulkan_device_extensions(
+        func: *mut c_void,
+        physical: *mut c_void,
+        value: *mut i8,
+        size: u32,
+    ) -> u32;
     fn VR_InitInternal(error: *mut i32, app_type: i32) -> u32;
     fn VR_ShutdownInternal();
     fn VR_GetGenericInterface(name: *const i8, error: *mut i32) -> *mut c_void;

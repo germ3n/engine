@@ -1,7 +1,7 @@
-use std::net::UdpSocket;
-use std::net::SocketAddr;
 use crate::network::packet::MAX_DATAGRAM;
 use crate::network::PacketType;
+use std::net::SocketAddr;
+use std::net::UdpSocket;
 
 pub struct NetworkClient {
     peer: SocketAddr,
@@ -14,7 +14,12 @@ impl NetworkClient {
     pub fn new(addr: SocketAddr) -> Self {
         let socket = UdpSocket::bind(addr).unwrap();
         socket.set_nonblocking(true).unwrap();
-        Self { peer: addr, socket, recv_buf: Vec::with_capacity(MAX_DATAGRAM), steam: false }
+        Self {
+            peer: addr,
+            socket,
+            recv_buf: Vec::with_capacity(MAX_DATAGRAM),
+            steam: false,
+        }
     }
 
     pub fn from_socket(socket: UdpSocket) -> Self {
