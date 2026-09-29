@@ -3,6 +3,7 @@ pub mod server;
 pub mod events;
 pub mod packet;
 pub mod reliable;
+pub mod steam;
 pub mod usermessage;
 
 use std::io::{Read, Write};

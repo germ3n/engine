@@ -68,6 +68,8 @@ pub fn run() {
         return;
     }
 
+    crate::network::steam::startup(cmdargs.connect_lobby, cmdargs.connect.as_deref());
+
     #[cfg(feature = "server")]
     {
         println!("Starting server network loop");

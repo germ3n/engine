@@ -67,6 +67,10 @@ windows = { version = "0.62.2", features = [
 default = ["client", "server"]
 client = []
 server = []
+steam = ["dep:steamworks"]
+
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
+steamworks = { version = "0.13.1", optional = true }
 
 [profile.release]
 opt-level = 3

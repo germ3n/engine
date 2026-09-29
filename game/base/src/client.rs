@@ -1058,8 +1058,14 @@ pub fn client_network_loop(
     } else {
         "0.0.0.0:0"
     };
+    let mut join_gen = crate::network::steam::join_generation();
     let mut client = NetworkClient::new(SocketAddr::from_str(local_addr).unwrap());
-    client.connect(server_addr).expect("Failed to connect to server");
+    if join_gen == 0 {
+        client.connect(server_addr).expect("Failed to connect to server");
+    } else {
+        client.set_steam(true);
+        println!("[cl] joining friend");
+    }
     let mut reliable_chan = ReliableChannel::new();
     let mut state_chan = ReliableChannel::with_stream(STREAM_STATE);
     let mut connected = false;
@@ -1078,6 +1084,37 @@ pub fn client_network_loop(
     let mut unreliable_parts: Vec<BundlePart> = Vec::new();
 
     loop {
+        let gen = crate::network::steam::join_generation();
+        if gen != join_gen {
+            join_gen = gen;
+            if let Some(current) = session {
+                let bytes = wincode::serialize(&PacketType::Disconnect { session: current }).unwrap();
+                let _ = client.send_message(&bytes);
+            }
+
+            if connected {
+                let _ = tx.send(FromServer::Disconnected);
+            }
+
+            client.set_steam(true);
+            connected = false;
+            session = None;
+            generation = None;
+            replace_session = None;
+            challenge_response_bytes = None;
+            unreliable_out = 0;
+            unreliable_in = UnreliableInbox::new();
+            unreliable_assembly = UnreliableAssembly::new();
+            reliable_chan = ReliableChannel::new();
+            state_chan = ReliableChannel::with_stream(STREAM_STATE);
+            local_reliable.clear();
+            unreliable_parts.clear();
+            let _ = client.send_message(&connect_packet(None));
+            last_sent = Instant::now();
+            last_server_seen = Instant::now();
+            println!("[cl] joining friend");
+        }
+
         if shutdown.load(Ordering::Relaxed) {
             if let Some(current) = session {
                 let bytes = wincode::serialize(&PacketType::Disconnect { session: current }).unwrap();

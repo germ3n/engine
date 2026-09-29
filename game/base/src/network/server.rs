@@ -122,6 +122,10 @@ impl NetworkServer {
     }
 
     pub fn poll_packet(&mut self) -> Option<(Result<PacketType, ()>, SocketAddr)> {
+        if let Some((bytes, addr)) = crate::network::steam::pop_host() {
+            return Some((wincode::deserialize(&bytes).map_err(|_| ()), addr));
+        }
+
         if self.recv_buf.len() < MAX_DATAGRAM {
             self.recv_buf.resize(MAX_DATAGRAM, 0);
         }
@@ -257,6 +261,10 @@ impl NetworkServer {
     }
 
     pub fn send_to(&self, addr: SocketAddr, message: &[u8]) -> Result<(), String> {
+        if crate::network::steam::send_host(addr, message) {
+            return Ok(());
+        }
+
         self.socket.send_to(message, addr).map_err(|e| e.to_string())?;
         Ok(())
     }

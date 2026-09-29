@@ -1,4 +1,5 @@
 fn main() {
+    stage_steam();
     compile_bundled_lua();
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
@@ -82,6 +83,82 @@ fn main() {
     }
 
     openvr.compile("openvr_api");
+}
+
+fn stage_steam()
+{
+    if std::env::var("CARGO_FEATURE_STEAM").is_err()
+    {
+        return;
+    }
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let pointer = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_else(|_| "64".to_string());
+    let name = match target_os.as_str()
+    {
+        "windows" if pointer == "64" => "steam_api64.dll",
+        "windows" => "steam_api.dll",
+        "linux" => "libsteam_api.so",
+        "macos" => "libsteam_api.dylib",
+        _ => return,
+    };
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let Some(build_dir) = out_dir.parent().and_then(|path| path.parent()) else
+    {
+        return;
+    };
+
+    let mut source = None;
+    if let Ok(entries) = std::fs::read_dir(build_dir)
+    {
+        for entry in entries.flatten()
+        {
+            let path = entry.path();
+            let file_name = path.file_name().and_then(|text| text.to_str()).unwrap_or("");
+            if !file_name.starts_with("steamworks-sys-")
+            {
+                continue;
+            }
+
+            let candidate = path.join("out").join(name);
+            if candidate.exists()
+            {
+                source = Some(candidate);
+
+                break;
+            }
+        }
+    }
+
+    let Some(source) = source else
+    {
+        println!("cargo:warning=steam library {name} was not found");
+
+        return;
+    };
+
+    let Some(dest_dir) = build_dir.parent() else
+    {
+        return;
+    };
+
+    let dest = dest_dir.join(name);
+    if let Err(err) = std::fs::copy(&source, &dest)
+    {
+        println!("cargo:warning=failed to copy {name}: {err}");
+
+        return;
+    }
+
+    if target_os == "macos"
+    {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
+    }
+
+    if target_os == "linux"
+    {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    }
 }
 
 fn compile_bundled_lua()
