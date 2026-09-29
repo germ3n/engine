@@ -10,16 +10,16 @@ use crate::network::packet::{bundle_part, pack_bundles, split_unreliable, Bundle
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
 
-fn bind_port(port: u16) -> UdpSocket {
+fn bind_port(port: u16) -> Result<UdpSocket, String> {
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        return UdpSocket::bind(format!("0.0.0.0:{port}")).unwrap();
-    }
-
+    let addr = format!("0.0.0.0:{port}");
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        UdpSocket::bind(format!("[::]:{port}")).unwrap()
-    }
+    let addr = format!("[::]:{port}");
+
+    let socket = UdpSocket::bind(&addr).map_err(|err| format!("bind {addr}: {err}"))?;
+    socket.set_nonblocking(true).map_err(|err| format!("bind {addr}: {err}"))?;
+
+    Ok(socket)
 }
 
 pub struct ConnectedClient {
@@ -54,11 +54,10 @@ pub struct NetworkServer {
 }
 
 impl NetworkServer {
-    pub fn new(port: u16, max_clients: u32) -> Self {
-        //let socket = UdpSocket::bind(format!("0.0.0.0:{}", port)).unwrap();
-        let socket = bind_port(port);
-        socket.set_nonblocking(true).unwrap();
-        Self {
+    pub fn new(port: u16, max_clients: u32) -> Result<Self, String> {
+        let socket = bind_port(port)?;
+
+        Ok(Self {
             port,
             max_clients,
             clients: HashMap::new(),
@@ -68,7 +67,7 @@ impl NetworkServer {
             session_counter: 0,
             generations: HashMap::new(),
             unreliable_parts: HashMap::new(),
-        }
+        })
     }
 
     pub fn is_connected(&self, addr: SocketAddr) -> bool {

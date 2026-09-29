@@ -202,10 +202,28 @@ mod live
         {
             let id = text.trim().parse::<u32>().map_err(|_| "ENGINE_STEAM_APPID is not a number".to_string())?;
 
-            return Client::init_app(AppId(id)).map_err(|err| err.to_string());
+            return Client::init_app(AppId(id)).map_err(init_message);
         }
 
-        Client::init().map_err(|err| err.to_string())
+        Client::init().map_err(init_message)
+    }
+
+    fn init_message(err: steamworks::SteamAPIInitError) -> String
+    {
+        match err
+        {
+            steamworks::SteamAPIInitError::FailedGeneric(text)
+            | steamworks::SteamAPIInitError::NoSteamClient(text)
+            | steamworks::SteamAPIInitError::VersionMismatch(text) =>
+            {
+                if text.is_empty()
+                {
+                    return "Steam is not running".to_string();
+                }
+
+                text
+            }
+        }
     }
 
     fn note_lobby(id: u64)

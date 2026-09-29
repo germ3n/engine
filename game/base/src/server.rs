@@ -221,7 +221,13 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
 #[cfg(feature = "server")]
 pub fn server_network_loop(tx: Sender<FromClient>, rx: Receiver<NetSend<ServerToClient>>, mut wake: TcpStream) {
-    let mut server = NetworkServer::new(25400, 128);
+    let mut server = match NetworkServer::new(25400, 128) {
+        Ok(server) => server,
+        Err(err) => {
+            println!("[sv] {err}");
+            std::process::exit(1);
+        }
+    };
 
     loop {
         while let Ok(outgoing) = rx.try_recv() {
