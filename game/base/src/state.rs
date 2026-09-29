@@ -46,6 +46,31 @@ impl<In, Out> GameState<In, Out> {
             )),
         );
 
+        for idx in 0..4 {
+            let left = format!("pad{idx}_deadzone_left");
+            let right = format!("pad{idx}_deadzone_right");
+            cvars.insert(
+                left.clone(),
+                Arc::new(ConVar::new(
+                    &left,
+                    ConVarValue::Float(0.15),
+                    "Left stick deadzone",
+                    Some(false),
+                    Some(false),
+                )),
+            );
+            cvars.insert(
+                right.clone(),
+                Arc::new(ConVar::new(
+                    &right,
+                    ConVarValue::Float(0.15),
+                    "Right stick deadzone",
+                    Some(false),
+                    Some(false),
+                )),
+            );
+        }
+
         let cvars = Arc::new(cvars);
         let script_engine = ScriptEngine::new(realm, tick_interval, cvars.clone());
 

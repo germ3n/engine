@@ -37,7 +37,7 @@ impl HostOps for Sdl2Host {
 
     fn request_redraw(&mut self) {}
 
-    fn gamepad(&mut self, _index: usize) -> GamepadState {
+    fn gamepad(&mut self, _index: usize, _left_deadzone: f32, _right_deadzone: f32) -> GamepadState {
         GamepadState::idle()
     }
 }

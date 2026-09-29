@@ -2,6 +2,8 @@ pub mod convar;
 
 use clap::Parser;
 pub use convar::{ConVar, ConVarValue};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "Base", version = "1.0", about = "An awesome networked game")]
@@ -58,4 +60,23 @@ pub fn get_cmdline_args() -> CliArgs {
 
         return CliArgs::parse_from(processed_args);
     }
+}
+
+pub fn float_cvar(cvars: &HashMap<String, Arc<ConVar>>, name: &str, default: f64) -> f64 {
+    let Some(var) = cvars.get(name) else {
+        return default;
+    };
+
+    match &*var.value.lock().unwrap() {
+        ConVarValue::Float(value) => *value,
+        ConVarValue::Integer(value) => *value as f64,
+        _ => default,
+    }
+}
+
+pub fn pad_deadzones(cvars: &HashMap<String, Arc<ConVar>>, index: usize) -> (f32, f32) {
+    let left = float_cvar(cvars, &format!("pad{index}_deadzone_left"), 0.15).max(0.0) as f32;
+    let right = float_cvar(cvars, &format!("pad{index}_deadzone_right"), 0.15).max(0.0) as f32;
+
+    (left, right)
 }

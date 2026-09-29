@@ -549,7 +549,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     right += vr.move_x;
                 }
 
-                let pad = host.gamepad(0);
+                let (left_dz, right_dz) = crate::console::pad_deadzones(&game.cvars, 0);
+                let pad = host.gamepad(0, left_dz, right_dz);
 
                 if !vr.active {
                     let yaw = pad.look_x * PAD_LOOK * frame_dt;
@@ -1868,15 +1869,3 @@ fn apply_spawn(
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::stick;
-
-    #[test]
-    fn stick_deadzone_drops_a_resting_axis() {
-        assert_eq!(stick(0.1), 0.0);
-        assert_eq!(stick(-0.15), 0.0);
-        assert_eq!(stick(0.5), 0.5);
-        assert_eq!(stick(-1.0), -1.0);
-    }
-}

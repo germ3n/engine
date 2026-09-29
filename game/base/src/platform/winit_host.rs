@@ -265,8 +265,8 @@ impl HostOps for WinitHost {
         }
     }
 
-    fn gamepad(&mut self, index: usize) -> GamepadState {
-        sample_pad(&mut self.pads, index)
+    fn gamepad(&mut self, index: usize, left_deadzone: f32, right_deadzone: f32) -> GamepadState {
+        sample_pad(&mut self.pads, index, left_deadzone, right_deadzone)
     }
 }
 
@@ -479,9 +479,12 @@ fn map_key_code(code: WinitKeyCode) -> Option<KeyCode> {
     })
 }
 
-const PAD_DEADZONE: f32 = 0.15;
-
-fn sample_pad(pads: &mut Option<Gilrs>, index: usize) -> GamepadState {
+fn sample_pad(
+    pads: &mut Option<Gilrs>,
+    index: usize,
+    left_deadzone: f32,
+    right_deadzone: f32,
+) -> GamepadState {
     let Some(pads) = pads.as_mut() else {
         return GamepadState::idle();
     };
@@ -492,8 +495,8 @@ fn sample_pad(pads: &mut Option<Gilrs>, index: usize) -> GamepadState {
         return GamepadState::idle();
     };
 
-    let mut forward = stick(pad.value(Axis::LeftStickY));
-    let mut right = stick(pad.value(Axis::LeftStickX));
+    let mut forward = crate::platform::gamepad::stick(pad.value(Axis::LeftStickY), left_deadzone);
+    let mut right = crate::platform::gamepad::stick(pad.value(Axis::LeftStickX), left_deadzone);
 
     if pad.is_pressed(Button::DPadUp) {
         forward += 1.0;
@@ -514,17 +517,9 @@ fn sample_pad(pads: &mut Option<Gilrs>, index: usize) -> GamepadState {
     GamepadState {
         forward: forward.clamp(-1.0, 1.0),
         right: right.clamp(-1.0, 1.0),
-        look_x: stick(pad.value(Axis::RightStickX)),
-        look_y: stick(pad.value(Axis::RightStickY)),
+        look_x: crate::platform::gamepad::stick(pad.value(Axis::RightStickX), right_deadzone),
+        look_y: crate::platform::gamepad::stick(pad.value(Axis::RightStickY), right_deadzone),
         buttons: pad_buttons(&pad),
-    }
-}
-
-fn stick(value: f32) -> f32 {
-    if value.abs() <= PAD_DEADZONE {
-        0.0
-    } else {
-        value
     }
 }
 
