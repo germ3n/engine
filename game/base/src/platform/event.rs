@@ -119,6 +119,9 @@ pub enum WindowEvent {
         button: MouseButton,
     },
     KeyboardInput(KeyboardInput),
+    TextInput {
+        text: String,
+    },
     Touch(Touch),
     RedrawRequested,
 }

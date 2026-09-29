@@ -177,12 +177,16 @@ impl WinitHost {
                     }
                 }
 
-                let Some(mapped) = map_event(&event) else {
-                    return;
-                };
-
                 let mut control = WinitControl { target };
-                on_event(mapped, &mut self, &mut control);
+                let [first, second] = map_events(&event);
+
+                if let Some(next) = first {
+                    on_event(next, &mut self, &mut control);
+                }
+
+                if let Some(next) = second {
+                    on_event(next, &mut self, &mut control);
+                }
             })
             .unwrap();
     }
@@ -279,61 +283,98 @@ fn build_event_loop() -> Result<EventLoop<()>, String> {
     }
 }
 
-fn map_event(event: &WinitEvent<()>) -> Option<Event> {
+fn map_events(event: &WinitEvent<()>) -> [Option<Event>; 2] {
     match event {
-        WinitEvent::Resumed => Some(Event::Resumed),
-        WinitEvent::Suspended => Some(Event::Suspended),
-        WinitEvent::AboutToWait => Some(Event::AboutToWait),
-        WinitEvent::WindowEvent { event, .. } => map_window_event(event).map(Event::Window),
+        WinitEvent::Resumed => [Some(Event::Resumed), None],
+        WinitEvent::Suspended => [Some(Event::Suspended), None],
+        WinitEvent::AboutToWait => [Some(Event::AboutToWait), None],
+        WinitEvent::WindowEvent { event, .. } => {
+            let [first, second] = map_window_events(event);
+
+            [first.map(Event::Window), second.map(Event::Window)]
+        }
         WinitEvent::DeviceEvent {
             event: WinitDeviceEvent::MouseMotion { delta },
             ..
-        } => Some(Event::Device(DeviceEvent::MouseMotion { delta: *delta })),
-        _ => None,
+        } => [
+            Some(Event::Device(DeviceEvent::MouseMotion { delta: *delta })),
+            None,
+        ],
+        _ => [None, None],
     }
 }
 
-fn map_window_event(event: &WinitWindowEvent) -> Option<WindowEvent> {
+fn map_window_events(event: &WinitWindowEvent) -> [Option<WindowEvent>; 2] {
     match event {
-        WinitWindowEvent::CloseRequested => Some(WindowEvent::CloseRequested),
-        WinitWindowEvent::Resized(size) => Some(WindowEvent::Resized {
-            width: size.width,
-            height: size.height,
-        }),
-        WinitWindowEvent::Focused(focused) => Some(WindowEvent::Focused(*focused)),
-        WinitWindowEvent::ModifiersChanged(next) => {
-            Some(WindowEvent::ModifiersChanged(map_modifiers(next.state())))
-        }
-        WinitWindowEvent::CursorMoved { position, .. } => Some(WindowEvent::CursorMoved {
-            x: position.x,
-            y: position.y,
-        }),
-        WinitWindowEvent::MouseWheel { delta, .. } => Some(WindowEvent::MouseWheel {
-            delta: map_scroll(*delta),
-        }),
-        WinitWindowEvent::MouseInput { state, button, .. } => Some(WindowEvent::MouseInput {
-            state: map_element_state(*state),
-            button: map_mouse_button(*button),
-        }),
+        WinitWindowEvent::CloseRequested => [Some(WindowEvent::CloseRequested), None],
+        WinitWindowEvent::Resized(size) => [
+            Some(WindowEvent::Resized {
+                width: size.width,
+                height: size.height,
+            }),
+            None,
+        ],
+        WinitWindowEvent::Focused(focused) => [Some(WindowEvent::Focused(*focused)), None],
+        WinitWindowEvent::ModifiersChanged(next) => [
+            Some(WindowEvent::ModifiersChanged(map_modifiers(next.state()))),
+            None,
+        ],
+        WinitWindowEvent::CursorMoved { position, .. } => [
+            Some(WindowEvent::CursorMoved {
+                x: position.x,
+                y: position.y,
+            }),
+            None,
+        ],
+        WinitWindowEvent::MouseWheel { delta, .. } => [
+            Some(WindowEvent::MouseWheel {
+                delta: map_scroll(*delta),
+            }),
+            None,
+        ],
+        WinitWindowEvent::MouseInput { state, button, .. } => [
+            Some(WindowEvent::MouseInput {
+                state: map_element_state(*state),
+                button: map_mouse_button(*button),
+            }),
+            None,
+        ],
         WinitWindowEvent::KeyboardInput { event, .. } => {
             let key_code = match event.physical_key {
                 PhysicalKey::Code(code) => map_key_code(code),
                 _ => None,
             };
-
-            Some(WindowEvent::KeyboardInput(KeyboardInput {
+            let input = WindowEvent::KeyboardInput(KeyboardInput {
                 state: map_element_state(event.state),
                 key_code,
                 repeat: event.repeat,
-            }))
+            });
+            let text = if event.state == WinitElementState::Pressed {
+                event.text.as_ref().and_then(|text| {
+                    let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
+
+                    if text.is_empty() {
+                        None
+                    } else {
+                        Some(WindowEvent::TextInput { text })
+                    }
+                })
+            } else {
+                None
+            };
+
+            [Some(input), text]
         }
-        WinitWindowEvent::Touch(touch) => Some(WindowEvent::Touch(Touch {
-            id: touch.id,
-            phase: map_touch_phase(touch.phase),
-            location: (touch.location.x, touch.location.y),
-        })),
-        WinitWindowEvent::RedrawRequested => Some(WindowEvent::RedrawRequested),
-        _ => None,
+        WinitWindowEvent::Touch(touch) => [
+            Some(WindowEvent::Touch(Touch {
+                id: touch.id,
+                phase: map_touch_phase(touch.phase),
+                location: (touch.location.x, touch.location.y),
+            })),
+            None,
+        ],
+        WinitWindowEvent::RedrawRequested => [Some(WindowEvent::RedrawRequested), None],
+        _ => [None, None],
     }
 }
 
