@@ -1,4 +1,5 @@
 use crate::platform::event::Event;
+use crate::platform::gamepad::GamepadState;
 use crate::platform::host::{Control, HostOps};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
@@ -35,4 +36,8 @@ impl HostOps for Sdl2Host {
     fn set_cursor_grabbed(&mut self, _grabbed: bool) {}
 
     fn request_redraw(&mut self) {}
+
+    fn gamepad(&mut self, _index: usize) -> GamepadState {
+        GamepadState::idle()
+    }
 }

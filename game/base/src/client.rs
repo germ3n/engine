@@ -28,7 +28,6 @@ use crate::ui::voxel::FlyCamera;
 use crate::ui::window::Window;
 use crate::ui::Color;
 use core::net::SocketAddr;
-use gilrs::{Axis, Button, Gilrs};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::TcpStream;
 use std::str::FromStr;
@@ -38,7 +37,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const LOOK_SPEED: f32 = 0.0025 * (180.0 / std::f32::consts::PI);
-const PAD_DEADZONE: f32 = 0.15;
 const PAD_LOOK: f32 = 2.2;
 
 struct TickIngress {
@@ -225,15 +223,6 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut attack = false;
     let mut keys = HashSet::new();
     let mut touches = Vec::new();
-    let mut pads = match Gilrs::new() {
-        Ok(pads) => Some(pads),
-        Err(err) => {
-            println!("[pad] {err}");
-
-            None
-        }
-    };
-    let mut active_pad = None;
 
     host.run(move |event, host, control| {
         control.poll();
@@ -560,7 +549,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     right += vr.move_x;
                 }
 
-                let pad = sample_pad(pads.as_mut(), &mut active_pad);
+                let pad = host.gamepad(0);
 
                 if !vr.active {
                     let yaw = pad.look_x * PAD_LOOK * frame_dt;
@@ -796,118 +785,6 @@ fn command_buttons(keys: &HashSet<KeyCode>, attack: bool, pad: InputButtons) -> 
 
     if keys.contains(&KeyCode::AltLeft) || keys.contains(&KeyCode::AltRight) {
         buttons |= InputButtons::IN_WALK;
-    }
-
-    buttons
-}
-
-struct Pad {
-    forward: f32,
-    right: f32,
-    look_x: f32,
-    look_y: f32,
-    buttons: InputButtons,
-}
-
-fn sample_pad(pads: Option<&mut Gilrs>, active: &mut Option<gilrs::GamepadId>) -> Pad {
-    let Some(pads) = pads else {
-        return idle_pad();
-    };
-
-    while let Some(gilrs::Event { id, .. }) = pads.next_event() {
-        *active = Some(id);
-    }
-
-    let chosen = match *active {
-        Some(id) if pads.connected_gamepad(id).is_some() => Some(id),
-        _ => pads.gamepads().next().map(|(id, _)| id),
-    };
-    let Some(id) = chosen else {
-        return idle_pad();
-    };
-    let Some(pad) = pads.connected_gamepad(id) else {
-        return idle_pad();
-    };
-
-    let mut forward = stick(pad.value(Axis::LeftStickY));
-    let mut right = stick(pad.value(Axis::LeftStickX));
-
-    if pad.is_pressed(Button::DPadUp) {
-        forward += 1.0;
-    }
-
-    if pad.is_pressed(Button::DPadDown) {
-        forward -= 1.0;
-    }
-
-    if pad.is_pressed(Button::DPadRight) {
-        right += 1.0;
-    }
-
-    if pad.is_pressed(Button::DPadLeft) {
-        right -= 1.0;
-    }
-
-    Pad {
-        forward: forward.clamp(-1.0, 1.0),
-        right: right.clamp(-1.0, 1.0),
-        look_x: stick(pad.value(Axis::RightStickX)),
-        look_y: stick(pad.value(Axis::RightStickY)),
-        buttons: pad_buttons(&pad),
-    }
-}
-
-fn idle_pad() -> Pad {
-    Pad {
-        forward: 0.0,
-        right: 0.0,
-        look_x: 0.0,
-        look_y: 0.0,
-        buttons: InputButtons::NONE,
-    }
-}
-
-fn stick(value: f32) -> f32 {
-    if value.abs() <= PAD_DEADZONE {
-        0.0
-    } else {
-        value
-    }
-}
-
-fn pad_buttons(pad: &gilrs::Gamepad) -> InputButtons {
-    let mut buttons = InputButtons::NONE;
-
-    if pad.is_pressed(Button::RightTrigger2) {
-        buttons |= InputButtons::IN_ATTACK;
-    }
-
-    if pad.is_pressed(Button::LeftTrigger2) {
-        buttons |= InputButtons::IN_ATTACK2;
-    }
-
-    if pad.is_pressed(Button::West) {
-        buttons |= InputButtons::IN_USE;
-    }
-
-    if pad.is_pressed(Button::RightTrigger) {
-        buttons |= InputButtons::IN_SPRINT;
-    }
-
-    if pad.is_pressed(Button::LeftTrigger) {
-        buttons |= InputButtons::IN_WALK;
-    }
-
-    if pad.is_pressed(Button::LeftThumb) {
-        buttons |= InputButtons::IN_DUCK;
-    }
-
-    if pad.is_pressed(Button::South) {
-        buttons |= InputButtons::IN_JUMP;
-    }
-
-    if pad.is_pressed(Button::East) {
-        buttons |= InputButtons::IN_RELOAD;
     }
 
     buttons

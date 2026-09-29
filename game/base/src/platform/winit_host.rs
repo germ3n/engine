@@ -2,9 +2,12 @@ use crate::platform::event::{
     DeviceEvent, ElementState, Event, KeyCode, KeyboardInput, Modifiers, MouseButton,
     MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
+use crate::platform::gamepad::GamepadState;
 use crate::platform::host::{Control, HostOps};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
+use crate::r#enum::InputButtons;
+use gilrs::{Axis, Button, Gilrs};
 use winit::event::{
     DeviceEvent as WinitDeviceEvent, ElementState as WinitElementState, Event as WinitEvent,
     MouseButton as WinitMouseButton, MouseScrollDelta as WinitMouseScrollDelta,
@@ -97,11 +100,20 @@ pub struct WinitHost {
     event_loop: Option<EventLoop<()>>,
     window: Option<WinitWindow>,
     surface: Option<Surface>,
+    pads: Option<Gilrs>,
 }
 
 impl WinitHost {
     pub fn open() -> Result<Self, String> {
         let event_loop = build_event_loop()?;
+        let pads = match Gilrs::new() {
+            Ok(pads) => Some(pads),
+            Err(err) => {
+                println!("[pad] {err}");
+
+                None
+            }
+        };
 
         #[cfg(target_os = "android")]
         {
@@ -109,6 +121,7 @@ impl WinitHost {
                 event_loop: Some(event_loop),
                 window: None,
                 surface: None,
+                pads,
             });
         }
 
@@ -124,6 +137,7 @@ impl WinitHost {
                 event_loop: Some(event_loop),
                 window: Some(window),
                 surface: Some(surface),
+                pads,
             })
         }
     }
@@ -249,6 +263,10 @@ impl HostOps for WinitHost {
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
+    }
+
+    fn gamepad(&mut self, index: usize) -> GamepadState {
+        sample_pad(&mut self.pads, index)
     }
 }
 
@@ -459,4 +477,91 @@ fn map_key_code(code: WinitKeyCode) -> Option<KeyCode> {
         WinitKeyCode::BracketRight => KeyCode::BracketRight,
         _ => return None,
     })
+}
+
+const PAD_DEADZONE: f32 = 0.15;
+
+fn sample_pad(pads: &mut Option<Gilrs>, index: usize) -> GamepadState {
+    let Some(pads) = pads.as_mut() else {
+        return GamepadState::idle();
+    };
+
+    while pads.next_event().is_some() {}
+
+    let Some((_, pad)) = pads.gamepads().nth(index) else {
+        return GamepadState::idle();
+    };
+
+    let mut forward = stick(pad.value(Axis::LeftStickY));
+    let mut right = stick(pad.value(Axis::LeftStickX));
+
+    if pad.is_pressed(Button::DPadUp) {
+        forward += 1.0;
+    }
+
+    if pad.is_pressed(Button::DPadDown) {
+        forward -= 1.0;
+    }
+
+    if pad.is_pressed(Button::DPadRight) {
+        right += 1.0;
+    }
+
+    if pad.is_pressed(Button::DPadLeft) {
+        right -= 1.0;
+    }
+
+    GamepadState {
+        forward: forward.clamp(-1.0, 1.0),
+        right: right.clamp(-1.0, 1.0),
+        look_x: stick(pad.value(Axis::RightStickX)),
+        look_y: stick(pad.value(Axis::RightStickY)),
+        buttons: pad_buttons(&pad),
+    }
+}
+
+fn stick(value: f32) -> f32 {
+    if value.abs() <= PAD_DEADZONE {
+        0.0
+    } else {
+        value
+    }
+}
+
+fn pad_buttons(pad: &gilrs::Gamepad) -> InputButtons {
+    let mut buttons = InputButtons::NONE;
+
+    if pad.is_pressed(Button::RightTrigger2) {
+        buttons |= InputButtons::IN_ATTACK;
+    }
+
+    if pad.is_pressed(Button::LeftTrigger2) {
+        buttons |= InputButtons::IN_ATTACK2;
+    }
+
+    if pad.is_pressed(Button::West) {
+        buttons |= InputButtons::IN_USE;
+    }
+
+    if pad.is_pressed(Button::RightTrigger) {
+        buttons |= InputButtons::IN_SPRINT;
+    }
+
+    if pad.is_pressed(Button::LeftTrigger) {
+        buttons |= InputButtons::IN_WALK;
+    }
+
+    if pad.is_pressed(Button::LeftThumb) {
+        buttons |= InputButtons::IN_DUCK;
+    }
+
+    if pad.is_pressed(Button::South) {
+        buttons |= InputButtons::IN_JUMP;
+    }
+
+    if pad.is_pressed(Button::East) {
+        buttons |= InputButtons::IN_RELOAD;
+    }
+
+    buttons
 }

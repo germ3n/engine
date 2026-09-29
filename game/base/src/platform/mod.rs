@@ -1,4 +1,5 @@
 mod event;
+mod gamepad;
 mod host;
 mod sdl2_host;
 mod surface;
@@ -6,6 +7,7 @@ mod winit_host;
 mod xbox;
 
 pub use event::*;
+pub use gamepad::GamepadState;
 pub use host::{Control, HostOps};
 pub use sdl2_host::Sdl2Host;
 pub use surface::Surface;
