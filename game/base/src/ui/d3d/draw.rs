@@ -1,38 +1,22 @@
+use crate::platform::Surface;
 use glyph_brush::ab_glyph::FontArc;
 use glyph_brush::{BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text};
 use windows::Win32::Foundation::HWND;
-use winit::event_loop::EventLoop;
-use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::{Window as WinitWindow, WindowBuilder};
 
 pub struct Desktop {
-    pub window: WinitWindow,
-    pub event_loop: Option<EventLoop<()>>,
     pub hwnd: HWND,
+    pub width: u32,
+    pub height: u32,
 }
 
-pub fn open_desktop() -> Result<Desktop, String> {
-    let event_loop = EventLoop::new().map_err(|err| err.to_string())?;
-    let window = WindowBuilder::new()
-        .with_title("Starting...")
-        .build(&event_loop)
-        .map_err(|err| err.to_string())?;
-    let hwnd = hwnd_of(&window)?;
+pub fn attach_desktop(surface: &Surface) -> Result<Desktop, String> {
+    let (width, height) = surface.size();
 
     Ok(Desktop {
-        window,
-        event_loop: Some(event_loop),
-        hwnd,
+        hwnd: surface.hwnd()?,
+        width,
+        height,
     })
-}
-
-fn hwnd_of(window: &WinitWindow) -> Result<HWND, String> {
-    let handle = window.window_handle().map_err(|err| err.to_string())?;
-
-    match handle.as_raw() {
-        RawWindowHandle::Win32(win32) => Ok(HWND(win32.hwnd.get() as *mut core::ffi::c_void)),
-        _ => Err("window is not win32".to_string()),
-    }
 }
 
 pub fn bytes_of(values: &[f32]) -> &[u8] {

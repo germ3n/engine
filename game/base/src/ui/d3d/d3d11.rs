@@ -1,14 +1,6 @@
-use windows::core::{s, Interface};
-use windows::Win32::Foundation::{HMODULE, HWND};
-use windows::Win32::Graphics::Direct3D::*;
-use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::*;
-use winit::event_loop::EventLoop;
-use winit::window::Window as WinitWindow;
-
+use crate::platform::Surface;
 use crate::ui::d3d::draw::{
-    bytes_of, grow, open_desktop, push_outline, push_rect, Desktop, TextFrame,
+    attach_desktop, bytes_of, grow, push_outline, push_rect, Desktop, TextFrame,
 };
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
@@ -16,6 +8,12 @@ use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::Color;
+use windows::core::{s, Interface};
+use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Graphics::Direct3D::*;
+use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Dxgi::*;
 
 pub struct D3D11Window {
     desktop: Desktop,
@@ -83,11 +81,10 @@ struct DynBuf {
 }
 
 impl D3D11Window {
-    pub fn try_new() -> Result<Self, String> {
-        let desktop = open_desktop()?;
-        let size = desktop.window.inner_size();
-        let width = size.width.max(1);
-        let height = size.height.max(1);
+    pub fn try_new(surface: &Surface) -> Result<Self, String> {
+        let desktop = attach_desktop(surface)?;
+        let width = desktop.width;
+        let height = desktop.height;
         let (device, context, swap) = device_swap(desktop.hwnd, width, height)?;
         let (rtv, depth, dsv) = targets(&device, &swap, width, height)?;
         let mesh_vs_blob = shader::vs5(shader::MESH_SM5, s!("mesh_vert"))?;
@@ -252,31 +249,14 @@ impl D3D11Window {
 }
 
 impl Window for D3D11Window {
-    fn create_window() -> Self {
-        Self::try_new().expect("d3d11")
-    }
-
-    fn set_window_title(&mut self, title: &str) {
-        self.desktop.window.set_title(title);
+    fn attach(surface: &Surface) -> Self {
+        Self::try_new(surface).expect("d3d11")
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let _ = self
-            .desktop
-            .window
-            .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
-
         if let Err(err) = self.resize(w, h) {
             println!("[gfx] d3d11 resize {err}");
         }
-    }
-
-    fn winit_window(&self) -> &WinitWindow {
-        &self.desktop.window
-    }
-
-    fn take_event_loop(&mut self) -> EventLoop<()> {
-        self.desktop.event_loop.take().expect("Event loop missing")
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {

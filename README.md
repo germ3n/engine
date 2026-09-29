@@ -50,6 +50,12 @@ ENGINE_GFX=vulkan cargo run -p base
 
 `opengl`, `vulkan`, `metal`, `d3d12`, `d3d11`, and `d3d9` are the names. OpenVR is used when a headset is present.
 
+Set `ENGINE_HOST` to pick the window/event-loop host. Default is `winit`. `sdl2` and `xbox` are reserved stubs.
+
+```sh
+ENGINE_HOST=winit ENGINE_GFX=metal cargo run -p base
+```
+
 ## Maps
 
 `hall` is included. A text `.map` compiles to `.cmap`:

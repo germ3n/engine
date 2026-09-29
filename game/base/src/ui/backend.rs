@@ -1,3 +1,4 @@
+use crate::platform::Surface;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::opengl::OpenGLWindow;
 use crate::ui::voxel::SceneView;
@@ -21,17 +22,17 @@ pub enum GfxWindow {
     Vulkan(VulkanWindow),
 }
 
-pub fn create() -> GfxWindow {
+pub fn create(surface: &Surface) -> GfxWindow {
     #[cfg(target_os = "ios")]
     {
         println!("[gfx] metal");
 
-        return GfxWindow::Metal(crate::ui::metal::MetalWindow::try_new().expect("metal"));
+        return GfxWindow::Metal(crate::ui::metal::MetalWindow::try_new(surface).expect("metal"));
     }
 
     #[cfg(target_os = "macos")]
     if chosen("metal") {
-        match crate::ui::metal::MetalWindow::try_new() {
+        match crate::ui::metal::MetalWindow::try_new(surface) {
             Ok(window) => {
                 println!("[gfx] metal");
 
@@ -45,7 +46,7 @@ pub fn create() -> GfxWindow {
 
     #[cfg(windows)]
     if chosen("d3d12") {
-        match crate::ui::d3d::D3D12Window::try_new() {
+        match crate::ui::d3d::D3D12Window::try_new(surface) {
             Ok(window) => {
                 println!("[gfx] d3d12");
 
@@ -59,7 +60,7 @@ pub fn create() -> GfxWindow {
 
     #[cfg(windows)]
     if chosen("d3d11") {
-        match crate::ui::d3d::D3D11Window::try_new() {
+        match crate::ui::d3d::D3D11Window::try_new(surface) {
             Ok(window) => {
                 println!("[gfx] d3d11");
 
@@ -73,7 +74,7 @@ pub fn create() -> GfxWindow {
 
     #[cfg(windows)]
     if chosen("d3d9") {
-        match crate::ui::d3d::D3D9Window::try_new() {
+        match crate::ui::d3d::D3D9Window::try_new(surface) {
             Ok(window) => {
                 println!("[gfx] d3d9");
 
@@ -87,20 +88,14 @@ pub fn create() -> GfxWindow {
 
     #[cfg(not(target_os = "ios"))]
     if chosen("vulkan") {
-        match VulkanWindow::try_new() {
+        match VulkanWindow::try_new(surface) {
             Ok(window) => {
                 println!("[gfx] vulkan");
 
                 return GfxWindow::Vulkan(window);
             }
-            Err((event_loop, err)) => {
+            Err(err) => {
                 println!("[gfx] vulkan failed: {err}");
-
-                if let Some(event_loop) = event_loop {
-                    println!("[gfx] opengl");
-
-                    return GfxWindow::OpenGL(OpenGLWindow::with_event_loop(event_loop));
-                }
             }
         }
     }
@@ -109,16 +104,15 @@ pub fn create() -> GfxWindow {
     {
         println!("[gfx] opengl");
 
-        return GfxWindow::OpenGL(OpenGLWindow::create_window());
+        return GfxWindow::OpenGL(OpenGLWindow::attach(surface));
     }
 }
 
 #[cfg(target_os = "android")]
-pub fn android_window(target: &winit::event_loop::EventLoopWindowTarget<()>) -> GfxWindow {
+pub fn android_window(surface: &Surface) -> GfxWindow {
     println!("[gfx] opengl es");
-    let mut window = OpenGLWindow::from_target(target);
+    let mut window = OpenGLWindow::attach(surface);
     window.enable_vr();
-    window.set_window_title("Rust Engine - Rendering");
 
     GfxWindow::OpenGL(window)
 }
@@ -150,24 +144,12 @@ macro_rules! each_window {
 }
 
 impl Window for GfxWindow {
-    fn create_window() -> Self {
-        create()
-    }
-
-    fn set_window_title(&mut self, title: &str) {
-        each_window!(self, |window| window.set_window_title(title))
+    fn attach(surface: &Surface) -> Self {
+        create(surface)
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
         each_window!(self, |window| window.set_size(w, h))
-    }
-
-    fn winit_window(&self) -> &winit::window::Window {
-        each_window!(self, |window| window.winit_window())
-    }
-
-    fn take_event_loop(&mut self) -> winit::event_loop::EventLoop<()> {
-        each_window!(self, |window| window.take_event_loop())
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {

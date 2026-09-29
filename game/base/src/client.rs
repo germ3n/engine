@@ -13,6 +13,10 @@ use crate::network::{
     UnreliableAssembly, UnreliableInbox, OUTBOUND_CAP, RECV_BUDGET,
 };
 use crate::network::{ClientToServer, NetworkClient, ServerToClient};
+use crate::platform::{
+    DeviceEvent, ElementState, Event, HostKind, KeyCode, MouseButton, PlatformHost, Touch,
+    TouchPhase, WindowEvent,
+};
 use crate::r#enum::InputButtons;
 use crate::script::engine::DrawCommand;
 use crate::script::libs::angle3::Angle3;
@@ -32,10 +36,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::event::{DeviceEvent, ElementState, Event, MouseButton, TouchPhase, WindowEvent};
-use winit::event_loop::ControlFlow;
-use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::CursorGrabMode;
 
 const LOOK_SPEED: f32 = 0.0025 * (180.0 / std::f32::consts::PI);
 const PAD_DEADZONE: f32 = 0.15;
@@ -193,7 +193,7 @@ impl SnapshotIngress {
 }
 
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
-    let (event_loop, mut held_window) = client_surface();
+    let (host, mut held_window) = client_surface();
 
     crate::script::bundle::load_bytecode(
         &game.script_engine.lua,
@@ -235,450 +235,450 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     };
     let mut active_pad = None;
 
-    event_loop
-        .run(move |event, window_target| {
-            window_target.set_control_flow(ControlFlow::Poll);
+    host.run(move |event, host, control| {
+        control.poll();
 
-            #[cfg(target_os = "android")]
-            {
-                if let Event::Resumed = &event {
-                    if held_window.is_none() {
-                        held_window = Some(backend::android_window(window_target));
-                    }
-                }
-
-                if let Event::Suspended = &event {
-                    held_window = None;
-
-                    return;
-                }
-
+        #[cfg(target_os = "android")]
+        {
+            if let Event::Resumed = &event {
                 if held_window.is_none() {
-                    return;
+                    if let Some(surface) = host.surface() {
+                        held_window = Some(backend::android_window(surface));
+                    }
                 }
             }
 
-            let client_window = held_window.as_mut().unwrap();
+            if let Event::Suspended = &event {
+                held_window = None;
 
-            match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => {
-                        shutdown.store(true, Ordering::Relaxed);
-                        window_target.exit();
-                    }
-                    WindowEvent::Resized(physical_size) => {
-                        client_window.set_size(physical_size.width, physical_size.height);
-                    }
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        if let PhysicalKey::Code(code) = event.physical_key {
-                            if code == KeyCode::Escape && event.state == ElementState::Pressed {
-                                captured = false;
-                                attack = false;
-                                set_capture(client_window.winit_window(), false);
-                            } else if event.state == ElementState::Pressed {
-                                keys.insert(code);
-                            } else {
-                                keys.remove(&code);
-                            }
-                        }
-                    }
-                    WindowEvent::MouseInput {
-                        state,
-                        button: MouseButton::Left,
-                        ..
-                    } => {
-                        if state == ElementState::Pressed {
-                            if captured {
-                                attack = true;
-                            }
+                return;
+            }
 
-                            captured = true;
-                            set_capture(client_window.winit_window(), true);
-                        } else {
+            if held_window.is_none() {
+                return;
+            }
+        }
+
+        let client_window = held_window.as_mut().unwrap();
+
+        match event {
+            Event::Window(event) => match event {
+                WindowEvent::CloseRequested => {
+                    shutdown.store(true, Ordering::Relaxed);
+                    control.exit();
+                }
+                WindowEvent::Resized { width, height } => {
+                    client_window.set_size(width, height);
+                }
+                WindowEvent::KeyboardInput(input) => {
+                    if let Some(code) = input.key_code {
+                        if code == KeyCode::Escape && input.state == ElementState::Pressed {
+                            captured = false;
                             attack = false;
+                            host.set_cursor_grabbed(false);
+                        } else if input.state == ElementState::Pressed {
+                            keys.insert(code);
+                        } else {
+                            keys.remove(&code);
                         }
                     }
-                    WindowEvent::Touch(touch) => {
-                        let width = client_window.winit_window().inner_size().width.max(1) as f64;
-                        apply_touch(
-                            &mut touches,
-                            &touch,
-                            width,
-                            &mut camera,
-                            &mut prediction.look,
-                            !prediction.local.is_null(),
-                        );
-                    }
-                    WindowEvent::RedrawRequested => {
-                        let size = client_window.winit_window().inner_size();
-                        let aspect = size.width as f32 / size.height.max(1) as f32;
-                        let world_revision = game.voxel_world.revision();
-                        let brush_revision = game.brush_world.revision();
-
-                        if scene_world != world_revision || scene_brushes != brush_revision {
-                            scene_mesh = game.voxel_world.mesh();
-                            scene_mesh.extend(game.brush_world.mesh());
-                            scene_world = world_revision;
-                            scene_brushes = brush_revision;
-                            scene_revision = scene_revision.wrapping_add(1);
+                }
+                WindowEvent::MouseInput {
+                    state,
+                    button: MouseButton::Left,
+                } => {
+                    if state == ElementState::Pressed {
+                        if captured {
+                            attack = true;
                         }
 
-                        client_window.begin_frame(0.53, 0.71, 0.85);
-                        client_window.draw_colored_mesh(
-                            &scene_mesh,
-                            scene_revision,
-                            &camera.scene(aspect, game.voxel_world.scale() as f32),
-                        );
-                        draw_menu(client_window, &mut game);
+                        captured = true;
+                        host.set_cursor_grabbed(true);
+                    } else {
+                        attack = false;
+                    }
+                }
+                WindowEvent::Touch(touch) => {
+                    let width = host.size().0.max(1) as f64;
+                    apply_touch(
+                        &mut touches,
+                        &touch,
+                        width,
+                        &mut camera,
+                        &mut prediction.look,
+                        !prediction.local.is_null(),
+                    );
+                }
+                WindowEvent::RedrawRequested => {
+                    let (width, height) = host.size();
+                    let aspect = width as f32 / height.max(1) as f32;
+                    let world_revision = game.voxel_world.revision();
+                    let brush_revision = game.brush_world.revision();
 
-                        let draw_commands = {
-                            let mut q = game.script_engine.render_queue.lock().unwrap();
-                            std::mem::take(&mut *q)
-                        };
+                    if scene_world != world_revision || scene_brushes != brush_revision {
+                        scene_mesh = game.voxel_world.mesh();
+                        scene_mesh.extend(game.brush_world.mesh());
+                        scene_world = world_revision;
+                        scene_brushes = brush_revision;
+                        scene_revision = scene_revision.wrapping_add(1);
+                    }
 
-                        //todo: optimize
-                        for cmd in draw_commands {
-                            match cmd {
-                                DrawCommand::Rect { x, y, w, h, color } => {
-                                    client_window.draw_rectangle(x, y, w, h, color);
-                                }
-                                DrawCommand::OutlinedRect {
-                                    x,
-                                    y,
-                                    w,
-                                    h,
-                                    thickness,
-                                    color,
-                                } => {
-                                    client_window
-                                        .draw_outlined_rectangle(x, y, w, h, thickness, color);
-                                }
-                                DrawCommand::Text {
-                                    font,
-                                    text,
+                    client_window.begin_frame(0.53, 0.71, 0.85);
+                    client_window.draw_colored_mesh(
+                        &scene_mesh,
+                        scene_revision,
+                        &camera.scene(aspect, game.voxel_world.scale() as f32),
+                    );
+                    draw_menu(client_window, &mut game);
+
+                    let draw_commands = {
+                        let mut q = game.script_engine.render_queue.lock().unwrap();
+                        std::mem::take(&mut *q)
+                    };
+
+                    //todo: optimize
+                    for cmd in draw_commands {
+                        match cmd {
+                            DrawCommand::Rect { x, y, w, h, color } => {
+                                client_window.draw_rectangle(x, y, w, h, color);
+                            }
+                            DrawCommand::OutlinedRect {
+                                x,
+                                y,
+                                w,
+                                h,
+                                thickness,
+                                color,
+                            } => {
+                                client_window.draw_outlined_rectangle(x, y, w, h, thickness, color);
+                            }
+                            DrawCommand::Text {
+                                font,
+                                text,
+                                x,
+                                y,
+                                scale,
+                                color,
+                            } => {
+                                client_window.draw_text(
+                                    &font.to_str().unwrap().to_owned(),
+                                    &text.to_str().unwrap().to_owned(),
                                     x,
                                     y,
                                     scale,
                                     color,
-                                } => {
-                                    client_window.draw_text(
-                                        &font.to_str().unwrap().to_owned(),
-                                        &text.to_str().unwrap().to_owned(),
-                                        x,
-                                        y,
-                                        scale,
-                                        color,
-                                    );
-                                }
-                            }
-                        }
-
-                        fps_frames += 1;
-                        let sample = fps_sample.elapsed().as_secs_f64();
-
-                        if sample >= 0.25 {
-                            let fps = (fps_frames as f64 / sample).round() as u32;
-                            fps_label = format!("{fps} fps");
-                            fps_frames = 0;
-                            fps_sample = std::time::Instant::now();
-                        }
-
-                        client_window.draw_rectangle(
-                            8.0,
-                            8.0,
-                            96.0,
-                            24.0,
-                            Color::ColorRGBA {
-                                r: 0,
-                                g: 0,
-                                b: 0,
-                                a: 160,
-                            },
-                        );
-                        client_window.draw_text(
-                            "default",
-                            &fps_label,
-                            14.0,
-                            10.0,
-                            16.0,
-                            Color::ColorRGBA {
-                                r: 255,
-                                g: 255,
-                                b: 255,
-                                a: 255,
-                            },
-                        );
-                        client_window.render_text();
-                        client_window.present();
-                    }
-                    _ => (),
-                },
-                Event::DeviceEvent {
-                    event: DeviceEvent::MouseMotion { delta },
-                    ..
-                } => {
-                    if captured && !client_window.vr_input().active {
-                        if prediction.local.is_null() {
-                            camera.look(delta.0 as f32, delta.1 as f32);
-                        } else {
-                            prediction.look.y += delta.0 as f32 * LOOK_SPEED;
-                            prediction.look.p -= delta.1 as f32 * LOOK_SPEED;
-                            prediction.look.p = prediction.look.p.clamp(-89.0, 89.0);
-                        }
-                    }
-                }
-                Event::AboutToWait => {
-                    let now = std::time::Instant::now();
-                    let dt = now.duration_since(last_frame).as_secs_f64();
-                    last_frame = now;
-                    let frame_dt = (dt as f32).min(0.1);
-
-                    while let Some((hash, data)) = game.script_engine.poll_usermessage() {
-                        game.send_reliable(ClientToServer::UserMessage { hash, data });
-                    }
-
-                    while let Ok(net_event) = game.network_receiver.try_recv() {
-                        match net_event {
-                            FromServer::Connected { generation } => {
-                                println!("[cl] link up");
-                                if world_generation != generation {
-                                    world_generation = generation;
-                                    game.entities.clear();
-                                    prediction.clear();
-                                    remotes.clear();
-                                    game.voxel_world.clear();
-                                    hold_events = true;
-                                    held.clear();
-                                    snapshot_ingress = SnapshotIngress::new();
-                                }
-
-                                continue;
-                            }
-                            FromServer::Disconnected => {
-                                println!("[cl] link lost");
-
-                                continue;
-                            }
-                            FromServer::Message(message) => {
-                                if let ServerToClient::WorldSnapshot {
-                                    generation,
-                                    reset,
-                                    part,
-                                    parts,
-                                    entities,
-                                } = message
-                                {
-                                    if generation == world_generation {
-                                        if let Some(built) = snapshot_ingress
-                                            .push(generation, reset, part, parts, entities)
-                                        {
-                                            if built.reset {
-                                                game.entities.clear();
-                                                prediction.clear();
-                                                remotes.clear();
-                                            }
-
-                                            let now = session_start.elapsed().as_secs_f64();
-                                            let interval = game.tick_interval;
-
-                                            for entity in built.entities {
-                                                apply_spawn(
-                                                    &mut game,
-                                                    &mut remotes,
-                                                    now,
-                                                    interval,
-                                                    entity,
-                                                );
-                                            }
-
-                                            hold_events = false;
-                                            while let Some(waiting) = held.pop_front() {
-                                                apply_server_event(
-                                                    &mut game,
-                                                    &mut tick_ingress,
-                                                    &mut prediction,
-                                                    &mut remotes,
-                                                    session_start.elapsed().as_secs_f64(),
-                                                    waiting,
-                                                );
-                                            }
-                                        } else {
-                                            hold_events = true;
-                                        }
-                                    }
-
-                                    continue;
-                                }
-
-                                if hold_events {
-                                    held.push_back(message);
-
-                                    continue;
-                                }
-
-                                apply_server_event(
-                                    &mut game,
-                                    &mut tick_ingress,
-                                    &mut prediction,
-                                    &mut remotes,
-                                    session_start.elapsed().as_secs_f64(),
-                                    message,
                                 );
-
-                                continue;
                             }
                         }
                     }
 
-                    while let Some((hash, data)) = game.script_engine.poll_usermessage() {
-                        game.send_reliable(ClientToServer::UserMessage { hash, data });
+                    fps_frames += 1;
+                    let sample = fps_sample.elapsed().as_secs_f64();
+
+                    if sample >= 0.25 {
+                        let fps = (fps_frames as f64 / sample).round() as u32;
+                        fps_label = format!("{fps} fps");
+                        fps_frames = 0;
+                        fps_sample = std::time::Instant::now();
                     }
 
-                    let speed = game.voxel_world.scale() as f32 * 14.0;
-                    let (touch_forward, touch_right) = touch_wish(&touches);
-                    let mut forward = held_key(&keys, KeyCode::KeyW)
-                        - held_key(&keys, KeyCode::KeyS)
-                        + touch_forward;
-                    let mut right = held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA)
-                        + touch_right;
-                    let up = held_key(&keys, KeyCode::Space)
-                        - held_key(&keys, KeyCode::ShiftLeft)
-                            .max(held_key(&keys, KeyCode::ShiftRight));
-                    let vr = client_window.vr_input();
-
-                    if prediction.arm_look {
-                        prediction.look.p = camera.pitch.to_degrees();
-                        prediction.look.y = camera.yaw.to_degrees();
-                        prediction.look.r = 0.0;
-                        prediction.arm_look = false;
-                    }
-
-                    if vr.active {
-                        let turn = vr.turn * frame_dt * 1.5;
-
-                        if prediction.local.is_null() {
-                            camera.yaw -= turn;
-                        } else {
-                            prediction.look.y -= turn.to_degrees();
-                        }
-
-                        forward += vr.move_y;
-                        right += vr.move_x;
-                    }
-
-                    let pad = sample_pad(pads.as_mut(), &mut active_pad);
-
-                    if !vr.active {
-                        let yaw = pad.look_x * PAD_LOOK * frame_dt;
-                        let pitch = pad.look_y * PAD_LOOK * frame_dt;
-
-                        if prediction.local.is_null() {
-                            camera.yaw += yaw;
-                            camera.pitch = (camera.pitch + pitch).clamp(-1.5, 1.5);
-                        } else {
-                            prediction.look.y += yaw.to_degrees();
-                            prediction.look.p =
-                                (prediction.look.p + pitch.to_degrees()).clamp(-89.0, 89.0);
-                        }
-                    }
-
-                    forward += pad.forward;
-                    right += pad.right;
-
-                    forward = forward.clamp(-1.0, 1.0);
-                    right = right.clamp(-1.0, 1.0);
-
-                    let possessed =
-                        !prediction.local.is_null() && game.entities.is_valid(prediction.local);
-
-                    if !possessed && vr.active {
-                        camera.fly_facing(camera.yaw + vr.yaw, forward, right, up, frame_dt, speed);
-                    } else if !possessed {
-                        camera.fly(forward, right, up, frame_dt, speed);
-                    }
-
-                    accumulated_time += dt;
-
-                    while accumulated_time >= game.tick_interval {
-                        accumulated_time -= game.tick_interval;
-                        game.cur_time += game.tick_interval;
-                        game.frame_time = game.tick_interval;
-                        game.tick_count += 1;
-                        game.entities.set_frame(FrameInfo {
-                            dt: game.tick_interval,
-                            cur_time: game.cur_time,
-                            tick_count: game.tick_count,
-                        });
-                        game.entities.tick_all();
-
-                        if possessed {
-                            predict_tick(
-                                &mut game,
-                                &mut prediction,
-                                &keys,
-                                attack,
-                                forward,
-                                right,
-                                vr.yaw,
-                                pad.buttons,
-                            );
-                        }
-                    }
-
-                    if possessed {
-                        let buttons = command_buttons(&keys, attack, pad.buttons);
-                        let alpha = if game.tick_interval > 0.0 {
-                            (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
-                        } else {
-                            1.0
-                        };
-                        let origin = prediction
-                            .view_origin(alpha)
-                            .or_else(|| body_origin(&game, prediction.local));
-
-                        if let Some(origin) = origin {
-                            place_camera(
-                                &mut camera,
-                                origin,
-                                prediction.look,
-                                movement::eye_height(buttons),
-                            );
-                        }
-                    }
-
-                    let interval = game.tick_interval;
-                    present_remotes(
-                        &mut game,
-                        &mut remotes,
-                        prediction.local,
-                        session_start.elapsed().as_secs_f64(),
-                        interval,
+                    client_window.draw_rectangle(
+                        8.0,
+                        8.0,
+                        96.0,
+                        24.0,
+                        Color::ColorRGBA {
+                            r: 0,
+                            g: 0,
+                            b: 0,
+                            a: 160,
+                        },
                     );
-
-                    client_window.winit_window().request_redraw();
+                    client_window.draw_text(
+                        "default",
+                        &fps_label,
+                        14.0,
+                        10.0,
+                        16.0,
+                        Color::ColorRGBA {
+                            r: 255,
+                            g: 255,
+                            b: 255,
+                            a: 255,
+                        },
+                    );
+                    client_window.render_text();
+                    client_window.present();
                 }
                 _ => (),
+            },
+            Event::Device(DeviceEvent::MouseMotion { delta }) => {
+                if captured && !client_window.vr_input().active {
+                    if prediction.local.is_null() {
+                        camera.look(delta.0 as f32, delta.1 as f32);
+                    } else {
+                        prediction.look.y += delta.0 as f32 * LOOK_SPEED;
+                        prediction.look.p -= delta.1 as f32 * LOOK_SPEED;
+                        prediction.look.p = prediction.look.p.clamp(-89.0, 89.0);
+                    }
+                }
             }
-        })
-        .unwrap();
+            Event::AboutToWait => {
+                let now = std::time::Instant::now();
+                let dt = now.duration_since(last_frame).as_secs_f64();
+                last_frame = now;
+                let frame_dt = (dt as f32).min(0.1);
+
+                while let Some((hash, data)) = game.script_engine.poll_usermessage() {
+                    game.send_reliable(ClientToServer::UserMessage { hash, data });
+                }
+
+                while let Ok(net_event) = game.network_receiver.try_recv() {
+                    match net_event {
+                        FromServer::Connected { generation } => {
+                            println!("[cl] link up");
+                            if world_generation != generation {
+                                world_generation = generation;
+                                game.entities.clear();
+                                prediction.clear();
+                                remotes.clear();
+                                game.voxel_world.clear();
+                                hold_events = true;
+                                held.clear();
+                                snapshot_ingress = SnapshotIngress::new();
+                            }
+
+                            continue;
+                        }
+                        FromServer::Disconnected => {
+                            println!("[cl] link lost");
+
+                            continue;
+                        }
+                        FromServer::Message(message) => {
+                            if let ServerToClient::WorldSnapshot {
+                                generation,
+                                reset,
+                                part,
+                                parts,
+                                entities,
+                            } = message
+                            {
+                                if generation == world_generation {
+                                    if let Some(built) = snapshot_ingress
+                                        .push(generation, reset, part, parts, entities)
+                                    {
+                                        if built.reset {
+                                            game.entities.clear();
+                                            prediction.clear();
+                                            remotes.clear();
+                                        }
+
+                                        let now = session_start.elapsed().as_secs_f64();
+                                        let interval = game.tick_interval;
+
+                                        for entity in built.entities {
+                                            apply_spawn(
+                                                &mut game,
+                                                &mut remotes,
+                                                now,
+                                                interval,
+                                                entity,
+                                            );
+                                        }
+
+                                        hold_events = false;
+                                        while let Some(waiting) = held.pop_front() {
+                                            apply_server_event(
+                                                &mut game,
+                                                &mut tick_ingress,
+                                                &mut prediction,
+                                                &mut remotes,
+                                                session_start.elapsed().as_secs_f64(),
+                                                waiting,
+                                            );
+                                        }
+                                    } else {
+                                        hold_events = true;
+                                    }
+                                }
+
+                                continue;
+                            }
+
+                            if hold_events {
+                                held.push_back(message);
+
+                                continue;
+                            }
+
+                            apply_server_event(
+                                &mut game,
+                                &mut tick_ingress,
+                                &mut prediction,
+                                &mut remotes,
+                                session_start.elapsed().as_secs_f64(),
+                                message,
+                            );
+
+                            continue;
+                        }
+                    }
+                }
+
+                while let Some((hash, data)) = game.script_engine.poll_usermessage() {
+                    game.send_reliable(ClientToServer::UserMessage { hash, data });
+                }
+
+                let speed = game.voxel_world.scale() as f32 * 14.0;
+                let (touch_forward, touch_right) = touch_wish(&touches);
+                let mut forward =
+                    held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS) + touch_forward;
+                let mut right =
+                    held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA) + touch_right;
+                let up = held_key(&keys, KeyCode::Space)
+                    - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
+                let vr = client_window.vr_input();
+
+                if prediction.arm_look {
+                    prediction.look.p = camera.pitch.to_degrees();
+                    prediction.look.y = camera.yaw.to_degrees();
+                    prediction.look.r = 0.0;
+                    prediction.arm_look = false;
+                }
+
+                if vr.active {
+                    let turn = vr.turn * frame_dt * 1.5;
+
+                    if prediction.local.is_null() {
+                        camera.yaw -= turn;
+                    } else {
+                        prediction.look.y -= turn.to_degrees();
+                    }
+
+                    forward += vr.move_y;
+                    right += vr.move_x;
+                }
+
+                let pad = sample_pad(pads.as_mut(), &mut active_pad);
+
+                if !vr.active {
+                    let yaw = pad.look_x * PAD_LOOK * frame_dt;
+                    let pitch = pad.look_y * PAD_LOOK * frame_dt;
+
+                    if prediction.local.is_null() {
+                        camera.yaw += yaw;
+                        camera.pitch = (camera.pitch + pitch).clamp(-1.5, 1.5);
+                    } else {
+                        prediction.look.y += yaw.to_degrees();
+                        prediction.look.p =
+                            (prediction.look.p + pitch.to_degrees()).clamp(-89.0, 89.0);
+                    }
+                }
+
+                forward += pad.forward;
+                right += pad.right;
+
+                forward = forward.clamp(-1.0, 1.0);
+                right = right.clamp(-1.0, 1.0);
+
+                let possessed =
+                    !prediction.local.is_null() && game.entities.is_valid(prediction.local);
+
+                if !possessed && vr.active {
+                    camera.fly_facing(camera.yaw + vr.yaw, forward, right, up, frame_dt, speed);
+                } else if !possessed {
+                    camera.fly(forward, right, up, frame_dt, speed);
+                }
+
+                accumulated_time += dt;
+
+                while accumulated_time >= game.tick_interval {
+                    accumulated_time -= game.tick_interval;
+                    game.cur_time += game.tick_interval;
+                    game.frame_time = game.tick_interval;
+                    game.tick_count += 1;
+                    game.entities.set_frame(FrameInfo {
+                        dt: game.tick_interval,
+                        cur_time: game.cur_time,
+                        tick_count: game.tick_count,
+                    });
+                    game.entities.tick_all();
+
+                    if possessed {
+                        predict_tick(
+                            &mut game,
+                            &mut prediction,
+                            &keys,
+                            attack,
+                            forward,
+                            right,
+                            vr.yaw,
+                            pad.buttons,
+                        );
+                    }
+                }
+
+                if possessed {
+                    let buttons = command_buttons(&keys, attack, pad.buttons);
+                    let alpha = if game.tick_interval > 0.0 {
+                        (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    let origin = prediction
+                        .view_origin(alpha)
+                        .or_else(|| body_origin(&game, prediction.local));
+
+                    if let Some(origin) = origin {
+                        place_camera(
+                            &mut camera,
+                            origin,
+                            prediction.look,
+                            movement::eye_height(buttons),
+                        );
+                    }
+                }
+
+                let interval = game.tick_interval;
+                present_remotes(
+                    &mut game,
+                    &mut remotes,
+                    prediction.local,
+                    session_start.elapsed().as_secs_f64(),
+                    interval,
+                );
+
+                host.request_redraw();
+            }
+            _ => (),
+        }
+    });
 }
 
-fn client_surface() -> (winit::event_loop::EventLoop<()>, Option<backend::GfxWindow>) {
+fn client_surface() -> (PlatformHost, Option<backend::GfxWindow>) {
+    let kind = HostKind::from_env();
+    println!("[host] {kind:?}");
+    let mut host = PlatformHost::open(kind).unwrap_or_else(|err| {
+        println!("[host] {err}");
+        std::process::exit(1);
+    });
+
     #[cfg(target_os = "android")]
     {
-        return (crate::platform::event_loop(), None);
+        return (host, None);
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let mut window = backend::create();
-        window.enable_vr();
-        window.set_window_title("Rust Engine - Rendering");
+        host.set_title("Rust Engine - Rendering");
         #[cfg(not(target_os = "ios"))]
-        window.set_size(1920, 1080);
-        let event_loop = window.take_event_loop();
+        host.set_size(1920, 1080);
+        let surface = host.surface().expect("host surface");
+        let mut window = backend::create(surface);
+        window.enable_vr();
 
-        (event_loop, Some(window))
+        (host, Some(window))
     }
 }
 
@@ -695,7 +695,7 @@ struct TouchPoint {
 
 fn apply_touch(
     points: &mut Vec<TouchPoint>,
-    touch: &winit::event::Touch,
+    touch: &Touch,
     width: f64,
     camera: &mut FlyCamera,
     look: &mut Angle3,
@@ -705,13 +705,13 @@ fn apply_touch(
         TouchPhase::Started => {
             points.push(TouchPoint {
                 id: touch.id,
-                origin_x: touch.location.x,
-                origin_y: touch.location.y,
-                x: touch.location.x,
-                y: touch.location.y,
-                last_x: touch.location.x,
-                last_y: touch.location.y,
-                look: touch.location.x >= width * 0.5,
+                origin_x: touch.location.0,
+                origin_y: touch.location.1,
+                x: touch.location.0,
+                y: touch.location.1,
+                last_x: touch.location.0,
+                last_y: touch.location.1,
+                look: touch.location.0 >= width * 0.5,
             });
         }
         TouchPhase::Moved => {
@@ -719,12 +719,12 @@ fn apply_touch(
 
             while idx < points.len() {
                 if points[idx].id == touch.id {
-                    let dx = touch.location.x - points[idx].last_x;
-                    let dy = touch.location.y - points[idx].last_y;
-                    points[idx].x = touch.location.x;
-                    points[idx].y = touch.location.y;
-                    points[idx].last_x = touch.location.x;
-                    points[idx].last_y = touch.location.y;
+                    let dx = touch.location.0 - points[idx].last_x;
+                    let dy = touch.location.1 - points[idx].last_y;
+                    points[idx].x = touch.location.0;
+                    points[idx].y = touch.location.1;
+                    points[idx].last_x = touch.location.0;
+                    points[idx].last_y = touch.location.1;
 
                     if points[idx].look {
                         if possessed {
@@ -773,21 +773,6 @@ fn held_key(keys: &HashSet<KeyCode>, code: KeyCode) -> f32 {
     } else {
         0.0
     }
-}
-
-fn set_capture(window: &winit::window::Window, captured: bool) {
-    if captured {
-        if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
-            let _ = window.set_cursor_grab(CursorGrabMode::Confined);
-        }
-
-        window.set_cursor_visible(false);
-
-        return;
-    }
-
-    let _ = window.set_cursor_grab(CursorGrabMode::None);
-    window.set_cursor_visible(true);
 }
 
 fn command_buttons(keys: &HashSet<KeyCode>, attack: bool, pad: InputButtons) -> InputButtons {

@@ -37,7 +37,6 @@ libc = "0.2"
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 glutin = "=0.31.3"
-glutin-winit = "=0.4.2"
 glow = "=0.12.3"
 glow_glyph = "0.6.0"
 

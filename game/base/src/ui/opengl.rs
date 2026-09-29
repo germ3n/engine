@@ -1,33 +1,29 @@
+use crate::platform::Surface;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::Color;
-use glow::HasContext; // Exposes OpenGL methods
+use glow::HasContext;
 use glow_glyph::{ab_glyph::FontArc, GlyphBrush, GlyphBrushBuilder, Section, Text};
 #[cfg(target_os = "android")]
 use glutin::config::Api;
 #[cfg(target_os = "android")]
 use glutin::context::{ContextApi, Version};
+use glutin::display::{Display, DisplayApiPreference};
 use glutin::{
-    config::{ConfigTemplateBuilder, GlConfig},
+    config::ConfigTemplateBuilder,
     context::{ContextAttributesBuilder, PossiblyCurrentContext},
-    display::GetGlDisplay,
     prelude::*,
     surface::{SurfaceAttributesBuilder, SwapInterval, WindowSurface},
 };
-use glutin_winit::DisplayBuilder;
-use raw_window_handle::HasRawWindowHandle;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
-use winit::{
-    event_loop::{EventLoop, EventLoopWindowTarget},
-    window::{Window as WinitWindow, WindowBuilder},
-};
+
 pub struct OpenGLWindow {
-    pub window: WinitWindow,
+    pub width: u32,
+    pub height: u32,
     pub context: PossiblyCurrentContext,
     pub surface: glutin::surface::Surface<WindowSurface>,
-    pub event_loop: Option<EventLoop<()>>,
     pub gl: glow::Context,
     pub shader_program: glow::Program,
     pub vao: glow::VertexArray,
@@ -50,82 +46,58 @@ struct GlEyes {
 }
 
 impl OpenGLWindow {
-    #[cfg(target_os = "android")]
-    pub fn from_target(target: &EventLoopWindowTarget<()>) -> Self {
-        Self::build(target)
-    }
-
-    pub fn with_event_loop(event_loop: EventLoop<()>) -> Self {
-        let mut window = Self::build(&event_loop);
-        window.event_loop = Some(event_loop);
-
-        window
-    }
-
-    fn build(target: &EventLoopWindowTarget<()>) -> Self {
-        let window_builder = WindowBuilder::new().with_title("Starting...");
+    pub fn try_attach(surface: &Surface) -> Result<Self, String> {
         #[cfg(target_os = "android")]
         let template = ConfigTemplateBuilder::new()
             .with_depth_size(16)
             .with_api(Api::GLES2 | Api::GLES3);
         #[cfg(not(target_os = "android"))]
         let template = ConfigTemplateBuilder::new().with_depth_size(24);
-        let display_builder = DisplayBuilder::new().with_window_builder(Some(window_builder));
-
-        let (window, gl_config) = display_builder
-            .build(target, template, |configs| {
-                configs
-                    .reduce(|accum, config| {
-                        if config.num_samples() > accum.num_samples() {
-                            config
-                        } else {
-                            accum
-                        }
-                    })
-                    .unwrap()
+        let preference = gl_preference(surface);
+        let gl_display =
+            unsafe { Display::new(surface.display, preference) }.map_err(|err| err.to_string())?;
+        let gl_config = unsafe { gl_display.find_configs(template.build()) }
+            .map_err(|err| err.to_string())?
+            .reduce(|accum, config| {
+                if config.num_samples() > accum.num_samples() {
+                    config
+                } else {
+                    accum
+                }
             })
-            .unwrap();
-
-        let window = window.expect("Failed to create winit window");
-        let raw_window_handle = window.raw_window_handle();
-        let gl_display = gl_config.display();
-
+            .ok_or_else(|| "no gl config".to_string())?;
         let attributes = ContextAttributesBuilder::new();
         #[cfg(target_os = "android")]
         let attributes = attributes.with_context_api(ContextApi::Gles(Some(Version::new(3, 0))));
-        let context_attributes = attributes.build(Some(raw_window_handle));
+        let context_attributes = attributes.build(Some(surface.window));
         let not_current_gl_context = unsafe {
             gl_display
                 .create_context(&gl_config, &context_attributes)
-                .expect("Failed to create OpenGL context")
+                .map_err(|err| err.to_string())?
         };
-
-        let (width, height): (u32, u32) = window.inner_size().into();
+        let width = surface.width.max(1);
+        let height = surface.height.max(1);
         let surface_attributes = SurfaceAttributesBuilder::<WindowSurface>::new().build(
-            raw_window_handle,
-            NonZeroU32::new(width.max(1)).unwrap(),
-            NonZeroU32::new(height.max(1)).unwrap(),
+            surface.window,
+            NonZeroU32::new(width).unwrap(),
+            NonZeroU32::new(height).unwrap(),
         );
-
-        let surface = unsafe {
+        let gl_surface = unsafe {
             gl_display
                 .create_window_surface(&gl_config, &surface_attributes)
-                .unwrap()
+                .map_err(|err| err.to_string())?
         };
-        let context = not_current_gl_context.make_current(&surface).unwrap();
-        let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
-
-        // 1. Initialize Glow
+        let context = not_current_gl_context
+            .make_current(&gl_surface)
+            .map_err(|err| err.to_string())?;
+        let _ = gl_surface.set_swap_interval(&context, SwapInterval::DontWait);
         let gl = unsafe {
             glow::Context::from_loader_function(|s| {
                 let c_str = std::ffi::CString::new(s).unwrap();
                 gl_display.get_proc_address(c_str.as_c_str())
             })
         };
-
-        // 2. Setup Shaders and Buffers
         let (shader_program, vao, vbo) = unsafe {
-            // Vertex Shader: Converts pixel coordinates to screen space (-1.0 to 1.0)
             let vs = gl.create_shader(glow::VERTEX_SHADER).unwrap();
             gl.shader_source(vs, UI_VERT);
             gl.compile_shader(vs);
@@ -134,7 +106,6 @@ impl OpenGLWindow {
                 println!("[gl] ui vert {}", gl.get_shader_info_log(vs));
             }
 
-            // Fragment Shader: Applies the color
             let fs = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
             gl.shader_source(fs, UI_FRAG);
             gl.compile_shader(fs);
@@ -143,7 +114,6 @@ impl OpenGLWindow {
                 println!("[gl] ui frag {}", gl.get_shader_info_log(fs));
             }
 
-            // Link program
             let program = gl.create_program().unwrap();
             gl.attach_shader(program, vs);
             gl.attach_shader(program, fs);
@@ -153,27 +123,22 @@ impl OpenGLWindow {
                 println!("[gl] ui link {}", gl.get_program_info_log(program));
             }
 
-            // Create VAO and VBO
             let vao = gl.create_vertex_array().unwrap();
             let vbo = gl.create_buffer().unwrap();
-
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-
-            // Tell OpenGL how to read our vertex data (2 floats per vertex)
             let pos_attrib = gl.get_attrib_location(program, "aPos").unwrap();
             gl.vertex_attrib_pointer_f32(pos_attrib, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(pos_attrib);
 
             (program, vao, vbo)
         };
-
         let colored_mesh = ColoredMesh::new(&gl);
         let mut opengl_window = Self {
-            window,
+            width,
+            height,
             context,
-            surface,
-            event_loop: None,
+            surface: gl_surface,
             gl,
             shader_program,
             vao,
@@ -186,7 +151,6 @@ impl OpenGLWindow {
             eyes: None,
             clear: [0.0, 0.0, 0.0, 1.0],
         };
-
         let font_default_bytes = include_bytes!("font_default.ttf");
         let font_default =
             FontArc::try_from_slice(font_default_bytes).expect("Failed to load font_default.ttf!");
@@ -195,25 +159,45 @@ impl OpenGLWindow {
         opengl_window
             .glyph_brushes
             .insert("default".to_string(), glyph_brush_default);
-        opengl_window
+
+        Ok(opengl_window)
+    }
+}
+
+fn gl_preference(surface: &Surface) -> DisplayApiPreference {
+    #[cfg(target_os = "windows")]
+    {
+        return DisplayApiPreference::Wgl(Some(surface.window));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = surface;
+
+        return DisplayApiPreference::Cgl;
+    }
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = surface;
+
+        return DisplayApiPreference::Egl;
+    }
+
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "android", target_os = "ios"))
+    ))]
+    {
+        let _ = surface;
+
+        DisplayApiPreference::Egl
     }
 }
 
 impl Window for OpenGLWindow {
-    fn create_window() -> Self {
-        Self::with_event_loop(EventLoop::new().unwrap())
-    }
-
-    fn set_window_title(&mut self, title: &str) {
-        self.window.set_title(title);
-    }
-
-    fn winit_window(&self) -> &WinitWindow {
-        &self.window
-    }
-
-    fn take_event_loop(&mut self) -> EventLoop<()> {
-        self.event_loop.take().expect("Event loop missing")
+    fn attach(surface: &Surface) -> Self {
+        Self::try_attach(surface).expect("opengl")
     }
 
     fn present(&mut self) {
@@ -252,76 +236,53 @@ impl Window for OpenGLWindow {
     }
 
     fn set_size(&mut self, width: u32, height: u32) {
-        let size = winit::dpi::PhysicalSize::new(width, height);
-        let _ = self.window.request_inner_size(size);
+        self.width = width.max(1);
+        self.height = height.max(1);
 
         if let (Some(w), Some(h)) = (
-            std::num::NonZeroU32::new(width.max(1)),
-            std::num::NonZeroU32::new(height.max(1)),
+            std::num::NonZeroU32::new(self.width),
+            std::num::NonZeroU32::new(self.height),
         ) {
             self.surface.resize(&self.context, w, h);
             unsafe {
-                self.gl.viewport(0, 0, width as i32, height as i32);
+                self.gl
+                    .viewport(0, 0, self.width as i32, self.height as i32);
             }
         }
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
-        // Fallback to white if no color is provided
-        let size = self.window.inner_size();
-
-        // Two triangles that make up the rectangle (x, y coordinates)
-        let vertices: [f32; 12] = [
-            x,
-            y, // Top-left
-            x + w,
-            y, // Top-right
-            x,
-            y + h, // Bottom-left
-            x,
-            y + h, // Bottom-left
-            x + w,
-            y, // Top-right
-            x + w,
-            y + h, // Bottom-right
-        ];
+        let width = self.width;
+        let height = self.height;
+        let vertices: [f32; 12] = [x, y, x + w, y, x, y + h, x, y + h, x + w, y, x + w, y + h];
 
         unsafe {
-            // Enable blending for transparency (alpha)
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-
             self.gl.use_program(Some(self.shader_program));
 
-            // Pass the screen resolution to the shader so it scales pixels properly
             if let Some(loc) = self
                 .gl
                 .get_uniform_location(self.shader_program, "uResolution")
             {
                 self.gl
-                    .uniform_2_f32(Some(&loc), size.width as f32, size.height as f32);
+                    .uniform_2_f32(Some(&loc), width as f32, height as f32);
             }
 
-            // Pass the color (converted from 0-255 u8 to 0.0-1.0 f32)
             if let Some(loc) = self.gl.get_uniform_location(self.shader_program, "uColor") {
                 let [r, g, b, a] = color.as_rgba_f32();
                 self.gl.uniform_4_f32(Some(&loc), r, g, b, a);
             }
 
-            // Bind our geometry buffer and push the new coordinates to the GPU
             self.gl.bind_vertex_array(Some(self.vao));
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
-
-            // Safely cast the f32 array into raw bytes to send to OpenGL
             let vertices_u8 = core::slice::from_raw_parts(
                 vertices.as_ptr() as *const u8,
                 vertices.len() * std::mem::size_of::<f32>(),
             );
             self.gl
                 .buffer_data_u8_slice(glow::ARRAY_BUFFER, vertices_u8, glow::DYNAMIC_DRAW);
-
-            // Execute the draw command (6 vertices = 2 triangles)
             self.gl.draw_arrays(glow::TRIANGLES, 0, 6);
         }
     }
@@ -378,10 +339,7 @@ impl Window for OpenGLWindow {
     }
 
     fn render_text(&mut self) {
-        let size = self.window.inner_size();
-
         unsafe {
-            // glow_glyph needs blending enabled to draw smooth font edges
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
@@ -389,7 +347,7 @@ impl Window for OpenGLWindow {
 
         for (_, glyph_brush) in self.glyph_brushes.iter_mut() {
             glyph_brush
-                .draw_queued(&self.gl, size.width, size.height)
+                .draw_queued(&self.gl, self.width, self.height)
                 .expect("Failed to draw text");
         }
     }
@@ -438,11 +396,10 @@ impl OpenGLWindow {
             idx += 1;
         }
 
-        let size = self.window.inner_size();
         unsafe {
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             self.gl
-                .viewport(0, 0, size.width.max(1) as i32, size.height.max(1) as i32);
+                .viewport(0, 0, self.width.max(1) as i32, self.height.max(1) as i32);
         }
 
         if self.colored_mesh.vertex_count > 0 {

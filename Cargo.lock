@@ -182,7 +182,6 @@ dependencies = [
  "glow",
  "glow_glyph",
  "glutin",
- "glutin-winit",
  "glyph_brush",
  "libc",
  "log",
@@ -852,18 +851,6 @@ dependencies = [
  "wayland-sys",
  "windows-sys 0.48.0",
  "x11-dl",
-]
-
-[[package]]
-name = "glutin-winit"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ebcdfba24f73b8412c5181e56f092b5eff16671c514ce896b258a0a64bd7735"
-dependencies = [
- "cfg_aliases 0.1.1",
- "glutin",
- "raw-window-handle 0.5.2",
- "winit",
 ]
 
 [[package]]

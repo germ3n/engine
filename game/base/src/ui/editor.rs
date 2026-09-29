@@ -1,3 +1,7 @@
+use crate::platform::{
+    DeviceEvent, ElementState, Event, HostKind, KeyCode, Modifiers, MouseButton, MouseScrollDelta,
+    PlatformHost, WindowEvent,
+};
 use crate::script::libs::vector3::Vector3;
 use crate::ui::backend;
 use crate::ui::voxel::FlyCamera;
@@ -9,10 +13,6 @@ use crate::world::{
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use winit::event::{DeviceEvent, ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ControlFlow;
-use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
-use winit::window::CursorGrabMode;
 
 const TEXTURES: [&str; 7] = ["solid", "floor", "ceiling", "side", "crate", "ramp", "end"];
 const GRIDS: [f64; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];
@@ -99,12 +99,22 @@ pub fn run(map_name: &str) {
         println!("[editor] {}", editor.voxel_path.display());
     }
 
-    let mut window = backend::create();
-    window.set_window_title(&editor.title());
-    window.set_size(1600, 900);
-    let event_loop = window.take_event_loop();
+    let kind = HostKind::from_env();
+    println!("[host] {kind:?}");
+    let mut host = match PlatformHost::open(kind) {
+        Ok(host) => host,
+        Err(err) => {
+            println!("[host] {err}");
+
+            return;
+        }
+    };
+    host.set_title(&editor.title());
+    host.set_size(1600, 900);
+    let surface = host.surface().expect("host surface");
+    let mut window = backend::create(surface);
     let mut keys = HashSet::new();
-    let mut modifiers = ModifiersState::default();
+    let mut modifiers = Modifiers::default();
     let mut looking = false;
     let mut last_frame = Instant::now();
     let mut shown_title = editor.title();
@@ -117,165 +127,158 @@ pub fn run(map_name: &str) {
     let mut picture_key = String::new();
     let mut picture_revision = 0u64;
 
-    event_loop
-        .run(move |event, window_target| {
-            window_target.set_control_flow(ControlFlow::Poll);
+    host.run(move |event, host, control| {
+        control.poll();
 
-            match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => {
-                        window_target.exit();
-                    }
-                    WindowEvent::Resized(physical_size) => {
-                        window.set_size(physical_size.width, physical_size.height);
-                    }
-                    WindowEvent::Focused(false) => {
-                        keys.clear();
-                        looking = false;
-                        editor.end_stroke();
-                        set_capture(window.winit_window(), false);
-                    }
-                    WindowEvent::ModifiersChanged(next) => {
-                        modifiers = next.state();
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        editor.cursor_x = position.x as f32;
-                        editor.cursor_y = position.y as f32;
+        match event {
+            Event::Window(event) => match event {
+                WindowEvent::CloseRequested => {
+                    control.exit();
+                }
+                WindowEvent::Resized { width, height } => {
+                    window.set_size(width, height);
+                }
+                WindowEvent::Focused(false) => {
+                    keys.clear();
+                    looking = false;
+                    editor.end_stroke();
+                    host.set_cursor_grabbed(false);
+                }
+                WindowEvent::ModifiersChanged(next) => {
+                    modifiers = next;
+                }
+                WindowEvent::CursorMoved { x, y } => {
+                    editor.cursor_x = x as f32;
+                    editor.cursor_y = y as f32;
 
-                        if editor.painting && !looking {
-                            let size = window.winit_window().inner_size();
-                            let aim = editor.pointer_aim(size.width, size.height);
-                            editor.stroke(&aim);
-                        }
-                    }
-                    WindowEvent::MouseWheel { delta, .. } => {
-                        editor.on_wheel(wheel_steps(delta));
-                    }
-                    WindowEvent::MouseInput { state, button, .. } => {
-                        if button == MouseButton::Right {
-                            looking = state == ElementState::Pressed;
-                            editor.end_stroke();
-                            set_capture(window.winit_window(), looking);
-                        } else if button == MouseButton::Left && state == ElementState::Released {
-                            editor.end_stroke();
-                        } else if button == MouseButton::Left
-                            && state == ElementState::Pressed
-                            && !looking
-                        {
-                            let size = window.winit_window().inner_size();
-                            let aim = editor.pointer_aim(size.width, size.height);
-
-                            if editor.mode == Mode::Voxel {
-                                editor.painting = true;
-                                editor.stroke(&aim);
-                            } else {
-                                editor.brush_click(&aim);
-                            }
-                        }
-                    }
-                    WindowEvent::KeyboardInput { event, .. } => {
-                        if let PhysicalKey::Code(code) = event.physical_key {
-                            let pressed = event.state == ElementState::Pressed;
-
-                            if pressed {
-                                keys.insert(code);
-                            } else {
-                                keys.remove(&code);
-                            }
-
-                            if pressed && code == KeyCode::Escape {
-                                looking = false;
-                                editor.end_stroke();
-                                set_capture(window.winit_window(), false);
-                                editor.cancel();
-                            } else if pressed
-                                && matches!(code, KeyCode::Delete | KeyCode::Backspace)
-                            {
-                                if !event.repeat {
-                                    if editor.mode == Mode::Voxel {
-                                        let size = window.winit_window().inner_size();
-                                        let aim = editor.pointer_aim(size.width, size.height);
-                                        editor.erase_at(&aim);
-                                    } else {
-                                        editor.delete_selection();
-                                    }
-                                }
-                            } else if pressed {
-                                let control = modifiers.control_key() || modifiers.super_key();
-                                editor.on_key(code, event.repeat, control);
-                            }
-                        }
-                    }
-                    WindowEvent::RedrawRequested => {
-                        let size = window.winit_window().inner_size();
-                        let aim = editor.pointer_aim(size.width, size.height);
-                        let marked = editor.marked(&aim);
-
-                        if !solid_ready
-                            || solid_brush != editor.brushes.revision()
-                            || solid_voxel != editor.voxels.revision()
-                            || solid_mark != marked
-                        {
-                            solid = editor.voxels.mesh();
-
-                            match marked {
-                                Some(index) => solid.extend(editor.brushes.mesh_highlight(index)),
-                                None => solid.extend(editor.brushes.mesh()),
-                            }
-
-                            solid_brush = editor.brushes.revision();
-                            solid_voxel = editor.voxels.revision();
-                            solid_mark = marked;
-                            solid_ready = true;
-                            picture_key.clear();
-                        }
-
-                        let key = overlay_key(&editor, &aim);
-
-                        if picture_key != key {
-                            picture = solid.clone();
-                            push_overlay(&mut picture, &editor, &aim);
-                            picture_key = key;
-                            picture_revision = picture_revision.wrapping_add(1);
-                        }
-
-                        let aspect = size.width as f32 / size.height.max(1) as f32;
-                        let view = editor.camera.scene(aspect, editor.voxels.scale() as f32);
-                        let title = editor.title();
-
-                        if title != shown_title {
-                            window.set_window_title(&title);
-                            shown_title = title;
-                        }
-
-                        let lines = hud_lines(&editor, &aim);
-                        window.begin_frame(0.46, 0.62, 0.74);
-                        window.draw_colored_mesh(&picture, picture_revision, &view);
-                        draw_hud(&mut window, &lines);
-                        window.render_text();
-                        window.present();
-                    }
-                    _ => {}
-                },
-                Event::DeviceEvent {
-                    event: DeviceEvent::MouseMotion { delta },
-                    ..
-                } => {
-                    if looking {
-                        editor.camera.look(delta.0 as f32, delta.1 as f32);
+                    if editor.painting && !looking {
+                        let (width, height) = host.size();
+                        let aim = editor.pointer_aim(width, height);
+                        editor.stroke(&aim);
                     }
                 }
-                Event::AboutToWait => {
-                    let now = Instant::now();
-                    let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
-                    last_frame = now;
-                    editor.fly(&keys, modifiers.shift_key(), dt);
-                    window.winit_window().request_redraw();
+                WindowEvent::MouseWheel { delta } => {
+                    editor.on_wheel(wheel_steps(delta));
+                }
+                WindowEvent::MouseInput { state, button } => {
+                    if button == MouseButton::Right {
+                        looking = state == ElementState::Pressed;
+                        editor.end_stroke();
+                        host.set_cursor_grabbed(looking);
+                    } else if button == MouseButton::Left && state == ElementState::Released {
+                        editor.end_stroke();
+                    } else if button == MouseButton::Left
+                        && state == ElementState::Pressed
+                        && !looking
+                    {
+                        let (width, height) = host.size();
+                        let aim = editor.pointer_aim(width, height);
+
+                        if editor.mode == Mode::Voxel {
+                            editor.painting = true;
+                            editor.stroke(&aim);
+                        } else {
+                            editor.brush_click(&aim);
+                        }
+                    }
+                }
+                WindowEvent::KeyboardInput(input) => {
+                    if let Some(code) = input.key_code {
+                        let pressed = input.state == ElementState::Pressed;
+
+                        if pressed {
+                            keys.insert(code);
+                        } else {
+                            keys.remove(&code);
+                        }
+
+                        if pressed && code == KeyCode::Escape {
+                            looking = false;
+                            editor.end_stroke();
+                            host.set_cursor_grabbed(false);
+                            editor.cancel();
+                        } else if pressed && matches!(code, KeyCode::Delete | KeyCode::Backspace) {
+                            if !input.repeat {
+                                if editor.mode == Mode::Voxel {
+                                    let (width, height) = host.size();
+                                    let aim = editor.pointer_aim(width, height);
+                                    editor.erase_at(&aim);
+                                } else {
+                                    editor.delete_selection();
+                                }
+                            }
+                        } else if pressed {
+                            let control_key = modifiers.control_key() || modifiers.super_key();
+                            editor.on_key(code, input.repeat, control_key);
+                        }
+                    }
+                }
+                WindowEvent::RedrawRequested => {
+                    let (width, height) = host.size();
+                    let aim = editor.pointer_aim(width, height);
+                    let marked = editor.marked(&aim);
+
+                    if !solid_ready
+                        || solid_brush != editor.brushes.revision()
+                        || solid_voxel != editor.voxels.revision()
+                        || solid_mark != marked
+                    {
+                        solid = editor.voxels.mesh();
+
+                        match marked {
+                            Some(index) => solid.extend(editor.brushes.mesh_highlight(index)),
+                            None => solid.extend(editor.brushes.mesh()),
+                        }
+
+                        solid_brush = editor.brushes.revision();
+                        solid_voxel = editor.voxels.revision();
+                        solid_mark = marked;
+                        solid_ready = true;
+                        picture_key.clear();
+                    }
+
+                    let key = overlay_key(&editor, &aim);
+
+                    if picture_key != key {
+                        picture = solid.clone();
+                        push_overlay(&mut picture, &editor, &aim);
+                        picture_key = key;
+                        picture_revision = picture_revision.wrapping_add(1);
+                    }
+
+                    let aspect = width as f32 / height.max(1) as f32;
+                    let view = editor.camera.scene(aspect, editor.voxels.scale() as f32);
+                    let title = editor.title();
+
+                    if title != shown_title {
+                        host.set_title(&title);
+                        shown_title = title;
+                    }
+
+                    let lines = hud_lines(&editor, &aim);
+                    window.begin_frame(0.46, 0.62, 0.74);
+                    window.draw_colored_mesh(&picture, picture_revision, &view);
+                    draw_hud(&mut window, &lines);
+                    window.render_text();
+                    window.present();
                 }
                 _ => {}
+            },
+            Event::Device(DeviceEvent::MouseMotion { delta }) => {
+                if looking {
+                    editor.camera.look(delta.0 as f32, delta.1 as f32);
+                }
             }
-        })
-        .unwrap();
+            Event::AboutToWait => {
+                let now = Instant::now();
+                let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
+                last_frame = now;
+                editor.fly(&keys, modifiers.shift_key(), dt);
+                host.request_redraw();
+            }
+            _ => {}
+        }
+    });
 }
 
 fn open_editor(name: &str) -> Result<Editor, String> {
@@ -1302,7 +1305,7 @@ fn is_nudge(code: KeyCode) -> bool {
 fn wheel_steps(delta: MouseScrollDelta) -> f64 {
     match delta {
         MouseScrollDelta::LineDelta(_, y) => y as f64,
-        MouseScrollDelta::PixelDelta(offset) => offset.y / 48.0,
+        MouseScrollDelta::PixelDelta(_, y) => y / 48.0,
     }
 }
 
@@ -1312,21 +1315,6 @@ fn held_key(keys: &HashSet<KeyCode>, code: KeyCode) -> f32 {
     } else {
         0.0
     }
-}
-
-fn set_capture(window: &winit::window::Window, captured: bool) {
-    if captured {
-        if window.set_cursor_grab(CursorGrabMode::Locked).is_err() {
-            let _ = window.set_cursor_grab(CursorGrabMode::Confined);
-        }
-
-        window.set_cursor_visible(false);
-
-        return;
-    }
-
-    let _ = window.set_cursor_grab(CursorGrabMode::None);
-    window.set_cursor_visible(true);
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {

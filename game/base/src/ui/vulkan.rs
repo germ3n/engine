@@ -1,3 +1,4 @@
+use crate::platform::Surface;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -6,9 +7,6 @@ use ash::vk::{self, Handle};
 use glyph_brush::ab_glyph::FontArc;
 use glyph_brush::{BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text};
 use std::ffi::{CStr, CString};
-use winit::event_loop::EventLoop;
-use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use winit::window::{Window as WinitWindow, WindowBuilder};
 
 const FRAMES: usize = 2;
 
@@ -22,8 +20,8 @@ pub struct VulkanWindow {
     text_bufs: [HostBuffer; FRAMES],
     atlas: Atlas,
     gpu: Gpu,
-    window: WinitWindow,
-    event_loop: Option<EventLoop<()>>,
+    width: u32,
+    height: u32,
     ui: Vec<f32>,
     text: TextFrame,
     view: [f32; 16],
@@ -40,36 +38,19 @@ pub struct VulkanWindow {
 }
 
 impl VulkanWindow {
-    pub fn try_new() -> Result<Self, (Option<EventLoop<()>>, String)> {
-        let entry = match unsafe { ash::Entry::load() } {
-            Ok(entry) => entry,
-            Err(err) => return Err((None, err.to_string())),
-        };
-        let event_loop = match EventLoop::new() {
-            Ok(event_loop) => event_loop,
-            Err(err) => return Err((None, err.to_string())),
-        };
+    pub fn try_new(surface: &Surface) -> Result<Self, String> {
+        let entry = unsafe { ash::Entry::load() }.map_err(|err| err.to_string())?;
 
-        match build_window(entry, &event_loop) {
-            Ok(mut window) => {
-                window.event_loop = Some(event_loop);
-
-                Ok(window)
-            }
-            Err(err) => Err((Some(event_loop), err)),
-        }
+        build_window(entry, surface)
     }
 }
 
-fn build_window(entry: ash::Entry, event_loop: &EventLoop<()>) -> Result<VulkanWindow, String> {
-    let window = WindowBuilder::new()
-        .with_title("Starting...")
-        .build(event_loop)
-        .map_err(|err| err.to_string())?;
-    let gpu = Gpu::open(entry, &window)?;
+fn build_window(entry: ash::Entry, surface: &Surface) -> Result<VulkanWindow, String> {
+    let gpu = Gpu::open(entry, surface)?;
     let format = surface_format(&gpu)?;
-    let extent = window.inner_size();
-    let mut swap = Swap::create(&gpu, format, extent.width.max(1), extent.height.max(1))?;
+    let width = surface.width;
+    let height = surface.height;
+    let mut swap = Swap::create(&gpu, format, width, height)?;
     let pipes = Pipelines::create(&gpu, swap.format)?;
     swap.finish(&gpu, pipes.swap_pass)?;
     let frames = Frames::create(&gpu)?;
@@ -95,8 +76,8 @@ fn build_window(entry: ash::Entry, event_loop: &EventLoop<()>) -> Result<VulkanW
         text_bufs,
         atlas,
         gpu,
-        window,
-        event_loop: None,
+        width,
+        height,
         ui: Vec::new(),
         text,
         view: [0.0; 16],
@@ -123,33 +104,20 @@ impl Drop for VulkanWindow {
 }
 
 impl Window for VulkanWindow {
-    fn create_window() -> Self {
-        Self::try_new().expect("vulkan window")
-    }
-
-    fn set_window_title(&mut self, title: &str) {
-        self.window.set_title(title);
+    fn attach(surface: &Surface) -> Self {
+        Self::try_new(surface).expect("vulkan window")
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let _ = self
-            .window
-            .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+        self.width = w.max(1);
+        self.height = h.max(1);
 
         if let Err(err) = self
             .swap
-            .resize(&self.gpu, w.max(1), h.max(1), self.pipes.swap_pass)
+            .resize(&self.gpu, self.width, self.height, self.pipes.swap_pass)
         {
             println!("[gfx] vulkan resize {err}");
         }
-    }
-
-    fn winit_window(&self) -> &WinitWindow {
-        &self.window
-    }
-
-    fn take_event_loop(&mut self) -> EventLoop<()> {
-        self.event_loop.take().expect("Event loop missing")
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
@@ -245,11 +213,10 @@ impl VulkanWindow {
         let image = match acquired {
             Ok(image) => image,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                let size = self.window.inner_size();
                 self.swap.resize(
                     &self.gpu,
-                    size.width.max(1),
-                    size.height.max(1),
+                    self.width.max(1),
+                    self.height.max(1),
                     self.pipes.swap_pass,
                 )?;
 
@@ -315,11 +282,10 @@ impl VulkanWindow {
         match present {
             Ok(()) => Ok(()),
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
-                let size = self.window.inner_size();
                 self.swap.resize(
                     &self.gpu,
-                    size.width.max(1),
-                    size.height.max(1),
+                    self.width.max(1),
+                    self.height.max(1),
                     self.pipes.swap_pass,
                 )
             }
@@ -512,15 +478,9 @@ impl Drop for Gpu {
 }
 
 impl Gpu {
-    fn open(entry: ash::Entry, window: &WinitWindow) -> Result<Self, String> {
-        let display = window
-            .display_handle()
-            .map_err(|err| err.to_string())?
-            .as_raw();
-        let window_handle = window
-            .window_handle()
-            .map_err(|err| err.to_string())?
-            .as_raw();
+    fn open(entry: ash::Entry, surface: &Surface) -> Result<Self, String> {
+        let display = surface.display_handle_06();
+        let window_handle = surface.window_handle_06();
         let mut names = Vec::new();
         let required = ash_window::enumerate_required_extensions(display).map_err(vk_err)?;
 

@@ -1,3 +1,4 @@
+use crate::platform::Surface;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -12,13 +13,9 @@ use metal::*;
 use objc::runtime::NO;
 use objc::runtime::{Object, YES};
 use objc::{msg_send, sel, sel_impl};
-use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
+use raw_window_handle::RawWindowHandle;
 #[cfg(target_os = "ios")]
 use std::ffi::c_void;
-use winit::{
-    event_loop::EventLoop,
-    window::{Window as WinitWindow, WindowBuilder},
-};
 
 const SHADERS: &str = r#"
 #include <metal_stdlib>
@@ -105,8 +102,9 @@ struct GlyphQuad {
 }
 
 pub struct MetalWindow {
-    window: WinitWindow,
-    event_loop: Option<EventLoop<()>>,
+    width: u32,
+    height: u32,
+    scale_factor: f64,
     device: Device,
     queue: CommandQueue,
     layer: MetalLayer,
@@ -145,7 +143,7 @@ struct MetalEyes {
 
 impl MetalWindow {
     #[allow(unexpected_cfgs)]
-    pub fn try_new() -> Result<Self, String> {
+    pub fn try_new(surface: &Surface) -> Result<Self, String> {
         let device = Device::system_default().ok_or("no metal device")?;
         let queue = device.new_command_queue();
         let library = device
@@ -183,12 +181,6 @@ impl MetalWindow {
         let depth_write = depth_state(&device, MTLCompareFunction::Less, true);
         let depth_off = depth_state(&device, MTLCompareFunction::Always, false);
 
-        let event_loop = EventLoop::new().map_err(|err| err.to_string())?;
-        let window = WindowBuilder::new()
-            .with_title("Starting...")
-            .build(&event_loop)
-            .map_err(|err| err.to_string())?;
-
         let layer = MetalLayer::new();
         layer.set_device(&device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
@@ -202,8 +194,8 @@ impl MetalWindow {
                 let _: () = msg_send![layer.as_ptr(), setAllowsNextDrawableTimeout: NO];
             }
         }
-        attach_layer(&window, &layer)?;
-        resize_layer(&window, &layer);
+        attach_layer(surface, &layer)?;
+        sync_layer(surface.width, surface.height, surface.scale_factor, &layer);
 
         let font = FontArc::try_from_slice(include_bytes!("font_default.ttf"))
             .map_err(|err| err.to_string())?;
@@ -213,8 +205,9 @@ impl MetalWindow {
         let atlas = atlas_texture(&device, 512, 512);
 
         Ok(Self {
-            window,
-            event_loop: Some(event_loop),
+            width: surface.width,
+            height: surface.height,
+            scale_factor: surface.scale_factor,
             device,
             queue,
             layer,
@@ -247,26 +240,14 @@ impl MetalWindow {
 }
 
 impl Window for MetalWindow {
-    fn create_window() -> Self {
-        Self::try_new().expect("metal")
-    }
-
-    fn set_window_title(&mut self, title: &str) {
-        self.window.set_title(title);
+    fn attach(surface: &Surface) -> Self {
+        Self::try_new(surface).expect("metal")
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let size = winit::dpi::PhysicalSize::new(w, h);
-        let _ = self.window.request_inner_size(size);
-        resize_layer(&self.window, &self.layer);
-    }
-
-    fn winit_window(&self) -> &WinitWindow {
-        &self.window
-    }
-
-    fn take_event_loop(&mut self) -> EventLoop<()> {
-        self.event_loop.take().expect("Event loop missing")
+        self.width = w.max(1);
+        self.height = h.max(1);
+        sync_layer(self.width, self.height, self.scale_factor, &self.layer);
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
@@ -392,7 +373,7 @@ impl Window for MetalWindow {
     }
 
     fn present(&mut self) {
-        sync_layer(&self.window, &self.layer);
+        sync_layer(self.width, self.height, self.scale_factor, &self.layer);
         let drawable_size = self.layer.drawable_size();
         let width = drawable_size.width as u64;
         let height = drawable_size.height as u64;
@@ -619,10 +600,8 @@ impl Drop for MetalWindow {
 }
 
 #[allow(unexpected_cfgs)]
-fn attach_layer(window: &WinitWindow, layer: &MetalLayer) -> Result<(), String> {
-    let handle = window.raw_window_handle();
-
-    match handle {
+fn attach_layer(surface: &Surface, layer: &MetalLayer) -> Result<(), String> {
+    match surface.window {
         RawWindowHandle::AppKit(appkit) => {
             if appkit.ns_view.is_null() {
                 return Err("missing ns view".to_string());
@@ -642,14 +621,13 @@ fn attach_layer(window: &WinitWindow, layer: &MetalLayer) -> Result<(), String> 
                 return Err("missing ui view".to_string());
             }
 
-            let size = window.inner_size();
-            let scale = window.scale_factor().max(1.0);
+            let scale = surface.scale_factor.max(1.0);
             unsafe {
                 engine_attach_metal_layer(
                     uikit.ui_view,
                     layer.as_ptr() as *mut c_void,
-                    size.width as f64 / scale,
-                    size.height as f64 / scale,
+                    surface.width as f64 / scale,
+                    surface.height as f64 / scale,
                 );
             }
 
@@ -665,15 +643,9 @@ extern "C" {
     fn engine_resize_metal_layer(layer: *mut c_void, width: f64, height: f64);
 }
 
-fn resize_layer(window: &WinitWindow, layer: &MetalLayer) {
-    sync_layer(window, layer);
-}
-
-fn sync_layer(window: &WinitWindow, layer: &MetalLayer) {
-    let size = window.inner_size();
-    let scale = window.scale_factor();
+fn sync_layer(width: u32, height: u32, scale: f64, layer: &MetalLayer) {
     let drawable = layer.drawable_size();
-    let same_size = drawable.width == size.width as f64 && drawable.height == size.height as f64;
+    let same_size = drawable.width == width as f64 && drawable.height == height as f64;
     let same_scale = layer.contents_scale() == scale;
 
     if same_size && same_scale {
@@ -681,13 +653,13 @@ fn sync_layer(window: &WinitWindow, layer: &MetalLayer) {
     }
 
     layer.set_contents_scale(scale);
-    layer.set_drawable_size(CGSize::new(size.width as f64, size.height as f64));
+    layer.set_drawable_size(CGSize::new(width as f64, height as f64));
     #[cfg(target_os = "ios")]
     unsafe {
         engine_resize_metal_layer(
             layer.as_ptr() as *mut c_void,
-            size.width as f64 / scale.max(1.0),
-            size.height as f64 / scale.max(1.0),
+            width as f64 / scale.max(1.0),
+            height as f64 / scale.max(1.0),
         );
     }
 }
