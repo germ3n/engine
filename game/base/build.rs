@@ -1,6 +1,7 @@
 fn main() {
     stage_steam();
     compile_bundled_lua();
+    write_base_pak();
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
@@ -171,6 +172,66 @@ fn compile_bundled_lua() {
     }
 }
 
+fn write_base_pak() {
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let lua_out = out_dir.join("lua");
+    let shaders = [
+        ("shaders/mesh.wgsl", "src/ui/shaders/mesh.wgsl"),
+        ("shaders/color.wgsl", "src/ui/shaders/color.wgsl"),
+        ("shaders/text.wgsl", "src/ui/shaders/text.wgsl"),
+    ];
+    let lua = [
+        ("lua/libs/hook.luac", "hook.luac"),
+        ("lua/libs/net.luac", "net.luac"),
+        ("lua/libs/vector3.luac", "vector3.luac"),
+        ("lua/libs/angle3.luac", "angle3.luac"),
+        ("lua/menu/menu.luac", "menu.luac"),
+    ];
+    let mut owned = Vec::new();
+    let mut files = Vec::new();
+
+    for (virtual_path, file_name) in lua {
+        let path = lua_out.join(file_name);
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+            panic!("failed to read {}: {err}", path.display());
+        });
+        owned.push((virtual_path.to_string(), bytes));
+    }
+
+    for (virtual_path, source) in shaders {
+        let path = manifest_dir.join(source);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+            panic!("failed to read {}: {err}", path.display());
+        });
+        owned.push((virtual_path.to_string(), bytes));
+    }
+
+    for (name, bytes) in &owned {
+        files.push((name.as_str(), bytes.as_slice()));
+    }
+
+    let bytes = encode_pak(&files).unwrap_or_else(|err| panic!("failed to encode base.pak: {err}"));
+    let out_pak = out_dir.join("base.pak");
+    std::fs::write(&out_pak, &bytes).unwrap_or_else(|err| {
+        panic!("failed to write {}: {err}", out_pak.display());
+    });
+
+    let manifest_pak = manifest_dir.join("base.pak");
+    let _ = std::fs::write(&manifest_pak, &bytes);
+
+    if let Some(build_dir) = out_dir.parent().and_then(|path| path.parent()) {
+        if let Some(target_dir) = build_dir.parent() {
+            let target_pak = target_dir.join("base.pak");
+            let _ = std::fs::write(&target_pak, &bytes);
+            let game_dir = target_dir.join("game");
+            let _ = std::fs::create_dir_all(&game_dir);
+            let _ = std::fs::write(game_dir.join("base.pak"), &bytes);
+        }
+    }
+}
+
 fn compile_lua(src: &std::path::Path, dest: &std::path::Path, strip: bool) {
     println!("cargo:rerun-if-changed={}", src.display());
 
@@ -209,4 +270,68 @@ fn compile_lua(src: &std::path::Path, dest: &std::path::Path, strip: bool) {
     std::fs::write(dest, bytes.as_ref()).unwrap_or_else(|err| {
         panic!("failed to write {}: {err}", dest.display());
     });
+}
+
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+struct PakEntry {
+    name: String,
+    offset: u64,
+    compressed: u64,
+    raw_size: u64,
+}
+
+#[derive(wincode::SchemaWrite, wincode::SchemaRead)]
+struct PakCatalog {
+    version: u32,
+    entries: Vec<PakEntry>,
+}
+
+fn encode_pak(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
+    const MAGIC: &[u8; 4] = b"PAK\0";
+    const VERSION: u32 = 1;
+    let mut frames = Vec::with_capacity(files.len());
+    let mut entries = Vec::with_capacity(files.len());
+
+    for (name, bytes) in files {
+        let frame = zstd::bulk::compress(bytes, zstd::DEFAULT_COMPRESSION_LEVEL)
+            .map_err(|err| format!("pak: {err}"))?;
+        entries.push(PakEntry {
+            name: (*name).to_string(),
+            offset: 0,
+            compressed: frame.len() as u64,
+            raw_size: bytes.len() as u64,
+        });
+        frames.push(frame);
+    }
+
+    let mut catalog = PakCatalog {
+        version: VERSION,
+        entries,
+    };
+    let toc_len = wincode::serialized_size(&catalog).map_err(|err| format!("pak: {err}"))?;
+    let mut cursor = (4 + toc_len + 7) & !7;
+    let mut idx = 0;
+
+    while idx < catalog.entries.len() {
+        catalog.entries[idx].offset = cursor;
+        cursor = (cursor + catalog.entries[idx].compressed + 7) & !7;
+        idx += 1;
+    }
+
+    let toc = wincode::serialize(&catalog).map_err(|err| format!("pak: {err}"))?;
+    let mut out = Vec::with_capacity(cursor as usize);
+    out.extend_from_slice(MAGIC);
+    out.extend_from_slice(&toc);
+    idx = 0;
+
+    while idx < frames.len() {
+        while (out.len() as u64) < catalog.entries[idx].offset {
+            out.push(0);
+        }
+
+        out.extend_from_slice(&frames[idx]);
+        idx += 1;
+    }
+
+    Ok(out)
 }

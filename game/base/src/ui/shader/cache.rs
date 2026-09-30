@@ -189,7 +189,6 @@ fn hash(parts: &[&str]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::shader::MESH;
     use naga::ShaderStage;
 
     #[test]
@@ -200,8 +199,13 @@ mod tests {
         let old = std::env::current_dir().unwrap();
         std::env::set_current_dir(&dir).unwrap();
         let cache = Registry::for_device("test-device");
-        let first = cache.spirv(MESH, ShaderStage::Vertex, "mesh_vert").unwrap();
-        let second = cache.spirv(MESH, ShaderStage::Vertex, "mesh_vert").unwrap();
+        let source = crate::ui::shaders::Program::Mesh.wgsl();
+        let first = cache
+            .spirv(&source, ShaderStage::Vertex, "vs_main")
+            .unwrap();
+        let second = cache
+            .spirv(&source, ShaderStage::Vertex, "vs_main")
+            .unwrap();
         std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(first, second);

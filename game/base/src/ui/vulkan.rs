@@ -802,12 +802,15 @@ impl Pipelines {
         let color_layout = layout(&gpu.device, 16, &[])?;
         let text_sets = [descriptor_layout(&gpu.device)?];
         let text_layout = layout(&gpu.device, 16, &text_sets)?;
-        let mesh_vert = cache.spirv(shader::MESH, naga::ShaderStage::Vertex, "mesh_vert")?;
-        let mesh_frag = cache.spirv(shader::MESH, naga::ShaderStage::Fragment, "mesh_frag")?;
-        let color_vert = cache.spirv(shader::COLOR, naga::ShaderStage::Vertex, "color_vert")?;
-        let color_frag = cache.spirv(shader::COLOR, naga::ShaderStage::Fragment, "color_frag")?;
-        let text_vert = cache.spirv(shader::TEXT, naga::ShaderStage::Vertex, "text_vert")?;
-        let text_frag = cache.spirv(shader::TEXT, naga::ShaderStage::Fragment, "text_frag")?;
+        let mesh_src = crate::ui::shaders::Program::Mesh.wgsl();
+        let color_src = crate::ui::shaders::Program::Color.wgsl();
+        let text_src = crate::ui::shaders::Program::Text.wgsl();
+        let mesh_vert = cache.spirv(&mesh_src, naga::ShaderStage::Vertex, "vs_main")?;
+        let mesh_frag = cache.spirv(&mesh_src, naga::ShaderStage::Fragment, "fs_main")?;
+        let color_vert = cache.spirv(&color_src, naga::ShaderStage::Vertex, "vs_main")?;
+        let color_frag = cache.spirv(&color_src, naga::ShaderStage::Fragment, "fs_main")?;
+        let text_vert = cache.spirv(&text_src, naga::ShaderStage::Vertex, "vs_main")?;
+        let text_frag = cache.spirv(&text_src, naga::ShaderStage::Fragment, "fs_main")?;
         let mesh_vs = shader_module(&gpu.device, &mesh_vert)?;
         let mesh_fs = shader_module(&gpu.device, &mesh_frag)?;
         let color_vs = shader_module(&gpu.device, &color_vert)?;
@@ -820,8 +823,8 @@ impl Pipelines {
             mesh_layout,
             mesh_vs,
             mesh_fs,
-            c"mesh_vert",
-            c"mesh_frag",
+            c"vs_main",
+            c"fs_main",
             &mesh_attrs(),
             24,
             true,
@@ -834,8 +837,8 @@ impl Pipelines {
             mesh_layout,
             mesh_vs,
             mesh_fs,
-            c"mesh_vert",
-            c"mesh_frag",
+            c"vs_main",
+            c"fs_main",
             &mesh_attrs(),
             24,
             true,
@@ -848,8 +851,8 @@ impl Pipelines {
             color_layout,
             color_vs,
             color_fs,
-            c"color_vert",
-            c"color_frag",
+            c"vs_main",
+            c"fs_main",
             &color_attrs(),
             24,
             false,
@@ -862,8 +865,8 @@ impl Pipelines {
             text_layout,
             text_vs,
             text_fs,
-            c"text_vert",
-            c"text_frag",
+            c"vs_main",
+            c"fs_main",
             &text_attrs(),
             32,
             false,
@@ -2272,15 +2275,18 @@ mod tests {
 
     #[test]
     fn vulkan_shaders_compile() {
-        let mesh = shader::spirv(shader::MESH, naga::ShaderStage::Vertex, "mesh_vert").unwrap();
-        let color = shader::spirv(shader::COLOR, naga::ShaderStage::Vertex, "color_vert").unwrap();
-        let text = shader::spirv(shader::TEXT, naga::ShaderStage::Fragment, "text_frag").unwrap();
+        let mesh_src = crate::ui::shaders::Program::Mesh.wgsl();
+        let color_src = crate::ui::shaders::Program::Color.wgsl();
+        let text_src = crate::ui::shaders::Program::Text.wgsl();
+        let mesh = shader::spirv(&mesh_src, naga::ShaderStage::Vertex, "vs_main").unwrap();
+        let color = shader::spirv(&color_src, naga::ShaderStage::Vertex, "vs_main").unwrap();
+        let text = shader::spirv(&text_src, naga::ShaderStage::Fragment, "fs_main").unwrap();
         assert_eq!(mesh[0], 0x07230203);
         assert_eq!(color[0], 0x07230203);
         assert_eq!(text[0], 0x07230203);
-        shader::spirv(shader::MESH, naga::ShaderStage::Fragment, "mesh_frag").unwrap();
-        shader::spirv(shader::COLOR, naga::ShaderStage::Fragment, "color_frag").unwrap();
-        shader::spirv(shader::TEXT, naga::ShaderStage::Vertex, "text_vert").unwrap();
+        shader::spirv(&mesh_src, naga::ShaderStage::Fragment, "fs_main").unwrap();
+        shader::spirv(&color_src, naga::ShaderStage::Fragment, "fs_main").unwrap();
+        shader::spirv(&text_src, naga::ShaderStage::Vertex, "vs_main").unwrap();
     }
 
     #[test]

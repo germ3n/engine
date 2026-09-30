@@ -69,33 +69,36 @@ impl MetalWindow {
         let device = Device::system_default().ok_or("no metal device")?;
         let queue = device.new_command_queue();
         let cache = shader::Registry::for_device(&shader::id_from_u64(device.registry_id()));
+        let mesh_src = crate::ui::shaders::Program::Mesh.wgsl();
+        let color_src = crate::ui::shaders::Program::Color.wgsl();
+        let text_src = crate::ui::shaders::Program::Text.wgsl();
         let mesh_lib = device
-            .new_library_with_source(&cache.msl(shader::MESH)?, &CompileOptions::new())
+            .new_library_with_source(&cache.msl(&mesh_src)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
         let color_lib = device
-            .new_library_with_source(&cache.msl(shader::COLOR)?, &CompileOptions::new())
+            .new_library_with_source(&cache.msl(&color_src)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
         let text_lib = device
-            .new_library_with_source(&cache.msl(shader::TEXT)?, &CompileOptions::new())
+            .new_library_with_source(&cache.msl(&text_src)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
         let mesh_vert = mesh_lib
-            .get_function("mesh_vert", None)
-            .map_err(|err| format!("mesh_vert: {err}"))?;
+            .get_function("vs_main", None)
+            .map_err(|err| format!("vs_main: {err}"))?;
         let mesh_frag = mesh_lib
-            .get_function("mesh_frag", None)
-            .map_err(|err| format!("mesh_frag: {err}"))?;
+            .get_function("fs_main", None)
+            .map_err(|err| format!("fs_main: {err}"))?;
         let color_vert = color_lib
-            .get_function("color_vert", None)
-            .map_err(|err| format!("color_vert: {err}"))?;
+            .get_function("vs_main", None)
+            .map_err(|err| format!("vs_main: {err}"))?;
         let color_frag = color_lib
-            .get_function("color_frag", None)
-            .map_err(|err| format!("color_frag: {err}"))?;
+            .get_function("fs_main", None)
+            .map_err(|err| format!("fs_main: {err}"))?;
         let text_vert = text_lib
-            .get_function("text_vert", None)
-            .map_err(|err| format!("text_vert: {err}"))?;
+            .get_function("vs_main", None)
+            .map_err(|err| format!("vs_main: {err}"))?;
         let text_frag = text_lib
-            .get_function("text_frag", None)
-            .map_err(|err| format!("text_frag: {err}"))?;
+            .get_function("fs_main", None)
+            .map_err(|err| format!("fs_main: {err}"))?;
 
         let mesh_pipeline = pipeline(&device, &mesh_vert, &mesh_frag, &mesh_vertex_desc(), false)?;
         let color_pipeline = pipeline(

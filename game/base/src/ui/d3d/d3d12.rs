@@ -143,15 +143,15 @@ impl D3D12Window {
         let srv_gpu = unsafe { srv_heap.GetGPUDescriptorHandleForHeapStart() };
         let plain_root = plain_root(&device)?;
         let text_root = text_root(&device)?;
-        let mesh_src = shader::mesh_sm5(&cache)?;
-        let color_src = shader::color_sm5(&cache)?;
-        let text_src = shader::text_sm5(&cache)?;
-        let mesh_vs = shader::vs5(&mesh_src, s!("mesh_vert"))?;
-        let mesh_ps = shader::ps5(&mesh_src, s!("mesh_frag"))?;
-        let color_vs = shader::vs5(&color_src, s!("color_vert"))?;
-        let color_ps = shader::ps5(&color_src, s!("color_frag"))?;
-        let text_vs = shader::vs5(&text_src, s!("text_vert"))?;
-        let text_ps = shader::ps5(&text_src, s!("text_frag"))?;
+        let mesh_src = cache.hlsl(&crate::ui::shaders::Program::Mesh.wgsl())?;
+        let color_src = cache.hlsl(&crate::ui::shaders::Program::Color.wgsl())?;
+        let text_src = cache.hlsl(&crate::ui::shaders::Program::Text.wgsl())?;
+        let mesh_vs = shader::vs5(&mesh_src, s!("vs_main"))?;
+        let mesh_ps = shader::ps5(&mesh_src, s!("fs_main"))?;
+        let color_vs = shader::vs5(&color_src, s!("vs_main"))?;
+        let color_ps = shader::ps5(&color_src, s!("fs_main"))?;
+        let text_vs = shader::vs5(&text_src, s!("vs_main"))?;
+        let text_ps = shader::ps5(&text_src, s!("fs_main"))?;
         let mesh_pso = pipeline(
             &device,
             &plain_root,

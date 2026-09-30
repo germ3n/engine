@@ -1,8 +1,28 @@
+use std::borrow::Cow;
+
 pub const HOOK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/hook.luac"));
 pub const NET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/net.luac"));
 pub const VECTOR3: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/vector3.luac"));
 pub const ANGLE3: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/angle3.luac"));
 pub const MENU: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/menu.luac"));
+
+pub fn bytes(path: &str, fallback: &'static [u8]) -> Cow<'static, [u8]> {
+    match crate::fs::read(path) {
+        Ok(bytes) => {
+            log::info!("[lua] loaded {path} from fs ({} bytes)", bytes.len());
+
+            Cow::Owned(bytes)
+        }
+        Err(err) => {
+            log::warn!(
+                "[lua] {path} missing from fs ({err}), using embedded fallback ({} bytes)",
+                fallback.len()
+            );
+
+            Cow::Borrowed(fallback)
+        }
+    }
+}
 
 pub fn load_bytecode<'a>(lua: &mlua::Lua, name: &str, bytes: &'a [u8]) -> mlua::chunk::Chunk<'a> {
     lua.load(bytes)
@@ -69,6 +89,9 @@ mod tests {
             .exec()
             .unwrap();
         engine.run_hook("Ping", 0.0, 0.0, 1, ());
-        load_bytecode(&engine.lua, "menu.lua", MENU).exec().unwrap();
+        let menu = bytes("lua/menu/menu.luac", MENU);
+        load_bytecode(&engine.lua, "menu.lua", &menu)
+            .exec()
+            .unwrap();
     }
 }

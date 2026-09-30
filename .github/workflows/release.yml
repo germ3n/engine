@@ -151,12 +151,32 @@ jobs:
           mkdir -p dist
           cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
           cp target/release/${{ matrix.editor_binary }} dist/${{ matrix.editor_asset }}
+          PAK_NAME="${{ matrix.asset_name }}"
+          PAK_NAME="${PAK_NAME%.exe}.pak"
+          if [ -f target/release/base.pak ]; then
+            cp target/release/base.pak "dist/${PAK_NAME}"
+          elif [ -f target/release/game/base.pak ]; then
+            cp target/release/game/base.pak "dist/${PAK_NAME}"
+          elif [ -f game/base/base.pak ]; then
+            cp game/base/base.pak "dist/${PAK_NAME}"
+          else
+            echo "base.pak was not produced by the build"
+            exit 1
+          fi
+          echo "Prepared ${PAK_NAME}"
 
       - name: Prepare Android Asset
         if: matrix.kind == 'android'
         run: |
           mkdir -p dist
           cp mobile/android/app/build/outputs/apk/debug/app-debug.apk dist/${{ matrix.asset_name }}
+          if [ -f game/base/base.pak ]; then
+            cp game/base/base.pak dist/base-android-arm64.pak
+          elif [ -f target/aarch64-linux-android/release/base.pak ]; then
+            cp target/aarch64-linux-android/release/base.pak dist/base-android-arm64.pak
+          else
+            echo "warning: base.pak not found for android; skipping pak upload"
+          fi
 
       - name: Prepare iOS Asset
         if: matrix.kind == 'ios'

@@ -79,13 +79,15 @@ impl ScriptEngine {
             .expect("Failed to set MENU global");
 
         {
-            load_bytecode(&lua, "hook.lua", bundle::HOOK)
+            let hook = bundle::bytes("lua/libs/hook.luac", bundle::HOOK);
+            load_bytecode(&lua, "hook.lua", &hook)
                 .exec()
                 .expect("Failed to execute hook.lua");
 
             register_engine_lib(&lua, tick_interval);
             if !matches!(realm, Realm::Menu) {
-                load_bytecode(&lua, "net.lua", bundle::NET)
+                let net = bundle::bytes("lua/libs/net.luac", bundle::NET);
+                load_bytecode(&lua, "net.lua", &net)
                     .exec()
                     .expect("Failed to execute net.lua");
 

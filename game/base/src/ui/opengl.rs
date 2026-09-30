@@ -621,19 +621,20 @@ impl GlEyes {
 }
 
 fn link_mesh_program(gl: &glow::Context, cache: &shader::Registry) -> glow::Program {
+    let mesh_src = crate::ui::shaders::Program::Mesh.wgsl();
     let mesh_vert = cache
         .glsl(
-            shader::MESH,
+            &mesh_src,
             naga::ShaderStage::Vertex,
-            "mesh_vert",
+            "vs_main",
             shader::glsl_version(),
         )
         .expect("mesh vert");
     let mesh_frag = cache
         .glsl(
-            shader::MESH,
+            &mesh_src,
             naga::ShaderStage::Fragment,
-            "mesh_frag",
+            "fs_main",
             shader::glsl_version(),
         )
         .expect("mesh frag");

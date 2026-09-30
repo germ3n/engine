@@ -4,10 +4,10 @@ mod client;
 mod console;
 mod entities;
 mod r#enum;
+pub mod fs;
 mod input;
 mod movement;
 mod network;
-pub mod plugin;
 mod script;
 mod server;
 mod state;
@@ -21,7 +21,6 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 #[cfg(feature = "client")]
 use std::sync::atomic::AtomicBool;
-#[cfg(feature = "client")]
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
@@ -78,6 +77,16 @@ pub fn run() {
 
     crate::network::steam::startup(cmdargs.connect_lobby, cmdargs.connect.as_deref());
 
+    let fs = match crate::fs::Fs::boot() {
+        Ok(fs) => Arc::new(fs),
+        Err(err) => {
+            log::error!("[fs] {err}");
+            std::process::exit(1);
+        }
+    };
+    crate::fs::set_global(Arc::clone(&fs));
+    log::info!("[fs] global filesystem installed");
+
     #[cfg(feature = "server")]
     {
         log::info!("Starting server network loop");
@@ -94,6 +103,7 @@ pub fn run() {
             server_out_tx,
             tick_interval,
             NetWake::new(server_wake_write),
+            Arc::clone(&fs),
         );
         server_game.voxel_world.fill(
             crate::world::BlockPos::new(-12, -12, 0),
@@ -151,6 +161,7 @@ pub fn run() {
             client_out_tx,
             tick_interval,
             NetWake::new(client_wake_write),
+            Arc::clone(&fs),
         );
         let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
         client_game.map_name = map_name.clone();

@@ -33,6 +33,8 @@ vbsp = "0.9.1"
 [build-dependencies]
 cc = "1"
 mlua = { version = "0.12.1", features = ["luajit52", "vendored"] }
+wincode = { version = "0.6.1", features = ["derive"] }
+zstd = "0.14.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

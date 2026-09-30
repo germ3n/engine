@@ -1,5 +1,6 @@
 use crate::console::{ConVar, ConVarValue};
 use crate::entities::EntityList;
+use crate::fs::Fs;
 use crate::input::{binds_path, load_or_defaults, Binds};
 use crate::network::NetSend;
 use crate::network::NetWake;
@@ -24,6 +25,7 @@ pub struct GameState<In, Out> {
     pub network_receiver: Receiver<In>,
     pub network_sender: SyncSender<NetSend<Out>>,
     pub script_engine: ScriptEngine,
+    pub fs: Arc<Fs>,
     pub cur_time: f64,
     pub frame_time: f64,
     pub tick_count: u64,
@@ -37,6 +39,7 @@ impl<In, Out> GameState<In, Out> {
         network_sender: SyncSender<NetSend<Out>>,
         tick_interval: f64,
         wake: NetWake,
+        fs: Arc<Fs>,
     ) -> Self {
         let mut cvars = HashMap::new();
         cvars.insert(
@@ -113,6 +116,7 @@ impl<In, Out> GameState<In, Out> {
             network_receiver,
             network_sender,
             script_engine,
+            fs,
             cur_time: 0.0,
             frame_time: 0.0,
             tick_count: 0,
