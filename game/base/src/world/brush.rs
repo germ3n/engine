@@ -314,8 +314,8 @@ impl BrushMap {
     pub fn load_file(&mut self, name: &str) -> Result<(), String> {
         if let Some(path) = find_map(name) {
             if is_bsp(&path) {
-                let bytes = std::fs::read(&path)
-                    .map_err(|err| format!("map {}: {err}", path.display()))?;
+                let bytes =
+                    std::fs::read(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
 
                 return self.install_bsp(&bytes);
             }
@@ -2557,11 +2557,7 @@ mod tests {
     fn spatial_grid_hits_nearby_brushes_only() {
         let mut map = BrushMap::new();
 
-        assert!(map.add_box(
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(1.0, 1.0, 1.0),
-            1
-        ));
+        assert!(map.add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), 1));
         assert!(map.add_box(
             Vector3::new(2000.0, 0.0, 0.0),
             Vector3::new(2001.0, 1.0, 1.0),
@@ -2569,10 +2565,7 @@ mod tests {
         ));
 
         let near_hit = map
-            .trace(
-                Vector3::new(-1.0, 0.5, 0.5),
-                Vector3::new(0.5, 0.5, 0.5),
-            )
+            .trace(Vector3::new(-1.0, 0.5, 0.5), Vector3::new(0.5, 0.5, 0.5))
             .unwrap();
         let far_hit = map
             .trace(

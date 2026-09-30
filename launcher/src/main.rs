@@ -360,13 +360,7 @@ fn draw_drawer(
                                 );
                             }
                             "host" => {
-                                combo(
-                                    ui,
-                                    value_key,
-                                    &mut settings.host,
-                                    hosts(),
-                                    display_host,
-                                );
+                                combo(ui, value_key, &mut settings.host, hosts(), display_host);
                             }
                             _ => {}
                         },
@@ -511,13 +505,7 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-fn combo(
-    ui: &mut Ui,
-    id: &str,
-    value: &mut String,
-    options: &[&str],
-    display: fn(&str) -> &str,
-) {
+fn combo(ui: &mut Ui, id: &str, value: &mut String, options: &[&str], display: fn(&str) -> &str) {
     egui::ComboBox::from_id_salt(id)
         .selected_text(display(value))
         .width(ui.available_width().max(140.0))
