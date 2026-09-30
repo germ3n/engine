@@ -8,7 +8,6 @@ use crate::network::packet::{
 };
 use crate::network::server::NetworkServer;
 use crate::network::server::ReliableSendError;
-use crate::network::usermessage::hash_usermessage_name;
 use crate::network::usermessage::UserMsgReader;
 use crate::network::wait_socket;
 use crate::network::{ClientToServer, ServerToClient};
@@ -80,7 +79,6 @@ impl RemotePlayer {
 pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
-    let mut tick_idx = 0;
     let mut peers = Vec::new();
     let mut players = Vec::new();
 
@@ -106,15 +104,6 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             });
             game.entities.tick_all();
             simulate_players(&mut game, &mut players);
-
-            if tick_idx % 100 == 0 {
-                let hash = hash_usermessage_name("Test");
-                game.send_reliable(ServerToClient::UserMessage {
-                    hash,
-                    data: [128; 256].to_vec(),
-                });
-            }
-            tick_idx += 1;
 
             ticked = true;
         }

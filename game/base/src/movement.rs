@@ -347,6 +347,8 @@ pub fn step(
         on_ground = false;
     } else if !on_ground {
         velocity.z -= gravity * dt;
+    } else {
+        velocity.z = 0.0;
     }
 
     clamp_speed(velocity);
@@ -362,7 +364,7 @@ pub fn step(
         slide(position, velocity, dt, mins, maxs, brushes, voxels);
     }
 
-    if velocity.z <= 0.0 {
+    if on_ground || velocity.z <= 0.0 {
         snap_ground(position, velocity, mins, maxs, brushes, voxels);
     }
 
