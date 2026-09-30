@@ -1,9 +1,10 @@
 use crate::script::libs::vector3::Vector3;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use wincode::{SchemaRead, SchemaWrite};
 
-const MAX_PLANES: usize = 64;
-const MAX_BRUSHES: usize = 4096;
+const MAX_PLANES: usize = 128;
+const GRID_CELL: f64 = 256.0;
 const PLANE_EPS: f64 = 1e-4;
 const LENGTH_EPS: f64 = 1e-8;
 const RAY_EPS: f64 = 1e-8;
@@ -156,20 +157,133 @@ impl Brush {
 
         Some(Self { planes })
     }
+
+    fn from_planes_trusted(planes: Vec<Plane>) -> Option<Self> {
+        if planes.len() < 4 || planes.len() > MAX_PLANES {
+            return None;
+        }
+
+        Some(Self { planes })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Aabb {
+    min: Vector3,
+    max: Vector3,
+}
+
+struct BrushGrid {
+    cells: HashMap<(i32, i32, i32), Vec<usize>>,
+}
+
+impl BrushGrid {
+    fn new() -> Self {
+        Self {
+            cells: HashMap::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    fn rebuild(&mut self, bounds: &[Aabb]) {
+        self.cells.clear();
+
+        for (idx, aabb) in bounds.iter().enumerate() {
+            let x0 = cell_coord(aabb.min.x);
+            let y0 = cell_coord(aabb.min.y);
+            let z0 = cell_coord(aabb.min.z);
+            let x1 = cell_coord(aabb.max.x);
+            let y1 = cell_coord(aabb.max.y);
+            let z1 = cell_coord(aabb.max.z);
+            let mut z = z0;
+
+            while z <= z1 {
+                let mut y = y0;
+
+                while y <= y1 {
+                    let mut x = x0;
+
+                    while x <= x1 {
+                        self.cells.entry((x, y, z)).or_default().push(idx);
+                        x += 1;
+                    }
+
+                    y += 1;
+                }
+
+                z += 1;
+            }
+        }
+    }
+
+    fn query(&self, min: Vector3, max: Vector3, brush_count: usize) -> Vec<usize> {
+        if brush_count == 0 {
+            return Vec::new();
+        }
+
+        let x0 = cell_coord(min.x);
+        let y0 = cell_coord(min.y);
+        let z0 = cell_coord(min.z);
+        let x1 = cell_coord(max.x);
+        let y1 = cell_coord(max.y);
+        let z1 = cell_coord(max.z);
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut z = z0;
+
+        while z <= z1 {
+            let mut y = y0;
+
+            while y <= y1 {
+                let mut x = x0;
+
+                while x <= x1 {
+                    if let Some(list) = self.cells.get(&(x, y, z)) {
+                        for &idx in list {
+                            if seen.insert(idx) {
+                                out.push(idx);
+                            }
+                        }
+                    }
+
+                    x += 1;
+                }
+
+                y += 1;
+            }
+
+            z += 1;
+        }
+
+        out
+    }
+}
+
+fn cell_coord(value: f64) -> i32 {
+    (value / GRID_CELL).floor() as i32
 }
 
 pub struct BrushMap {
     brushes: Vec<Brush>,
+    bounds: Vec<Aabb>,
     spawns: Vec<Vector3>,
     revision: u64,
+    grid: BrushGrid,
+    mesh_cache: Option<Vec<f32>>,
 }
 
 impl BrushMap {
     pub fn new() -> Self {
         Self {
             brushes: Vec::new(),
+            bounds: Vec::new(),
             spawns: Vec::new(),
             revision: 0,
+            grid: BrushGrid::new(),
+            mesh_cache: None,
         }
     }
 
@@ -199,6 +313,13 @@ impl BrushMap {
 
     pub fn load_file(&mut self, name: &str) -> Result<(), String> {
         if let Some(path) = find_map(name) {
+            if is_bsp(&path) {
+                let bytes = std::fs::read(&path)
+                    .map_err(|err| format!("map {}: {err}", path.display()))?;
+
+                return self.install_bsp(&bytes);
+            }
+
             let compiled_path = if is_compiled(&path) {
                 path
             } else {
@@ -226,6 +347,14 @@ impl BrushMap {
         Ok(())
     }
 
+    fn install_bsp(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let mut loaded = brush_map_from_bsp(bytes)?;
+        loaded.revision = self.revision.wrapping_add(loaded.revision).wrapping_add(1);
+        *self = loaded;
+
+        Ok(())
+    }
+
     pub fn load_document(&mut self, map: &CompiledMap) -> Result<(), String> {
         let mut loaded = brush_map_from_compiled(map.clone())?;
         loaded.revision = self.revision.wrapping_add(1);
@@ -235,23 +364,39 @@ impl BrushMap {
     }
 
     pub fn push(&mut self, brush: Brush) -> bool {
-        if self.brushes.len() >= MAX_BRUSHES {
+        let Some(aabb) = brush_aabb(&brush) else {
             return false;
-        }
+        };
 
         self.brushes.push(brush);
+        self.bounds.push(aabb);
+        self.mesh_cache = None;
         self.touch();
 
         true
     }
 
+    fn push_quiet(&mut self, brush: Brush) -> bool {
+        let Some(aabb) = brush_aabb(&brush) else {
+            return false;
+        };
+
+        self.brushes.push(brush);
+        self.bounds.push(aabb);
+
+        true
+    }
+
     pub fn clear(&mut self) {
-        if self.brushes.is_empty() && self.spawns.is_empty() {
+        if self.brushes.is_empty() && self.spawns.is_empty() && self.mesh_cache.is_none() {
             return;
         }
 
         self.brushes.clear();
+        self.bounds.clear();
         self.spawns.clear();
+        self.mesh_cache = None;
+        self.grid.clear();
         self.touch();
     }
 
@@ -260,6 +405,10 @@ impl BrushMap {
     }
 
     pub fn mesh(&self) -> Vec<f32> {
+        if let Some(cache) = &self.mesh_cache {
+            return cache.clone();
+        }
+
         self.build_mesh(None)
     }
 
@@ -294,10 +443,12 @@ impl BrushMap {
 
         let delta = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
         let max_dist = delta.len();
+        let (min, max) = segment_aabb(start, end);
+        let candidates = self.grid.query(min, max, self.brushes.len());
 
         if max_dist == 0.0 {
-            for (idx, brush) in self.brushes.iter().enumerate() {
-                if contains(&brush.planes, start) {
+            for idx in candidates {
+                if contains(&self.brushes[idx].planes, start) {
                     return Some(BrushHit {
                         brush: idx,
                         distance: 0.0,
@@ -314,8 +465,9 @@ impl BrushMap {
         let dir = Vector3::new(delta.x * inv, delta.y * inv, delta.z * inv);
         let mut best: Option<BrushHit> = None;
 
-        for (idx, brush) in self.brushes.iter().enumerate() {
-            let Some((distance, normal)) = hit_brush(brush, start, dir, max_dist) else {
+        for idx in candidates {
+            let Some((distance, normal)) = hit_brush(&self.brushes[idx], start, dir, max_dist)
+            else {
                 continue;
             };
 
@@ -353,11 +505,15 @@ impl BrushMap {
 
         let delta = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
         let max_dist = delta.len();
+        let (seg_min, seg_max) = segment_aabb(start, end);
+        let query_min = Vector3::new(seg_min.x + mins.x, seg_min.y + mins.y, seg_min.z + mins.z);
+        let query_max = Vector3::new(seg_max.x + maxs.x, seg_max.y + maxs.y, seg_max.z + maxs.z);
+        let candidates = self.grid.query(query_min, query_max, self.brushes.len());
         let mut best: Option<BrushHit> = None;
 
         if max_dist == 0.0 {
-            for (idx, brush) in self.brushes.iter().enumerate() {
-                let expanded = expand_brush(brush, mins, maxs);
+            for idx in candidates {
+                let expanded = expand_brush(&self.brushes[idx], mins, maxs);
 
                 if contains(&expanded, start) {
                     return Some(BrushHit {
@@ -375,8 +531,8 @@ impl BrushMap {
         let inv = 1.0 / max_dist;
         let dir = Vector3::new(delta.x * inv, delta.y * inv, delta.z * inv);
 
-        for (idx, brush) in self.brushes.iter().enumerate() {
-            let expanded = expand_brush(brush, mins, maxs);
+        for idx in candidates {
+            let expanded = expand_brush(&self.brushes[idx], mins, maxs);
             let Some((distance, normal)) = hit_planes(&expanded, start, dir, max_dist) else {
                 continue;
             };
@@ -404,6 +560,11 @@ impl BrushMap {
 
     fn touch(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+        self.grid.rebuild(&self.bounds);
+    }
+
+    fn finalize(&mut self) {
+        self.grid.rebuild(&self.bounds);
     }
 }
 
@@ -452,13 +613,15 @@ fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 
     let want_compiled = name.ends_with(".cmap");
     let want_source = name.ends_with(".map");
+    let want_bsp = name.ends_with(".bsp");
     let stem = name
         .strip_suffix(".map")
         .or_else(|| name.strip_suffix(".cmap"))
+        .or_else(|| name.strip_suffix(".bsp"))
         .unwrap_or(name);
 
     for dir in dirs {
-        if !want_compiled {
+        if !want_compiled && !want_bsp {
             let source = dir.join(format!("{stem}.map"));
 
             if source.exists() {
@@ -466,11 +629,19 @@ fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
             }
         }
 
-        if !want_source {
+        if !want_source && !want_bsp {
             let compiled = dir.join(format!("{stem}.cmap"));
 
             if compiled.exists() {
                 return Some(compiled);
+            }
+        }
+
+        if !want_source && !want_compiled {
+            let bsp = dir.join(format!("{stem}.bsp"));
+
+            if bsp.exists() {
+                return Some(bsp);
             }
         }
     }
@@ -480,6 +651,10 @@ fn resolve_map(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 
 fn is_compiled(path: &Path) -> bool {
     path.extension().and_then(|ext| ext.to_str()) == Some("cmap")
+}
+
+fn is_bsp(path: &Path) -> bool {
+    path.extension().and_then(|ext| ext.to_str()) == Some("bsp")
 }
 
 fn compiled_path(source: &Path) -> PathBuf {
@@ -611,11 +786,150 @@ fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
                 return Err("compiled brush is not a closed solid".to_string());
             };
 
-            if !map.push(brush) {
-                return Err("too many brushes".to_string());
+            if !map.push_quiet(brush) {
+                return Err("compiled brush bounds are invalid".to_string());
             }
         }
     }
+
+    map.finalize();
+
+    Ok(map)
+}
+
+fn brush_map_from_bsp(bytes: &[u8]) -> Result<BrushMap, String> {
+    let bsp = vbsp::Bsp::read(bytes).map_err(|err| format!("bsp: {err}"))?;
+    let mut map = BrushMap::new();
+    let solid = vbsp::data::BrushFlags::SOLID
+        | vbsp::data::BrushFlags::PLAYERCLIP
+        | vbsp::data::BrushFlags::GRATE
+        | vbsp::data::BrushFlags::WINDOW
+        | vbsp::data::BrushFlags::MOVEABLE;
+    let non_solid_surf = vbsp::data::TextureFlags::TRIGGER
+        | vbsp::data::TextureFlags::SKIP
+        | vbsp::data::TextureFlags::HINT
+        | vbsp::data::TextureFlags::SKY
+        | vbsp::data::TextureFlags::SKY2D;
+
+    for brush in &bsp.brushes {
+        if !brush.flags.intersects(solid) {
+            continue;
+        }
+
+        let start = brush.brush_side as usize;
+        let end = start + brush.num_brush_sides as usize;
+        let Some(sides) = bsp.brush_sides.get(start..end) else {
+            continue;
+        };
+        let mut collides = false;
+
+        for side in sides {
+            if side.bevel != 0 {
+                continue;
+            }
+
+            if side.texture_info < 0 {
+                collides = true;
+
+                break;
+            }
+
+            let Some(info) = bsp.texture_info(side.texture_info as usize) else {
+                collides = true;
+
+                break;
+            };
+
+            if !info.flags.intersects(non_solid_surf) {
+                collides = true;
+
+                break;
+            }
+        }
+
+        if !collides {
+            continue;
+        }
+
+        let mut planes = Vec::new();
+
+        for side in sides {
+            if side.bevel != 0 {
+                continue;
+            }
+
+            let Some(plane) = bsp.planes.get(side.plane as usize) else {
+                continue;
+            };
+
+            let material = if side.texture_info >= 0 {
+                bsp.texture_info(side.texture_info as usize)
+                    .map(|info| texture_material(info.name()))
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+            let normal = Vector3::new(
+                plane.normal.x as f64,
+                plane.normal.y as f64,
+                plane.normal.z as f64,
+            );
+            let Some(stored) = Plane::new(normal, plane.dist as f64, material) else {
+                continue;
+            };
+
+            planes.push(stored);
+        }
+
+        let Some(solid_brush) = Brush::from_planes_trusted(planes) else {
+            continue;
+        };
+
+        let _ = map.push_quiet(solid_brush);
+    }
+
+    for entity in bsp.entities.iter() {
+        let classname = entity.prop("classname").unwrap_or("");
+
+        if classname != "info_player_start" && classname != "info_player_teamspawn" {
+            continue;
+        }
+
+        if let Some(origin) = entity.prop("origin").and_then(parse_origin) {
+            map.spawns.push(origin);
+        }
+    }
+
+    let mut mesh = Vec::new();
+
+    if let Some(model) = bsp.models().next() {
+        for face in model.faces() {
+            if !face.is_visible() {
+                continue;
+            }
+
+            let material = texture_material(face.texture().name());
+            let [red, green, blue] = material_rgb(material);
+            let normal = face.normal();
+            let shade = 0.42 + 0.58 * ((normal.z as f32 + 1.0) * 0.5).clamp(0.0, 1.0);
+            let shaded = [red * shade, green * shade, blue * shade];
+
+            for tri in face.triangulate() {
+                let a = Vector3::new(tri[0].x as f64, tri[0].y as f64, tri[0].z as f64);
+                let b = Vector3::new(tri[1].x as f64, tri[1].y as f64, tri[1].z as f64);
+                let c = Vector3::new(tri[2].x as f64, tri[2].y as f64, tri[2].z as f64);
+
+                if tri_area(a, b, c) <= AREA_EPS {
+                    continue;
+                }
+
+                push_tri(&mut mesh, a, b, c, shaded[0], shaded[1], shaded[2]);
+            }
+        }
+    }
+
+    map.mesh_cache = Some(mesh);
+    map.finalize();
 
     Ok(map)
 }
@@ -679,10 +993,7 @@ impl CompiledMap {
     }
 
     pub fn add_box(&mut self, min: Vector3, max: Vector3, texture: &str) -> Option<usize> {
-        if self.brush_count() >= MAX_BRUSHES
-            || Brush::aabb(min, max, 1).is_none()
-            || !valid_texture(texture)
-        {
+        if Brush::aabb(min, max, 1).is_none() || !valid_texture(texture) {
             return None;
         }
 
@@ -964,11 +1275,13 @@ fn parse_map(text: &str) -> Result<BrushMap, String> {
                 return Err("brush is not a closed solid".to_string());
             };
 
-            if !map.push(solid) {
-                return Err("too many brushes".to_string());
+            if !map.push_quiet(solid) {
+                return Err("brush bounds are invalid".to_string());
             }
         }
     }
+
+    map.finalize();
 
     Ok(map)
 }
@@ -1611,7 +1924,9 @@ fn player_start(entity: &CompiledEntity) -> Option<Vector3> {
     let mut origin = None;
 
     for pair in &entity.keys {
-        if pair.key == "classname" && pair.value == "info_player_start" {
+        if pair.key == "classname"
+            && (pair.value == "info_player_start" || pair.value == "info_player_teamspawn")
+        {
             spawn = true;
         }
 
@@ -1625,6 +1940,39 @@ fn player_start(entity: &CompiledEntity) -> Option<Vector3> {
     } else {
         None
     }
+}
+
+fn brush_aabb(brush: &Brush) -> Option<Aabb> {
+    let points = vertices(&brush.planes);
+
+    if points.is_empty() {
+        return None;
+    }
+
+    let mut min = points[0];
+    let mut max = points[0];
+
+    for point in &points[1..] {
+        min.x = min.x.min(point.x);
+        min.y = min.y.min(point.y);
+        min.z = min.z.min(point.z);
+        max.x = max.x.max(point.x);
+        max.y = max.y.max(point.y);
+        max.z = max.z.max(point.z);
+    }
+
+    if !finite(min) || !finite(max) {
+        return None;
+    }
+
+    Some(Aabb { min, max })
+}
+
+fn segment_aabb(start: Vector3, end: Vector3) -> (Vector3, Vector3) {
+    (
+        Vector3::new(start.x.min(end.x), start.y.min(end.y), start.z.min(end.z)),
+        Vector3::new(start.x.max(end.x), start.y.max(end.y), start.z.max(end.z)),
+    )
 }
 
 fn hit_planes(
@@ -2175,6 +2523,72 @@ mod tests {
             )
             .is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accepts_more_than_four_thousand_brushes() {
+        let mut map = BrushMap::new();
+        let mut idx = 0;
+
+        while idx < 5000 {
+            let origin = (idx as f64) * 3.0;
+            assert!(map.add_box(
+                Vector3::new(origin, 0.0, 0.0),
+                Vector3::new(origin + 1.0, 1.0, 1.0),
+                1
+            ));
+            idx += 1;
+        }
+
+        assert_eq!(map.len(), 5000);
+
+        let hit = map
+            .trace(
+                Vector3::new(4999.0 * 3.0 - 1.0, 0.5, 0.5),
+                Vector3::new(4999.0 * 3.0 + 0.5, 0.5, 0.5),
+            )
+            .unwrap();
+
+        assert_eq!(hit.brush, 4999);
+        assert!(near(hit.position.x, 4999.0 * 3.0));
+    }
+
+    #[test]
+    fn spatial_grid_hits_nearby_brushes_only() {
+        let mut map = BrushMap::new();
+
+        assert!(map.add_box(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            1
+        ));
+        assert!(map.add_box(
+            Vector3::new(2000.0, 0.0, 0.0),
+            Vector3::new(2001.0, 1.0, 1.0),
+            2
+        ));
+
+        let near_hit = map
+            .trace(
+                Vector3::new(-1.0, 0.5, 0.5),
+                Vector3::new(0.5, 0.5, 0.5),
+            )
+            .unwrap();
+        let far_hit = map
+            .trace(
+                Vector3::new(1999.0, 0.5, 0.5),
+                Vector3::new(2000.5, 0.5, 0.5),
+            )
+            .unwrap();
+
+        assert_eq!(near_hit.brush, 0);
+        assert_eq!(far_hit.brush, 1);
+        assert!(map
+            .trace(
+                Vector3::new(1000.0, 0.5, 0.5),
+                Vector3::new(1001.0, 0.5, 0.5),
+            )
+            .is_none());
     }
 
     fn faces_point_outward(mesh: &[f32], center: [f32; 3]) -> bool {
