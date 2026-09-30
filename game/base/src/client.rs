@@ -522,8 +522,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                 let speed = game.voxel_world.scale() as f32 * 14.0;
                 let (touch_forward, touch_right) = touch_wish(&touches);
-                let (left_dz, right_dz) = crate::console::pad_deadzones(&game.cvars, 0);
-                let pad = host.gamepad(0, left_dz, right_dz);
+                let deadzones = crate::console::pad_deadzones(&game.cvars, 0);
+                let pad = host.gamepad(0, deadzones);
                 let (mut forward, mut right, up, buttons) = {
                     let binds = binds.lock().unwrap();
                     let (axis_forward, axis_right) = binds.axis_held(&keys, &mouse, pad.buttons);

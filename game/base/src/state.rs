@@ -49,28 +49,42 @@ impl<In, Out> GameState<In, Out> {
         );
 
         for idx in 0..4 {
-            let left = format!("pad{idx}_deadzone_left");
-            let right = format!("pad{idx}_deadzone_right");
-            cvars.insert(
-                left.clone(),
-                Arc::new(ConVar::new(
-                    &left,
-                    ConVarValue::Float(0.15),
+            let entries = [
+                (
+                    format!("pad{idx}_deadzone_left"),
+                    0.15,
                     "Left stick deadzone",
-                    Some(false),
-                    Some(false),
-                )),
-            );
-            cvars.insert(
-                right.clone(),
-                Arc::new(ConVar::new(
-                    &right,
-                    ConVarValue::Float(0.15),
+                ),
+                (
+                    format!("pad{idx}_deadzone_right"),
+                    0.15,
                     "Right stick deadzone",
-                    Some(false),
-                    Some(false),
-                )),
-            );
+                ),
+                (format!("pad{idx}_deadzone_gas"), 0.05, "Gas pedal deadzone"),
+                (
+                    format!("pad{idx}_deadzone_brake"),
+                    0.05,
+                    "Brake pedal deadzone",
+                ),
+                (
+                    format!("pad{idx}_deadzone_clutch"),
+                    0.05,
+                    "Clutch pedal deadzone",
+                ),
+            ];
+
+            for (name, default, description) in entries {
+                cvars.insert(
+                    name.clone(),
+                    Arc::new(ConVar::new(
+                        &name,
+                        ConVarValue::Float(default),
+                        description,
+                        Some(false),
+                        Some(false),
+                    )),
+                );
+            }
         }
 
         let cvars = Arc::new(cvars);

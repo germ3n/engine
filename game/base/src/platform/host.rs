@@ -1,4 +1,4 @@
-use crate::platform::gamepad::GamepadState;
+use crate::platform::gamepad::{GamepadState, PadDeadzones};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
 
@@ -16,5 +16,5 @@ pub trait HostOps {
     fn size(&self) -> (u32, u32);
     fn set_cursor_grabbed(&mut self, grabbed: bool);
     fn request_redraw(&mut self);
-    fn gamepad(&mut self, index: usize, left_deadzone: f32, right_deadzone: f32) -> GamepadState;
+    fn gamepad(&mut self, index: usize, deadzones: PadDeadzones) -> GamepadState;
 }

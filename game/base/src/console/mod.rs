@@ -76,11 +76,14 @@ pub fn float_cvar(cvars: &HashMap<String, Arc<ConVar>>, name: &str, default: f64
     }
 }
 
-pub fn pad_deadzones(cvars: &HashMap<String, Arc<ConVar>>, index: usize) -> (f32, f32) {
-    let left = float_cvar(cvars, &format!("pad{index}_deadzone_left"), 0.15).max(0.0) as f32;
-    let right = float_cvar(cvars, &format!("pad{index}_deadzone_right"), 0.15).max(0.0) as f32;
-
-    (left, right)
+pub fn pad_deadzones(cvars: &HashMap<String, Arc<ConVar>>, index: usize) -> crate::platform::PadDeadzones {
+    crate::platform::PadDeadzones {
+        left: float_cvar(cvars, &format!("pad{index}_deadzone_left"), 0.15).max(0.0) as f32,
+        right: float_cvar(cvars, &format!("pad{index}_deadzone_right"), 0.15).max(0.0) as f32,
+        gas: float_cvar(cvars, &format!("pad{index}_deadzone_gas"), 0.05).max(0.0) as f32,
+        brake: float_cvar(cvars, &format!("pad{index}_deadzone_brake"), 0.05).max(0.0) as f32,
+        clutch: float_cvar(cvars, &format!("pad{index}_deadzone_clutch"), 0.05).max(0.0) as f32,
+    }
 }
 
 pub fn exec_line(line: &str, binds: &mut Binds) -> Result<(), String> {

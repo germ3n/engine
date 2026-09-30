@@ -1,6 +1,27 @@
 use crate::input::PadButtons;
 
 #[derive(Clone, Copy, Debug)]
+pub struct PadDeadzones {
+    pub left: f32,
+    pub right: f32,
+    pub gas: f32,
+    pub brake: f32,
+    pub clutch: f32,
+}
+
+impl Default for PadDeadzones {
+    fn default() -> Self {
+        Self {
+            left: 0.15,
+            right: 0.15,
+            gas: 0.05,
+            brake: 0.05,
+            clutch: 0.05,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct GamepadState {
     pub forward: f32,
     pub right: f32,

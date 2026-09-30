@@ -3,11 +3,11 @@ use crate::platform::event::{
     DeviceEvent, ElementState, Event, KeyCode, KeyboardInput, Modifiers, MouseButton,
     MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use crate::platform::gamepad::GamepadState;
+use crate::platform::gamepad::{GamepadState, PadDeadzones};
 use crate::platform::host::{Control, HostOps};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
-use gilrs::{ev::Code, Axis, AxisOrBtn, Button, GamepadId, Gilrs};
+use gilrs::{ev::AxisOrBtn, ev::Code, Axis, Button, GamepadId, Gilrs};
 use std::collections::HashMap;
 use winit::event::{
     DeviceEvent as WinitDeviceEvent, ElementState as WinitElementState, Event as WinitEvent,
@@ -269,14 +269,8 @@ impl HostOps for WinitHost {
         }
     }
 
-    fn gamepad(&mut self, index: usize, left_deadzone: f32, right_deadzone: f32) -> GamepadState {
-        sample_pad(
-            &mut self.pads,
-            &mut self.paddle_codes,
-            index,
-            left_deadzone,
-            right_deadzone,
-        )
+    fn gamepad(&mut self, index: usize, deadzones: PadDeadzones) -> GamepadState {
+        sample_pad(&mut self.pads, &mut self.paddle_codes, index, deadzones)
     }
 }
 
@@ -493,8 +487,7 @@ fn sample_pad(
     pads: &mut Option<Gilrs>,
     paddle_codes: &mut HashMap<GamepadId, [Option<u32>; 4]>,
     index: usize,
-    left_deadzone: f32,
-    right_deadzone: f32,
+    deadzones: PadDeadzones,
 ) -> GamepadState {
     let Some(pads) = pads.as_mut() else {
         return GamepadState::idle();
@@ -506,10 +499,9 @@ fn sample_pad(
         return GamepadState::idle();
     };
 
-    let pedal_dz = left_deadzone.min(0.15);
-    let gas = crate::platform::gamepad::pedal(pad.value(Axis::RightZ), pedal_dz);
-    let brake = crate::platform::gamepad::pedal(pad.value(Axis::LeftZ), pedal_dz);
-    let clutch = clutch_value(&pad, pedal_dz);
+    let gas = crate::platform::gamepad::pedal(pad.value(Axis::RightZ), deadzones.gas);
+    let brake = crate::platform::gamepad::pedal(pad.value(Axis::LeftZ), deadzones.brake);
+    let clutch = clutch_value(&pad, deadzones.clutch);
     let mut buttons = pad_buttons(&pad);
     let slots = paddle_codes.entry(id).or_insert([None; 4]);
     note_paddle_codes(slots, &pad);
@@ -528,10 +520,10 @@ fn sample_pad(
     }
 
     GamepadState {
-        forward: crate::platform::gamepad::stick(pad.value(Axis::LeftStickY), left_deadzone),
-        right: crate::platform::gamepad::stick(pad.value(Axis::LeftStickX), left_deadzone),
-        look_x: crate::platform::gamepad::stick(pad.value(Axis::RightStickX), right_deadzone),
-        look_y: crate::platform::gamepad::stick(pad.value(Axis::RightStickY), right_deadzone),
+        forward: crate::platform::gamepad::stick(pad.value(Axis::LeftStickY), deadzones.left),
+        right: crate::platform::gamepad::stick(pad.value(Axis::LeftStickX), deadzones.left),
+        look_x: crate::platform::gamepad::stick(pad.value(Axis::RightStickX), deadzones.right),
+        look_y: crate::platform::gamepad::stick(pad.value(Axis::RightStickY), deadzones.right),
         gas,
         brake,
         clutch,
