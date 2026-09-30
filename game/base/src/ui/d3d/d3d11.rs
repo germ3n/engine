@@ -1,7 +1,6 @@
 use crate::platform::Surface;
-use crate::ui::d3d::draw::{
-    attach_desktop, bytes_of, grow, push_outline, push_rect, Desktop, TextFrame,
-};
+use crate::ui::batch::{bytes_of, grow, push_outline, push_rect, TextFrame};
+use crate::ui::d3d::draw::{attach_desktop, Desktop};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
 use crate::ui::shader as shaders;

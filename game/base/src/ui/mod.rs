@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod batch;
 pub mod color;
 pub mod d3d;
 pub mod editor;
