@@ -1808,7 +1808,11 @@ fn pipeline(
         } else {
             vk::CullModeFlags::NONE
         })
-        .front_face(vk::FrontFace::CLOCKWISE)
+        .front_face(if cfg!(target_os = "macos") {
+            vk::FrontFace::COUNTER_CLOCKWISE
+        } else {
+            vk::FrontFace::CLOCKWISE
+        })
         .line_width(1.0);
     let multisample = vk::PipelineMultisampleStateCreateInfo::default()
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
