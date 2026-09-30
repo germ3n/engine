@@ -7,7 +7,7 @@ mod winit_host;
 mod xbox;
 
 pub use event::*;
-pub use gamepad::{GamepadState, PadDeadzones};
+pub use gamepad::{GamepadState, PadDeadzones, PadPower};
 pub use host::{Control, HostOps};
 pub use sdl2_host::Sdl2Host;
 pub use surface::Surface;

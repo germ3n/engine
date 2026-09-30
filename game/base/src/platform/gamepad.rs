@@ -21,6 +21,15 @@ impl Default for PadDeadzones {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadPower {
+    Unknown,
+    Wired,
+    Discharging(u8),
+    Charging(u8),
+    Charged,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct GamepadState {
     pub forward: f32,
@@ -30,6 +39,7 @@ pub struct GamepadState {
     pub gas: f32,
     pub brake: f32,
     pub clutch: f32,
+    pub power: PadPower,
     pub buttons: PadButtons,
 }
 
@@ -43,6 +53,7 @@ impl GamepadState {
             gas: 0.0,
             brake: 0.0,
             clutch: 0.0,
+            power: PadPower::Unknown,
             buttons: PadButtons::NONE,
         }
     }

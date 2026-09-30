@@ -3,11 +3,11 @@ use crate::platform::event::{
     DeviceEvent, ElementState, Event, KeyCode, KeyboardInput, Modifiers, MouseButton,
     MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use crate::platform::gamepad::{GamepadState, PadDeadzones};
+use crate::platform::gamepad::{GamepadState, PadDeadzones, PadPower};
 use crate::platform::host::{Control, HostOps};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
-use gilrs::{ev::AxisOrBtn, ev::Code, Axis, Button, GamepadId, Gilrs};
+use gilrs::{ev::AxisOrBtn, ev::Code, Axis, Button, GamepadId, Gilrs, PowerInfo};
 use std::collections::HashMap;
 use winit::event::{
     DeviceEvent as WinitDeviceEvent, ElementState as WinitElementState, Event as WinitEvent,
@@ -527,7 +527,18 @@ fn sample_pad(
         gas,
         brake,
         clutch,
+        power: map_power(pad.power_info()),
         buttons,
+    }
+}
+
+fn map_power(info: PowerInfo) -> PadPower {
+    match info {
+        PowerInfo::Unknown => PadPower::Unknown,
+        PowerInfo::Wired => PadPower::Wired,
+        PowerInfo::Discharging(level) => PadPower::Discharging(level),
+        PowerInfo::Charging(level) => PadPower::Charging(level),
+        PowerInfo::Charged => PadPower::Charged,
     }
 }
 
