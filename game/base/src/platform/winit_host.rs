@@ -699,9 +699,10 @@ fn insert_paddles(buttons: &mut PadButtons, slots: &[Option<u32>; 4], pad: &gilr
             continue;
         };
 
-        let pressed = pad.state().buttons().any(|(code, data)| {
-            data.is_pressed() && code.into_u32() == expected
-        });
+        let pressed = pad
+            .state()
+            .buttons()
+            .any(|(code, data)| data.is_pressed() && code.into_u32() == expected);
 
         if pressed {
             buttons.insert(PADDLES[idx]);

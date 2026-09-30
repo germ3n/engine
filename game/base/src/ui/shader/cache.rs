@@ -15,12 +15,7 @@ impl Registry {
         Self { root }
     }
 
-    pub fn spirv(
-        &self,
-        source: &str,
-        stage: ShaderStage,
-        entry: &str,
-    ) -> Result<Vec<u32>, String> {
+    pub fn spirv(&self, source: &str, stage: ShaderStage, entry: &str) -> Result<Vec<u32>, String> {
         let stage_tag = stage_tag(stage);
         let digest = hash(&[VERSION, "spv", stage_tag, entry, source]);
 
@@ -199,10 +194,7 @@ mod tests {
 
     #[test]
     fn registry_roundtrip_spirv() {
-        let dir = std::env::temp_dir().join(format!(
-            "engine-shader-cache-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("engine-shader-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         let old = std::env::current_dir().unwrap();

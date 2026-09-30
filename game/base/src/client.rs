@@ -318,7 +318,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         scene_revision,
                         &camera.scene(aspect, game.voxel_world.scale() as f32),
                     );
-                    
+
                     game.run_hook("MenuPaint", ());
 
                     let draw_commands = {
@@ -614,14 +614,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     game.entities.tick_all();
 
                     if possessed {
-                        predict_tick(
-                            &mut game,
-                            &mut prediction,
-                            buttons,
-                            forward,
-                            right,
-                            vr.yaw,
-                        );
+                        predict_tick(&mut game, &mut prediction, buttons, forward, right, vr.yaw);
                     }
                 }
 
@@ -1847,4 +1840,3 @@ fn apply_spawn(
         interval,
     );
 }
-

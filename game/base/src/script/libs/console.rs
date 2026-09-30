@@ -13,8 +13,7 @@ pub fn register_console_lib(lua: &Lua, binds: Arc<Mutex<Binds>>) {
                 let mut binds = shared
                     .lock()
                     .map_err(|_| Error::RuntimeError("binds lock poisoned".to_string()))?;
-                crate::console::exec_line(&line, &mut binds)
-                    .map_err(Error::RuntimeError)?;
+                crate::console::exec_line(&line, &mut binds).map_err(Error::RuntimeError)?;
                 Ok(())
             })
             .expect("[engine] Failed to create console.run"),

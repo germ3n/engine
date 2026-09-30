@@ -92,8 +92,13 @@ impl<In, Out> GameState<In, Out> {
         let cvars = Arc::new(cvars);
         let binds = Arc::new(Mutex::new(load_or_defaults(&binds_path())));
         let pads = Arc::new(Mutex::new(PadCache::new()));
-        let script_engine =
-            ScriptEngine::new(realm, tick_interval, cvars.clone(), binds.clone(), pads.clone());
+        let script_engine = ScriptEngine::new(
+            realm,
+            tick_interval,
+            cvars.clone(),
+            binds.clone(),
+            pads.clone(),
+        );
 
         Self {
             realm,

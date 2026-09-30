@@ -190,8 +190,7 @@ pub fn spirv(source: &str, stage: ShaderStage, entry: &str) -> Result<Vec<u32>, 
         entry_point: entry.to_string(),
     };
 
-    back::spv::write_vec(&module, &info, &options, Some(&pipeline))
-        .map_err(|err| err.to_string())
+    back::spv::write_vec(&module, &info, &options, Some(&pipeline)).map_err(|err| err.to_string())
 }
 
 pub fn hlsl(source: &str) -> Result<String, String> {
@@ -231,11 +230,13 @@ pub fn msl(source: &str) -> Result<String, String> {
         fake_missing_bindings: false,
         ..back::msl::Options::default()
     };
-    options.inline_samplers.push(back::msl::sampler::InlineSampler {
-        mag_filter: back::msl::sampler::Filter::Linear,
-        min_filter: back::msl::sampler::Filter::Linear,
-        ..back::msl::sampler::InlineSampler::default()
-    });
+    options
+        .inline_samplers
+        .push(back::msl::sampler::InlineSampler {
+            mag_filter: back::msl::sampler::Filter::Linear,
+            min_filter: back::msl::sampler::Filter::Linear,
+            ..back::msl::sampler::InlineSampler::default()
+        });
 
     for entry in &module.entry_points {
         let mut resources = back::msl::EntryPointResources::default();

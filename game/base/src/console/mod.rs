@@ -76,7 +76,10 @@ pub fn float_cvar(cvars: &HashMap<String, Arc<ConVar>>, name: &str, default: f64
     }
 }
 
-pub fn pad_deadzones(cvars: &HashMap<String, Arc<ConVar>>, index: usize) -> crate::platform::PadDeadzones {
+pub fn pad_deadzones(
+    cvars: &HashMap<String, Arc<ConVar>>,
+    index: usize,
+) -> crate::platform::PadDeadzones {
     crate::platform::PadDeadzones {
         left: float_cvar(cvars, &format!("pad{index}_deadzone_left"), 0.15).max(0.0) as f32,
         right: float_cvar(cvars, &format!("pad{index}_deadzone_right"), 0.15).max(0.0) as f32,

@@ -37,10 +37,20 @@ impl UserData for LuaPad {
         methods.add_method("select", |_, this, ()| Ok(this.down(PadButton::Select)));
         methods.add_method("start", |_, this, ()| Ok(this.down(PadButton::Start)));
         methods.add_method("dpad_up", |_, this, ()| Ok(this.down(PadButton::DPadUp)));
-        methods.add_method("dpad_down", |_, this, ()| Ok(this.down(PadButton::DPadDown)));
-        methods.add_method("dpad_left", |_, this, ()| Ok(this.down(PadButton::DPadLeft)));
-        methods.add_method("dpad_right", |_, this, ()| Ok(this.down(PadButton::DPadRight)));
-        methods.add_method("gas_pressed", |_, this, ()| Ok(this.down(PadButton::PedalGas)));
+        methods.add_method(
+            "dpad_down",
+            |_, this, ()| Ok(this.down(PadButton::DPadDown)),
+        );
+        methods.add_method(
+            "dpad_left",
+            |_, this, ()| Ok(this.down(PadButton::DPadLeft)),
+        );
+        methods.add_method("dpad_right", |_, this, ()| {
+            Ok(this.down(PadButton::DPadRight))
+        });
+        methods.add_method("gas_pressed", |_, this, ()| {
+            Ok(this.down(PadButton::PedalGas))
+        });
         methods.add_method("brake_pressed", |_, this, ()| {
             Ok(this.down(PadButton::PedalBrake))
         });
