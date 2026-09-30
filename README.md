@@ -7,7 +7,7 @@ The default run starts both sides in one process. The client connects to `127.0.
 ## Build
 
 ```sh
-cargo build --release -p base -p editor
+cargo build --release -p base -p editor -p launcher
 ```
 
 Debug:
@@ -15,6 +15,14 @@ Debug:
 ```sh
 cargo run -p base
 ```
+
+Settings launcher (renderer, host, map, tickrate, editor):
+
+```sh
+cargo run -p launcher
+```
+
+The launcher writes `launcher.json` beside its binary and starts `base` with `ENGINE_GFX` / `ENGINE_HOST` and the matching flags. Manual `ENGINE_*` env vars still work when you run `base` directly.
 
 A `+` on the command line is the same as `--`, so `+map hall` is `--map hall`.
 
