@@ -21,4 +21,7 @@ net.add_callback("Test", function(reader)
     print(tostring(cvar.get("sv_gravity")), tostring(cvar.get("sv_gravity"):get_value_float()));
 
     cvar.get("sv_gravity"):set_value_float(600.0)
+
+    local p = pad.get(0)
+    print(p:forward(), p:a(), p:gas(), p:brake(), p:clutch())
 end);

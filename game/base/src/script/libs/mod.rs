@@ -3,6 +3,7 @@ pub mod console;
 pub mod convar;
 pub mod engine;
 pub mod net;
+pub mod pad;
 pub mod surface;
 pub mod vector3;
 
@@ -11,5 +12,6 @@ pub use console::register_console_lib;
 pub use convar::register_convar_lib;
 pub use engine::register_engine_lib;
 pub use net::register_net_lib;
+pub use pad::register_pad_lib;
 pub use surface::register_surface_lib;
 pub use vector3::register_vector3_lib;

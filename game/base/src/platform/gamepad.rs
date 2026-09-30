@@ -1,5 +1,7 @@
 use crate::input::PadButtons;
 
+pub const PAD_COUNT: usize = 4;
+
 #[derive(Clone, Copy, Debug)]
 pub struct PadDeadzones {
     pub left: f32,
@@ -56,6 +58,38 @@ impl GamepadState {
             power: PadPower::Unknown,
             buttons: PadButtons::NONE,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PadCache {
+    states: [GamepadState; PAD_COUNT],
+}
+
+impl PadCache {
+    pub fn new() -> Self {
+        Self {
+            states: [GamepadState::idle(); PAD_COUNT],
+        }
+    }
+
+    pub fn set(&mut self, index: usize, state: GamepadState) {
+        if let Some(slot) = self.states.get_mut(index) {
+            *slot = state;
+        }
+    }
+
+    pub fn get(&self, index: usize) -> GamepadState {
+        self.states
+            .get(index)
+            .copied()
+            .unwrap_or_else(GamepadState::idle)
+    }
+}
+
+impl Default for PadCache {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

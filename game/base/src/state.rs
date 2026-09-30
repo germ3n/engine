@@ -3,6 +3,7 @@ use crate::entities::EntityList;
 use crate::input::{binds_path, load_or_defaults, Binds};
 use crate::network::NetSend;
 use crate::network::NetWake;
+use crate::platform::PadCache;
 use crate::script::{Realm, ScriptEngine};
 use crate::world::{BrushMap, VoxelWorld};
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ pub struct GameState<In, Out> {
     pub map_name: String,
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub binds: Arc<Mutex<Binds>>,
+    pub pads: Arc<Mutex<PadCache>>,
     pub tick_interval: f64,
     pub network_receiver: Receiver<In>,
     pub network_sender: SyncSender<NetSend<Out>>,
@@ -89,7 +91,9 @@ impl<In, Out> GameState<In, Out> {
 
         let cvars = Arc::new(cvars);
         let binds = Arc::new(Mutex::new(load_or_defaults(&binds_path())));
-        let script_engine = ScriptEngine::new(realm, tick_interval, cvars.clone(), binds.clone());
+        let pads = Arc::new(Mutex::new(PadCache::new()));
+        let script_engine =
+            ScriptEngine::new(realm, tick_interval, cvars.clone(), binds.clone(), pads.clone());
 
         Self {
             realm,
@@ -99,6 +103,7 @@ impl<In, Out> GameState<In, Out> {
             map_name: String::new(),
             cvars,
             binds,
+            pads,
             tick_interval,
             network_receiver,
             network_sender,
