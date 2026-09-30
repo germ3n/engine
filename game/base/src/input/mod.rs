@@ -401,7 +401,7 @@ pub fn load_or_defaults(path: &Path) -> Binds {
         let mut binds = Binds::new();
 
         if let Err(err) = crate::console::exec_file(path, &mut binds) {
-            println!("[binds] {err}");
+            log::warn!("[binds] {err}");
 
             return Binds::defaults();
         }
@@ -412,7 +412,7 @@ pub fn load_or_defaults(path: &Path) -> Binds {
     let binds = Binds::defaults();
 
     if let Err(err) = binds.write_cfg(path) {
-        println!("[binds] {err}");
+        log::warn!("[binds] {err}");
     }
 
     binds

@@ -83,28 +83,28 @@ pub fn run(map_name: &str) {
     let mut editor = match open_editor(map_name) {
         Ok(editor) => editor,
         Err(err) => {
-            println!("[editor] {err}");
+            log::warn!("[editor] {err}");
 
             return;
         }
     };
 
     if editor.map_path.exists() {
-        println!("[editor] {}", editor.map_path.display());
+        log::info!("[editor] {}", editor.map_path.display());
     } else {
-        println!("[editor] new {}", editor.map_path.display());
+        log::info!("[editor] new {}", editor.map_path.display());
     }
 
     if editor.voxel_path.exists() {
-        println!("[editor] {}", editor.voxel_path.display());
+        log::info!("[editor] {}", editor.voxel_path.display());
     }
 
     let kind = HostKind::from_env();
-    println!("[host] {kind:?}");
+    log::info!("[host] {kind:?}");
     let mut host = match PlatformHost::open(kind) {
         Ok(host) => host,
         Err(err) => {
-            println!("[host] {err}");
+            log::warn!("[host] {err}");
 
             return;
         }
@@ -641,7 +641,7 @@ impl Editor {
             Ok(path) => path,
             Err(err) => {
                 self.message = err;
-                println!("[editor] {}", self.message);
+                log::info!("[editor] {}", self.message);
 
                 return;
             }
@@ -649,7 +649,7 @@ impl Editor {
 
         if let Err(err) = self.voxels.save_file(&self.voxel_path) {
             self.message = err;
-            println!("[editor] {}", self.message);
+            log::info!("[editor] {}", self.message);
 
             return;
         }
@@ -660,7 +660,7 @@ impl Editor {
             self.map_path.display(),
             self.voxel_path.display()
         );
-        println!("[editor] {} ({})", self.message, compiled.display());
+        log::info!("[editor] {} ({})", self.message, compiled.display());
     }
 
     fn sync(&mut self) {

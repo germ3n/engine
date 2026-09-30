@@ -121,7 +121,7 @@ impl OpenGLWindow {
             gl.compile_shader(vs);
 
             if !gl.get_shader_compile_status(vs) {
-                println!("[gl] ui vert {}", gl.get_shader_info_log(vs));
+                log::warn!("[gl] ui vert {}", gl.get_shader_info_log(vs));
             }
 
             let fs = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
@@ -129,7 +129,7 @@ impl OpenGLWindow {
             gl.compile_shader(fs);
 
             if !gl.get_shader_compile_status(fs) {
-                println!("[gl] ui frag {}", gl.get_shader_info_log(fs));
+                log::warn!("[gl] ui frag {}", gl.get_shader_info_log(fs));
             }
 
             let program = gl.create_program().unwrap();
@@ -138,7 +138,7 @@ impl OpenGLWindow {
             gl.link_program(program);
 
             if !gl.get_program_link_status(program) {
-                println!("[gl] ui link {}", gl.get_program_info_log(program));
+                log::warn!("[gl] ui link {}", gl.get_program_info_log(program));
             }
 
             let vao = gl.create_vertex_array().unwrap();
@@ -647,7 +647,7 @@ fn link_mesh_program(gl: &glow::Context, cache: &shader::Registry) -> glow::Prog
         gl.link_program(program);
 
         if !gl.get_program_link_status(program) {
-            println!("[gl] voxel link {}", gl.get_program_info_log(program));
+            log::warn!("[gl] voxel link {}", gl.get_program_info_log(program));
         }
 
         gl.delete_shader(vert);
@@ -664,7 +664,7 @@ fn compile_mesh_shader(gl: &glow::Context, kind: u32, source: &str) -> glow::Sha
         gl.compile_shader(shader);
 
         if !gl.get_shader_compile_status(shader) {
-            println!("[gl] voxel shader {}", gl.get_shader_info_log(shader));
+            log::warn!("[gl] voxel shader {}", gl.get_shader_info_log(shader));
         }
 
         shader

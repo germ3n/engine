@@ -31,7 +31,7 @@ impl HostKind {
             Ok(value) if value.eq_ignore_ascii_case("xbox") => Self::Xbox,
             Ok(value) if value.eq_ignore_ascii_case("winit") => Self::Winit,
             Ok(value) => {
-                println!("[host] unknown ENGINE_HOST={value}, using winit");
+                log::warn!("[host] unknown ENGINE_HOST={value}, using winit");
 
                 Self::Winit
             }

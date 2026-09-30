@@ -118,7 +118,7 @@ impl NetworkServer {
 
         let mut dropped = Vec::new();
         for addr in idle {
-            println!("[sv] timeout {}", addr);
+            log::warn!("[sv] timeout {}", addr);
             if self.disconnect_client(addr) {
                 dropped.push(addr);
             }
@@ -331,7 +331,7 @@ impl NetworkServer {
                 }
                 Err(ReliableSendError::TooLarge) => {
                     if !reported_large {
-                        println!("[sv] reliable payload too large");
+                        log::warn!("[sv] reliable payload too large");
                         reported_large = true;
                     }
                 }
@@ -532,7 +532,7 @@ fn drain_outbound(
                 break;
             }
             EnqueueStatus::TooLarge => {
-                println!("[sv] reliable payload too large");
+                log::warn!("[sv] reliable payload too large");
                 outbound.pop_front();
             }
         }

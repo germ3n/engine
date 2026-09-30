@@ -246,14 +246,14 @@ pub fn split_unreliable(sequence: u32, payload: Arc<Vec<u8>>) -> Vec<BundlePart>
 
     let chunk_len = unreliable_fragment_limit();
     if chunk_len == 0 {
-        println!("[net] unreliable payload too large");
+        log::warn!("[net] unreliable payload too large");
 
         return Vec::new();
     }
 
     let count = payload.len().div_ceil(chunk_len);
     if count > MAX_FRAGMENTS as usize {
-        println!("[net] unreliable payload too large");
+        log::warn!("[net] unreliable payload too large");
 
         return Vec::new();
     }
@@ -369,7 +369,7 @@ pub fn pack_bundles(
             &parts[start..],
         );
         if fitted == 0 {
-            println!("[net] bundle part too large");
+            log::warn!("[net] bundle part too large");
             start += 1;
 
             continue;

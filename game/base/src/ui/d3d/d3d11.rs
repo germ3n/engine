@@ -260,7 +260,7 @@ impl Window for D3D11Window {
 
     fn set_size(&mut self, w: u32, h: u32) {
         if let Err(err) = self.resize(w, h) {
-            println!("[gfx] d3d11 resize {err}");
+            log::warn!("[gfx] d3d11 resize {err}");
         }
     }
 

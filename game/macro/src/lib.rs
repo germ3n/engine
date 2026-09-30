@@ -22,7 +22,7 @@ pub fn Networkable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 let field_type = &field.ty;
 
                 generated_logic.push(quote! {
-                    println!(
+                    log::debug!(
                         "Field idx {} -> Syncing {} of type {}",
                         #idx,
                         stringify!(#field_name),

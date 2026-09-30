@@ -23,7 +23,7 @@ pub enum GfxWindow {
 pub fn create(surface: &Surface) -> GfxWindow {
     #[cfg(target_os = "ios")]
     {
-        println!("[gfx] metal");
+        log::info!("[gfx] metal");
 
         return GfxWindow::Metal(crate::ui::metal::MetalWindow::try_new(surface).expect("metal"));
     }
@@ -32,12 +32,12 @@ pub fn create(surface: &Surface) -> GfxWindow {
     if chosen("metal") {
         match crate::ui::metal::MetalWindow::try_new(surface) {
             Ok(window) => {
-                println!("[gfx] metal");
+                log::info!("[gfx] metal");
 
                 return GfxWindow::Metal(window);
             }
             Err(err) => {
-                println!("[gfx] metal failed: {err}");
+                log::warn!("[gfx] metal failed: {err}");
             }
         }
     }
@@ -46,12 +46,12 @@ pub fn create(surface: &Surface) -> GfxWindow {
     if chosen("d3d12") {
         match crate::ui::d3d::D3D12Window::try_new(surface) {
             Ok(window) => {
-                println!("[gfx] d3d12");
+                log::info!("[gfx] d3d12");
 
                 return GfxWindow::D3D12(window);
             }
             Err(err) => {
-                println!("[gfx] d3d12 failed: {err}");
+                log::warn!("[gfx] d3d12 failed: {err}");
             }
         }
     }
@@ -60,12 +60,12 @@ pub fn create(surface: &Surface) -> GfxWindow {
     if chosen("d3d11") {
         match crate::ui::d3d::D3D11Window::try_new(surface) {
             Ok(window) => {
-                println!("[gfx] d3d11");
+                log::info!("[gfx] d3d11");
 
                 return GfxWindow::D3D11(window);
             }
             Err(err) => {
-                println!("[gfx] d3d11 failed: {err}");
+                log::warn!("[gfx] d3d11 failed: {err}");
             }
         }
     }
@@ -74,19 +74,19 @@ pub fn create(surface: &Surface) -> GfxWindow {
     if chosen("vulkan") {
         match VulkanWindow::try_new(surface) {
             Ok(window) => {
-                println!("[gfx] vulkan");
+                log::info!("[gfx] vulkan");
 
                 return GfxWindow::Vulkan(window);
             }
             Err(err) => {
-                println!("[gfx] vulkan failed: {err}");
+                log::warn!("[gfx] vulkan failed: {err}");
             }
         }
     }
 
     #[cfg(not(target_os = "ios"))]
     {
-        println!("[gfx] opengl");
+        log::info!("[gfx] opengl");
 
         return GfxWindow::OpenGL(OpenGLWindow::attach(surface));
     }
@@ -94,7 +94,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
 
 #[cfg(target_os = "android")]
 pub fn android_window(surface: &Surface) -> GfxWindow {
-    println!("[gfx] opengl es");
+    log::info!("[gfx] opengl es");
     let mut window = OpenGLWindow::attach(surface);
     window.enable_vr();
 

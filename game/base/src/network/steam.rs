@@ -159,9 +159,9 @@ mod live {
         let client = match open_client() {
             Ok(client) => client,
             Err(err) => {
-                println!("[steam] {err}");
+                log::warn!("[steam] {err}");
                 if lobby.is_some() || connect.is_some() {
-                    println!("[steam] friend join unavailable");
+                    log::warn!("[steam] friend join unavailable");
                 }
 
                 return;
@@ -180,7 +180,7 @@ mod live {
             .name("steam".to_string())
             .spawn(move || run(client));
         if let Err(err) = spawned {
-            println!("[steam] thread failed: {err}");
+            log::warn!("[steam] thread failed: {err}");
         }
     }
 
@@ -258,7 +258,7 @@ mod live {
         let text = text.trim();
         let id_text = text.strip_prefix("lobby:").unwrap_or(text);
         let Ok(id) = id_text.parse::<u64>() else {
-            println!("[steam] connect string {text}");
+            log::info!("[steam] connect string {text}");
 
             return;
         };
@@ -267,15 +267,15 @@ mod live {
     }
 
     fn run(client: Client) {
-        println!("[steam] {}", client.user().steam_id().raw());
+        log::info!("[steam] {}", client.user().steam_id().raw());
         client.networking_utils().init_relay_network_access();
         let _ = client.networking_sockets().init_authentication();
         let _lobby_join = client.register_callback(|request: GameLobbyJoinRequested| {
-            println!("[steam] lobby invite {}", request.lobby_steam_id.raw());
+            log::info!("[steam] lobby invite {}", request.lobby_steam_id.raw());
             note_lobby(request.lobby_steam_id.raw());
         });
         let _rich_join = client.register_callback(|request: GameRichPresenceJoinRequested| {
-            println!("[steam] rich presence join {}", request.connect);
+            log::info!("[steam] rich presence join {}", request.connect);
             note_connect(&request.connect);
         });
 
@@ -300,7 +300,7 @@ mod live {
                     match event {
                         ListenSocketEvent::Connecting(request) => {
                             if let Err(err) = request.accept() {
-                                println!("[steam] accept failed: {err}");
+                                log::warn!("[steam] accept failed: {err}");
                             }
                         }
                         ListenSocketEvent::Connected(event) => {
@@ -310,7 +310,7 @@ mod live {
 
                             let id = id.raw();
                             peers.insert(id, event.take_connection());
-                            println!("[steam] peer {id}");
+                            log::info!("[steam] peer {id}");
                         }
                         ListenSocketEvent::Disconnected(event) => {
                             let Some(id) = event.remote().steam_id() else {
@@ -319,7 +319,7 @@ mod live {
 
                             let id = id.raw();
                             peers.remove(&id);
-                            println!("[steam] peer left {id}");
+                            log::info!("[steam] peer left {id}");
                         }
                     }
                 }
@@ -346,16 +346,16 @@ mod live {
                                 Ok(lobby) => {
                                     let host = lobby_host(&hosted, lobby);
                                     if host == 0 {
-                                        println!("[steam] lobby {pending} has no host");
+                                        log::warn!("[steam] lobby {pending} has no host");
 
                                         return;
                                     }
 
                                     DIAL_ID.store(host, Ordering::Release);
-                                    println!("[steam] joined lobby {pending}");
+                                    log::info!("[steam] joined lobby {pending}");
                                 }
                                 Err(()) => {
-                                    println!("[steam] lobby join failed");
+                                    log::warn!("[steam] lobby join failed");
                                 }
                             }
                         });
@@ -372,10 +372,10 @@ mod live {
                 ) {
                     Ok(conn) => {
                         dial = Some(conn);
-                        println!("[steam] dialing {want}");
+                        log::info!("[steam] dialing {want}");
                     }
                     Err(_) => {
-                        println!("[steam] dial failed");
+                        log::warn!("[steam] dial failed");
                         dial_after = Instant::now() + Duration::from_secs(2);
                     }
                 }
@@ -386,7 +386,7 @@ mod live {
                 while let Some(event) = conn.try_receive_event() {
                     if event.new_state == NetworkingConnectionState::Connected {
                         CLIENT_READY.store(true, Ordering::Release);
-                        println!("[steam] connected");
+                        log::info!("[steam] connected");
                     }
 
                     if event.new_state == NetworkingConnectionState::ClosedByPeer
@@ -394,7 +394,7 @@ mod live {
                     {
                         CLIENT_READY.store(false, Ordering::Release);
                         closed = true;
-                        println!("[steam] connection closed");
+                        log::info!("[steam] connection closed");
                     }
                 }
             }
@@ -464,13 +464,13 @@ mod live {
                     .matchmaking()
                     .create_lobby(LobbyType::FriendsOnly, 32, move |result| match result {
                         Ok(lobby) => publish_lobby(&hosted, lobby),
-                        Err(err) => println!("[steam] lobby failed: {err}"),
+                        Err(err) => log::warn!("[steam] lobby failed: {err}"),
                     });
 
                 Some(listen)
             }
             Err(_) => {
-                println!("[steam] listen failed");
+                log::warn!("[steam] listen failed");
 
                 None
             }
@@ -488,7 +488,7 @@ mod live {
         let friends = client.friends();
         friends.set_rich_presence("connect", Some(&connect));
         friends.set_rich_presence("status", Some("Hosting"));
-        println!("[steam] lobby {id}");
+        log::info!("[steam] lobby {id}");
     }
 
     fn lobby_host(client: &Client, lobby: LobbyId) -> u64 {

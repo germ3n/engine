@@ -73,7 +73,7 @@ pub fn connect(
 
         match Headset::start() {
             Some(headset) => {
-                println!("[vr] openvr");
+                log::info!("[vr] openvr");
                 *slot = Some(headset);
             }
             None => {
@@ -135,7 +135,7 @@ impl Headset {
         let _token = unsafe { VR_InitInternal(&mut err, 1) };
 
         if err != 0 {
-            println!("[vr] init {err}");
+            log::warn!("[vr] init {err}");
 
             return None;
         }
@@ -308,7 +308,7 @@ impl Headset {
         }
 
         self.warned = true;
-        println!("[vr] submit {err}");
+        log::warn!("[vr] submit {err}");
     }
 }
 
@@ -437,7 +437,7 @@ fn interface(name: &[u8]) -> Option<*mut c_void> {
     let table = unsafe { VR_GetGenericInterface(name.as_ptr() as *const i8, &mut err) };
 
     if err != 0 || table.is_null() {
-        println!("[vr] interface {err}");
+        log::warn!("[vr] interface {err}");
         unsafe { VR_ShutdownInternal() };
 
         return None;

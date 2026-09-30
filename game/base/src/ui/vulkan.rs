@@ -117,7 +117,7 @@ impl Window for VulkanWindow {
             .swap
             .resize(&self.gpu, self.width, self.height, self.pipes.swap_pass)
         {
-            println!("[gfx] vulkan resize {err}");
+            log::warn!("[gfx] vulkan resize {err}");
         }
     }
 
@@ -191,7 +191,7 @@ impl Window for VulkanWindow {
         }
 
         if let Err(err) = self.draw_frame() {
-            println!("[gfx] vulkan present {err}");
+            log::warn!("[gfx] vulkan present {err}");
         }
     }
 }

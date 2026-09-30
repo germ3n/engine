@@ -698,7 +698,7 @@ fn write_compiled(source: &Path, dest: &Path) -> Result<(), String> {
     std::fs::write(&tmp, &bytes).map_err(|err| format!("map {}: {err}", tmp.display()))?;
     let _ = std::fs::remove_file(dest);
     std::fs::rename(&tmp, dest).map_err(|err| format!("map {}: {err}", dest.display()))?;
-    println!("[map] compiled {}", dest.display());
+    log::info!("[map] compiled {}", dest.display());
 
     Ok(())
 }

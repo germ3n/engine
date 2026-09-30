@@ -1,26 +1,35 @@
 mod config;
 
 use config::{hosts, renderers, resolve_base, Settings};
-use eframe::egui::{self, Color32, CornerRadius, FontId, Frame, Margin, RichText, Stroke, Vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui,
+    Vec2,
+};
 use std::process::Command;
 
-const BG: Color32 = Color32::from_rgb(16, 17, 20);
-const SURFACE: Color32 = Color32::from_rgb(26, 28, 34);
-const FIELD: Color32 = Color32::from_rgb(36, 39, 48);
-const FIELD_HOVER: Color32 = Color32::from_rgb(46, 50, 60);
+const BG: Color32 = Color32::from_rgb(14, 15, 18);
+const SURFACE: Color32 = Color32::from_rgb(24, 26, 32);
+const FIELD: Color32 = Color32::from_rgb(34, 37, 46);
+const FIELD_HOVER: Color32 = Color32::from_rgb(48, 42, 36);
 const LINE: Color32 = Color32::from_rgb(52, 56, 68);
 const TEXT: Color32 = Color32::from_rgb(236, 234, 228);
 const MUTED: Color32 = Color32::from_rgb(132, 136, 148);
 const ACCENT: Color32 = Color32::from_rgb(214, 132, 58);
+const ACCENT_SOFT: Color32 = Color32::from_rgb(84, 52, 28);
 const ACCENT_INK: Color32 = Color32::from_rgb(28, 18, 10);
 const ERROR: Color32 = Color32::from_rgb(216, 88, 78);
+
+const RAIL_COLLAPSED: f32 = 52.0;
+const RAIL_EXPANDED: f32 = 248.0;
+const DRAWER_H: f32 = 68.0;
+const SLIDE_SECS: f32 = 0.2;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 460.0])
-            .with_min_inner_size([400.0, 460.0])
-            .with_max_inner_size([400.0, 520.0])
+            .with_inner_size([640.0, 440.0])
+            .with_min_inner_size([640.0, 440.0])
+            .with_max_inner_size([640.0, 440.0])
             .with_resizable(false),
         centered: true,
         ..Default::default()
@@ -37,6 +46,9 @@ struct LauncherApp {
     settings: Settings,
     status: Option<String>,
     close: bool,
+    open_drawer: Option<&'static str>,
+    pinned_drawer: Option<&'static str>,
+    appear: f32,
 }
 
 impl LauncherApp {
@@ -47,6 +59,9 @@ impl LauncherApp {
             settings: config::load(),
             status: None,
             close: false,
+            open_drawer: None,
+            pinned_drawer: None,
+            appear: 0.0,
         }
     }
 
@@ -110,127 +125,347 @@ impl eframe::App for LauncherApp {
             return;
         }
 
-        egui::TopBottomPanel::bottom("launch")
-            .frame(
-                Frame::NONE
-                    .fill(BG)
-                    .inner_margin(Margin {
-                        left: 24,
-                        right: 24,
-                        top: 0,
-                        bottom: 24,
-                    })
-                    .stroke(Stroke::NONE),
-            )
-            .exact_height(if self.status.is_some() { 86.0 } else { 64.0 })
-            .show_separator_line(false)
-            .show(ctx, |ui| {
-                let launch = egui::Button::new(
-                    RichText::new("Launch")
-                        .size(15.0)
-                        .color(ACCENT_INK)
-                        .strong(),
-                )
-                .fill(ACCENT)
-                .stroke(Stroke::NONE)
-                .corner_radius(CornerRadius::same(7))
-                .min_size(Vec2::new(ui.available_width(), 40.0));
+        self.appear = (self.appear + ctx.input(|i| i.stable_dt) / 0.45).min(1.0);
 
-                if ui.add(launch).clicked() {
-                    self.launch();
-                }
-
-                if let Some(status) = &self.status {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(status).size(12.0).color(ERROR));
-                }
-            });
+        if self.appear < 1.0 {
+            ctx.request_repaint();
+        }
 
         egui::CentralPanel::default()
-            .frame(
-                Frame::NONE.fill(BG).inner_margin(Margin {
-                    left: 24,
-                    right: 24,
-                    top: 22,
-                    bottom: 12,
-                }),
-            )
+            .frame(Frame::NONE.fill(BG))
             .show(ctx, |ui| {
-                ui.label(
-                    RichText::new("ENGINE")
-                        .font(FontId::proportional(26.0))
-                        .color(TEXT)
-                        .strong(),
-                );
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("Graphics and session settings")
-                        .size(12.5)
-                        .color(MUTED),
-                );
-                ui.add_space(18.0);
+                let full = ui.max_rect();
+                paint_atmosphere(ui, full);
 
-                Frame::new()
-                    .fill(SURFACE)
-                    .stroke(Stroke::new(1.0_f32, LINE))
-                    .corner_radius(CornerRadius::same(10))
-                    .inner_margin(Margin::symmetric(16, 14))
-                    .show(ui, |ui| {
-                        egui::Grid::new("settings")
-                            .num_columns(2)
-                            .spacing([16.0, 12.0])
-                            .min_col_width(72.0)
-                            .show(ui, |ui| {
-                                row_label(ui, "Renderer");
+                let rail_w = RAIL_EXPANDED + 18.0;
+                let brand = Rect::from_min_max(
+                    full.min + Vec2::new(36.0, 28.0),
+                    Pos2::new(full.max.x - rail_w, full.max.y - 28.0),
+                );
+                let rail = Rect::from_min_max(
+                    Pos2::new(full.max.x - rail_w, full.min.y + 24.0),
+                    full.max - Vec2::new(0.0, 24.0),
+                );
+
+                let appear = self.appear;
+                let status = self.status.clone();
+                let mut launch = false;
+
+                ui.scope_builder(egui::UiBuilder::new().max_rect(brand), |ui| {
+                    launch = brand_panel(ui, appear, &status);
+                });
+
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rail), |ui| {
+                    self.draw_rail(ui);
+                });
+
+                if launch {
+                    self.launch();
+                }
+            });
+    }
+}
+
+impl LauncherApp {
+    fn draw_rail(&mut self, ui: &mut Ui) {
+        let mut y = ui.max_rect().min.y;
+        let right = ui.max_rect().max.x;
+        let gap = 8.0;
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let popup_open = ui.memory(|m| m.any_popup_open());
+
+        let drawers: [Drawer; 5] = [
+            Drawer {
+                id: "renderer",
+                label: "GFX",
+                title: "Renderer",
+                kind: DrawerKind::Combo {
+                    value_key: "renderer",
+                },
+            },
+            Drawer {
+                id: "host",
+                label: "HOST",
+                title: "Host",
+                kind: DrawerKind::Combo { value_key: "host" },
+            },
+            Drawer {
+                id: "map",
+                label: "MAP",
+                title: "Map",
+                kind: DrawerKind::Map,
+            },
+            Drawer {
+                id: "tick",
+                label: "TICK",
+                title: "Tickrate",
+                kind: DrawerKind::Tick,
+            },
+            Drawer {
+                id: "editor",
+                label: "EDIT",
+                title: "Editor",
+                kind: DrawerKind::Editor,
+            },
+        ];
+
+        let mut slots = Vec::with_capacity(drawers.len());
+
+        for drawer in &drawers {
+            let hit = Rect::from_min_max(
+                Pos2::new(right - RAIL_EXPANDED, y),
+                Pos2::new(right, y + DRAWER_H + gap),
+            );
+            slots.push((drawer.id, hit));
+            y += DRAWER_H + gap;
+        }
+
+        let mut next_open = pointer.and_then(|pos| {
+            slots
+                .iter()
+                .find(|(_, hit)| hit.contains(pos))
+                .map(|(id, _)| *id)
+        });
+
+        if next_open.is_none() {
+            if let Some(id) = self.open_drawer {
+                if popup_open || self.pinned_drawer == Some(id) {
+                    next_open = Some(id);
+                }
+            }
+        }
+
+        if next_open != self.open_drawer {
+            self.open_drawer = next_open;
+        }
+
+        let mut animating = false;
+
+        for (drawer, (_, hit)) in drawers.iter().zip(slots.iter()) {
+            let open = self.open_drawer == Some(drawer.id);
+            let t = ui.ctx().animate_bool_with_time(
+                egui::Id::new(("drawer", drawer.id)),
+                open,
+                SLIDE_SECS,
+            );
+            let eased = ease_out_cubic(t);
+
+            if t > 0.001 && t < 0.999 {
+                animating = true;
+            }
+
+            let width = egui::lerp(RAIL_COLLAPSED..=RAIL_EXPANDED, eased);
+            let rect = Rect::from_min_size(
+                Pos2::new(right - width, hit.min.y),
+                Vec2::new(width, DRAWER_H),
+            );
+
+            if let Some(pin) = draw_drawer(ui, rect, hit, drawer, &mut self.settings, eased, open) {
+                if pin {
+                    self.pinned_drawer = Some(drawer.id);
+                } else if self.pinned_drawer == Some(drawer.id) {
+                    self.pinned_drawer = None;
+                }
+            }
+        }
+
+        if animating {
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+struct Drawer {
+    id: &'static str,
+    label: &'static str,
+    title: &'static str,
+    kind: DrawerKind,
+}
+
+enum DrawerKind {
+    Combo { value_key: &'static str },
+    Map,
+    Tick,
+    Editor,
+}
+
+fn draw_drawer(
+    ui: &mut Ui,
+    rect: Rect,
+    hit: &Rect,
+    drawer: &Drawer,
+    settings: &mut Settings,
+    t: f32,
+    open: bool,
+) -> Option<bool> {
+    let _ = ui.interact(*hit, egui::Id::new(("hit", drawer.id)), Sense::hover());
+    let fill = lerp_color(SURFACE, FIELD_HOVER, t);
+    let edge = lerp_color(LINE, ACCENT, t);
+
+    ui.painter().rect(
+        rect,
+        CornerRadius {
+            nw: 8,
+            ne: 0,
+            sw: 8,
+            se: 0,
+        },
+        fill,
+        Stroke::new(1.0_f32, edge),
+        egui::StrokeKind::Inside,
+    );
+
+    let accent_bar = Rect::from_min_max(
+        Pos2::new(rect.max.x - 3.0, rect.min.y + 8.0),
+        Pos2::new(rect.max.x, rect.max.y - 8.0),
+    );
+    ui.painter().rect_filled(
+        accent_bar,
+        CornerRadius::ZERO,
+        lerp_color(ACCENT_SOFT, ACCENT, t),
+    );
+
+    let label_pos = Pos2::new(rect.max.x - RAIL_COLLAPSED * 0.5, rect.center().y);
+    ui.painter().text(
+        label_pos,
+        egui::Align2::CENTER_CENTER,
+        drawer.label,
+        FontId::proportional(11.0),
+        lerp_color(MUTED, TEXT, t.max(0.35)),
+    );
+
+    let mut pin = None;
+
+    if t > 0.2 && open {
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(Rect::from_min_max(
+                rect.min + Vec2::new(14.0, 8.0),
+                Pos2::new(rect.max.x - RAIL_COLLAPSED - 4.0, rect.max.y - 8.0),
+            )),
+            |ui| {
+                ui.set_opacity(((t - 0.2) / 0.8).clamp(0.0, 1.0));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(drawer.title).size(11.0).color(MUTED));
+                    ui.add_space(2.0);
+
+                    match drawer.kind {
+                        DrawerKind::Combo { value_key } => match value_key {
+                            "renderer" => {
                                 combo(
                                     ui,
-                                    "renderer",
-                                    &mut self.settings.renderer,
+                                    value_key,
+                                    &mut settings.renderer,
                                     &renderers(),
                                     display_renderer,
                                 );
-                                ui.end_row();
-
-                                row_label(ui, "Host");
+                            }
+                            "host" => {
                                 combo(
                                     ui,
-                                    "host",
-                                    &mut self.settings.host,
+                                    value_key,
+                                    &mut settings.host,
                                     hosts(),
                                     display_host,
                                 );
-                                ui.end_row();
-
-                                ui.add_space(4.0);
-                                ui.end_row();
-
-                                row_label(ui, "Map");
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.settings.map)
-                                        .desired_width(f32::INFINITY)
-                                        .margin(Margin::symmetric(10, 6)),
+                            }
+                            _ => {}
+                        },
+                        DrawerKind::Map => {
+                            let edit = ui.add(
+                                egui::TextEdit::singleline(&mut settings.map)
+                                    .id_salt(("map", drawer.id))
+                                    .desired_width(f32::INFINITY)
+                                    .margin(Margin::symmetric(8, 4))
+                                    .hint_text("map name"),
+                            );
+                            pin = Some(edit.has_focus());
+                        }
+                        DrawerKind::Tick => {
+                            ui.horizontal(|ui| {
+                                let drag = ui.add(
+                                    egui::DragValue::new(&mut settings.tickrate)
+                                        .range(1..=1000)
+                                        .speed(1.0)
+                                        .min_decimals(0),
                                 );
-                                ui.end_row();
-
-                                row_label(ui, "Tickrate");
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::DragValue::new(&mut self.settings.tickrate)
-                                            .range(1..=1000)
-                                            .speed(1.0)
-                                            .min_decimals(0),
-                                    );
-                                    ui.label(RichText::new("Hz").size(12.0).color(MUTED));
-                                });
-                                ui.end_row();
-
-                                ui.label("");
-                                ui.checkbox(&mut self.settings.editor, "Open map editor");
-                                ui.end_row();
+                                pin = Some(drag.has_focus());
+                                ui.label(RichText::new("Hz").size(12.0).color(MUTED));
                             });
-                    });
-            });
+                        }
+                        DrawerKind::Editor => {
+                            ui.checkbox(&mut settings.editor, "Open map editor");
+                        }
+                    }
+                });
+            },
+        );
     }
+
+    pin
+}
+
+fn brand_panel(ui: &mut Ui, appear: f32, status: &Option<String>) -> bool {
+    ui.set_opacity(0.35 + 0.65 * appear);
+    let shift = (1.0 - appear) * 14.0;
+    ui.add_space(shift);
+
+    ui.label(
+        RichText::new("ENGINE")
+            .font(FontId::proportional(42.0))
+            .color(TEXT)
+            .strong(),
+    );
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new("Hover the rail to tune the session.")
+            .size(13.0)
+            .color(MUTED),
+    );
+
+    ui.add_space(28.0);
+
+    let launch = egui::Button::new(
+        RichText::new("Launch")
+            .size(15.0)
+            .color(ACCENT_INK)
+            .strong(),
+    )
+    .fill(ACCENT)
+    .stroke(Stroke::NONE)
+    .corner_radius(CornerRadius::same(8))
+    .min_size(Vec2::new(168.0, 42.0));
+
+    let clicked = ui.add(launch).clicked();
+
+    if let Some(status) = status {
+        ui.add_space(12.0);
+        ui.label(RichText::new(status).size(12.0).color(ERROR));
+    }
+
+    clicked
+}
+
+fn paint_atmosphere(ui: &mut Ui, full: Rect) {
+    let painter = ui.painter();
+    painter.rect_filled(full, CornerRadius::ZERO, BG);
+
+    let wash = Rect::from_min_size(
+        Pos2::new(full.max.x - 280.0, full.min.y),
+        Vec2::new(280.0, full.height()),
+    );
+    painter.rect_filled(
+        wash,
+        CornerRadius::ZERO,
+        Color32::from_rgba_unmultiplied(214, 132, 58, 18),
+    );
+
+    painter.line_segment(
+        [
+            Pos2::new(full.max.x - RAIL_EXPANDED - 28.0, full.min.y + 40.0),
+            Pos2::new(full.max.x - RAIL_EXPANDED - 28.0, full.max.y - 40.0),
+        ],
+        Stroke::new(1.0_f32, Color32::from_rgb(38, 40, 48)),
+    );
 }
 
 fn apply_theme(ctx: &egui::Context) {
@@ -248,7 +483,7 @@ fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.inactive.corner_radius = CornerRadius::same(6);
     visuals.widgets.hovered.bg_fill = FIELD_HOVER;
     visuals.widgets.hovered.weak_bg_fill = FIELD_HOVER;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(78, 84, 100));
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(120, 84, 52));
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(6);
     visuals.widgets.active.bg_fill = FIELD_HOVER;
@@ -276,14 +511,8 @@ fn apply_theme(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-fn row_label(ui: &mut egui::Ui, text: &str) {
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-        ui.label(RichText::new(text).size(13.0).color(MUTED));
-    });
-}
-
 fn combo(
-    ui: &mut egui::Ui,
+    ui: &mut Ui,
     id: &str,
     value: &mut String,
     options: &[&str],
@@ -291,7 +520,7 @@ fn combo(
 ) {
     egui::ComboBox::from_id_salt(id)
         .selected_text(display(value))
-        .width(ui.available_width().max(180.0))
+        .width(ui.available_width().max(140.0))
         .show_ui(ui, |ui| {
             for name in options {
                 ui.selectable_value(value, name.to_string(), display(name));
@@ -318,4 +547,21 @@ fn display_host(name: &str) -> &str {
         "xbox" => "Xbox",
         other => other,
     }
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp = |x: u8, y: u8| -> u8 { ((x as f32) + (y as f32 - x as f32) * t).round() as u8 };
+
+    Color32::from_rgba_unmultiplied(
+        lerp(a.r(), b.r()),
+        lerp(a.g(), b.g()),
+        lerp(a.b(), b.b()),
+        lerp(a.a(), b.a()),
+    )
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
 }

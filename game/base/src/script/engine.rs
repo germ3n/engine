@@ -142,7 +142,7 @@ impl ScriptEngine {
         let call_fn: mlua::Function = self.lua.registry_value(&self.hook_caller).unwrap();
 
         if let Err(err) = call_fn.call::<()>((hook_name, args)) {
-            eprintln!("[LUA HOOK ERROR]: {}", err);
+            log::error!("[LUA HOOK ERROR]: {}", err);
         }
     }
 
@@ -158,7 +158,7 @@ impl ScriptEngine {
         let call_fn: mlua::Function = self.lua.registry_value(&self.net_caller).unwrap();
 
         if let Err(err) = call_fn.call::<()>((hash, args)) {
-            eprintln!("[LUA HOOK ERROR]: {}", err);
+            log::error!("[LUA HOOK ERROR]: {}", err);
         }
     }
 }

@@ -164,10 +164,10 @@ impl<In, Out> GameState<In, Out> {
         match self.network_sender.try_send(message) {
             Ok(()) => self.wake.poke(),
             Err(TrySendError::Full(_)) => {
-                println!("[net] outbound queue full");
+                log::warn!("[net] outbound queue full");
             }
             Err(TrySendError::Disconnected(_)) => {
-                println!("[net] outbound disconnected");
+                log::warn!("[net] outbound disconnected");
             }
         }
     }

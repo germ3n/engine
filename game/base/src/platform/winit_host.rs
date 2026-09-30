@@ -111,7 +111,7 @@ impl WinitHost {
         let pads = match Gilrs::new() {
             Ok(pads) => Some(pads),
             Err(err) => {
-                println!("[pad] {err}");
+                log::warn!("[pad] {err}");
 
                 None
             }
@@ -163,11 +163,11 @@ impl WinitHost {
                                     self.surface = Some(surface);
                                 }
                                 Err(err) => {
-                                    println!("[host] surface {err}");
+                                    log::warn!("[host] surface {err}");
                                 }
                             },
                             Err(err) => {
-                                println!("[host] window {err}");
+                                log::warn!("[host] window {err}");
                             }
                         }
                     }

@@ -426,7 +426,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 while let Ok(net_event) = game.network_receiver.try_recv() {
                     match net_event {
                         FromServer::Connected { generation } => {
-                            println!("[cl] link up");
+                            log::info!("[cl] link up");
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
@@ -441,7 +441,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                             continue;
                         }
                         FromServer::Disconnected => {
-                            println!("[cl] link lost");
+                            log::info!("[cl] link lost");
 
                             continue;
                         }
@@ -656,9 +656,9 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
 fn client_surface() -> (PlatformHost, Option<backend::GfxWindow>) {
     let kind = HostKind::from_env();
-    println!("[host] {kind:?}");
+    log::info!("[host] {kind:?}");
     let mut host = PlatformHost::open(kind).unwrap_or_else(|err| {
-        println!("[host] {err}");
+        log::warn!("[host] {err}");
         std::process::exit(1);
     });
 
@@ -1023,17 +1023,17 @@ fn apply_server_event(
         ServerToClient::WorldSnapshot { .. } => {}
         ServerToClient::VoxelScale { scale } => {
             if !game.voxel_world.apply_scale(scale) {
-                println!("[cl] bad voxel scale {scale}");
+                log::warn!("[cl] bad voxel scale {scale}");
             }
         }
         ServerToClient::VoxelChunk(update) => {
             if !game.voxel_world.apply(&update) {
-                println!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
+                log::warn!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
             }
         }
         ServerToClient::MapChange { map_name } => {
             if let Err(err) = game.brush_world.load_file(&map_name) {
-                println!("[map] {err}");
+                log::warn!("[map] {err}");
             }
         }
         ServerToClient::EntitySpawned {
@@ -1108,7 +1108,7 @@ fn apply_server_event(
         }
 
         other => {
-            println!("[cl] unhandled {other:?}");
+            log::warn!("[cl] unhandled {other:?}");
         }
     }
 }
@@ -1137,7 +1137,7 @@ pub fn client_network_loop(
             .expect("Failed to connect to server");
     } else {
         client.set_steam(true);
-        println!("[cl] joining friend");
+        log::info!("[cl] joining friend");
     }
     let mut reliable_chan = ReliableChannel::new();
     let mut state_chan = ReliableChannel::with_stream(STREAM_STATE);
@@ -1186,7 +1186,7 @@ pub fn client_network_loop(
             let _ = client.send_message(&connect_packet(None));
             last_sent = Instant::now();
             last_server_seen = Instant::now();
-            println!("[cl] joining friend");
+            log::info!("[cl] joining friend");
         }
 
         if shutdown.load(Ordering::Relaxed) {
@@ -1234,11 +1234,11 @@ pub fn client_network_loop(
                         challenge_response_bytes = Some(bytes.clone());
                         let _ = client.send_message(&bytes);
                         last_sent = Instant::now();
-                        println!("[cl] challenge {token}");
+                        log::info!("[cl] challenge {token}");
                     }
                 }
                 PacketType::ChallengeResponse { .. } => {
-                    println!("[cl] challenge response");
+                    log::info!("[cl] challenge response");
                 }
                 PacketType::Connected {
                     session: new_session,
@@ -1265,7 +1265,7 @@ pub fn client_network_loop(
                         state_chan.set_session(new_session);
                         challenge_response_bytes = None;
                         last_server_seen = Instant::now();
-                        println!("[cl] connected");
+                        log::info!("[cl] connected");
                         let _ = tx.send(FromServer::Connected {
                             generation: new_generation,
                         });
@@ -1291,7 +1291,7 @@ pub fn client_network_loop(
                             &mut unreliable_assembly,
                             &mut last_sent,
                         );
-                        println!("[cl] disconnect");
+                        log::info!("[cl] disconnect");
                         let _ = tx.send(FromServer::Disconnected);
                     }
                 }
@@ -1478,7 +1478,7 @@ pub fn client_network_loop(
             connected = false;
             replace_session = None;
             challenge_response_bytes = None;
-            println!("[cl] server timeout");
+            log::warn!("[cl] server timeout");
             let _ = tx.send(FromServer::Disconnected);
             let _ = client.send_message(&connect_packet(None));
             last_sent = Instant::now();
@@ -1519,7 +1519,7 @@ fn queue_client_send(
             let payload = wincode::serialize(&event).unwrap();
             let backlog = reliable_backlog(local_reliable, reliable_chan);
             if backlog >= OUTBOUND_CAP {
-                println!("[cl] reliable outbound full");
+                log::warn!("[cl] reliable outbound full");
             } else {
                 local_reliable.push_back(payload);
             }
@@ -1551,7 +1551,7 @@ fn flush_local_reliable(
                 break;
             }
             EnqueueStatus::TooLarge => {
-                println!("[cl] reliable payload too large");
+                log::warn!("[cl] reliable payload too large");
                 local_reliable.pop_front();
             }
         }
@@ -1816,7 +1816,7 @@ fn apply_spawn(
     entity: EntitySnapshot,
 ) {
     if entity.class_hash != Player::CLASS_HASH {
-        println!("[cl] unknown class {}", entity.class_hash);
+        log::warn!("[cl] unknown class {}", entity.class_hash);
 
         return;
     }

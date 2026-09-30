@@ -857,7 +857,7 @@ impl Window for D3D12Window {
 
     fn set_size(&mut self, w: u32, h: u32) {
         if let Err(err) = self.resize(w, h) {
-            println!("[gfx] d3d12 resize {err}");
+            log::warn!("[gfx] d3d12 resize {err}");
         }
     }
 
@@ -876,7 +876,7 @@ impl Window for D3D12Window {
             self.view = view_proj(&frame.views[0]);
 
             if let Err(err) = self.ensure_eyes(frame.width, frame.height) {
-                println!("[vr] eyes {err}");
+                log::warn!("[vr] eyes {err}");
                 self.eye_views = None;
                 self.view = view_proj(view);
             }
@@ -938,7 +938,7 @@ impl Window for D3D12Window {
         }
 
         if let Err(err) = self.record() {
-            println!("[gfx] d3d12 {err}");
+            log::warn!("[gfx] d3d12 {err}");
         }
     }
 }

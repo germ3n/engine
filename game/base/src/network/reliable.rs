@@ -567,7 +567,7 @@ impl ReliableChannel {
                     break;
                 }
                 FragmentRun::Invalid => {
-                    println!("[net] dropped corrupt fragment");
+                    log::warn!("[net] dropped corrupt fragment");
                     self.recv_buffer.remove(&seq);
                     self.next_recv = seq.wrapping_add(1);
                 }

@@ -126,7 +126,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         while let Ok(net_event) = game.network_receiver.try_recv() {
             match net_event {
                 FromClient::Connected { addr, generation } => {
-                    println!("[sv] peer {}", addr);
+                    log::info!("[sv] peer {}", addr);
                     if !peers.contains(&addr) {
                         peers.push(addr);
                     }
@@ -142,7 +142,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                                 last_buttons: InputButtons::NONE,
                                 ack: 0,
                             });
-                            println!("[sv] spawn {handle:?}");
+                            log::info!("[sv] spawn {handle:?}");
                             let mut idx = 0;
 
                             while idx < players.len() {
@@ -186,13 +186,13 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     }
                 }
                 FromClient::Disconnected { addr } => {
-                    println!("[sv] peer left {}", addr);
+                    log::info!("[sv] peer left {}", addr);
                     peers.retain(|peer| *peer != addr);
                     drop_player(&mut game, addr, &mut players);
                 }
                 FromClient::Message { addr, event } => match event {
                     ClientToServer::UserMessage { hash, data } => {
-                        println!("[sv] usermessage {hash} from {addr}");
+                        log::info!("[sv] usermessage {hash} from {addr}");
                         game.run_usermessage(hash, UserMsgReader::new(data));
                     }
                     ClientToServer::PlayerInput {
@@ -250,7 +250,7 @@ pub fn server_network_loop(
     let mut server = match NetworkServer::new(25400, 128) {
         Ok(server) => server,
         Err(err) => {
-            println!("[sv] {err}");
+            log::warn!("[sv] {err}");
             std::process::exit(1);
         }
     };
@@ -276,7 +276,7 @@ pub fn server_network_loop(
 
             match packet {
                 PacketType::Connect { replace } => {
-                    println!("[sv] connect");
+                    log::info!("[sv] connect");
                     let restart = replace
                         .map(|session| server.session_matches(from, session))
                         .unwrap_or(false);
@@ -294,13 +294,13 @@ pub fn server_network_loop(
                     }
                 }
                 PacketType::ChallengeResponse { token } => {
-                    println!("[sv] challenge response");
+                    log::info!("[sv] challenge response");
                     if server.is_connected(from) {
                         server.send_connected(from);
                     } else if server.verify_challenge(from, token) {
                         if let Some((_session, generation)) = server.add_client(from) {
                             server.send_connected(from);
-                            println!("[sv] connect {}", from);
+                            log::info!("[sv] connect {}", from);
                             let _ = tx.send(FromClient::Connected {
                                 addr: from,
                                 generation,
@@ -314,7 +314,7 @@ pub fn server_network_loop(
                     }
                 }
                 PacketType::Challenge { .. } => {
-                    println!("[sv] challenge");
+                    log::info!("[sv] challenge");
                 }
                 PacketType::Connected { .. } => {}
                 PacketType::Disconnect { session } => {
@@ -466,7 +466,7 @@ fn handle_server_send(server: &mut NetworkServer, outgoing: NetSend<ServerToClie
         NetSend::Reliable(event) => {
             let payload = wincode::serialize(&event).unwrap();
             for addr in server.broadcast_reliable(&payload) {
-                println!("[sv] reliable outbound full {}", addr);
+                log::warn!("[sv] reliable outbound full {}", addr);
             }
         }
         NetSend::Unreliable(event) => {
@@ -478,10 +478,10 @@ fn handle_server_send(server: &mut NetworkServer, outgoing: NetSend<ServerToClie
             match server.enqueue_reliable(addr, &payload) {
                 Ok(()) => {}
                 Err(ReliableSendError::Full) => {
-                    println!("[sv] reliable outbound full {}", addr);
+                    log::warn!("[sv] reliable outbound full {}", addr);
                 }
                 Err(ReliableSendError::TooLarge) => {
-                    println!("[sv] reliable payload too large");
+                    log::warn!("[sv] reliable payload too large");
                 }
                 Err(ReliableSendError::Missing) => {}
             }
@@ -491,10 +491,10 @@ fn handle_server_send(server: &mut NetworkServer, outgoing: NetSend<ServerToClie
             match server.enqueue_state(addr, &payload) {
                 Ok(()) => {}
                 Err(ReliableSendError::Full) => {
-                    println!("[sv] reliable outbound full {}", addr);
+                    log::warn!("[sv] reliable outbound full {}", addr);
                 }
                 Err(ReliableSendError::TooLarge) => {
-                    println!("[sv] reliable payload too large");
+                    log::warn!("[sv] reliable payload too large");
                 }
                 Err(ReliableSendError::Missing) => {}
             }
@@ -877,7 +877,7 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
 
         batch.push(overflow);
         if !snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch) {
-            println!("[sv] snapshot entity too large");
+            log::warn!("[sv] snapshot entity too large");
             batch.clear();
         }
     }
@@ -950,7 +950,7 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
 
         batch.push(overflow);
         if !tick_fits(tick, u16::MAX, u16::MAX, &batch) {
-            println!("[sv] tick state too large");
+            log::warn!("[sv] tick state too large");
             batch.clear();
         }
     }

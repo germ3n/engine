@@ -39,22 +39,30 @@ pub extern "C" fn engine_main() {
 }
 
 pub fn editor(map_name: &str) {
+    init_logging();
     ui::editor::run(map_name);
 }
 
+fn init_logging() {
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .try_init();
+}
+
 pub fn run() {
+    init_logging();
     let cmdargs = console::get_cmdline_args();
-    println!("Game startup");
-    println!("Map: {:?}", cmdargs.map);
-    println!("Tick Rate: {}", cmdargs.tickrate);
+    log::info!("Game startup");
+    log::info!("Map: {:?}", cmdargs.map);
+    log::info!("Tick Rate: {}", cmdargs.tickrate);
     let tick_interval = 1.0 / cmdargs.tickrate as f64;
-    println!("Tick Interval: {}", tick_interval);
+    log::info!("Tick Interval: {}", tick_interval);
 
     if cmdargs.compile_map {
         let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
 
         if let Err(err) = crate::world::compile_map(&map_name) {
-            println!("[map] {err}");
+            log::warn!("[map] {err}");
             std::process::exit(1);
         }
 
@@ -72,7 +80,7 @@ pub fn run() {
 
     #[cfg(feature = "server")]
     {
-        println!("Starting server network loop");
+        log::info!("Starting server network loop");
         let (server_tx, server_rx) = std::sync::mpsc::channel();
         let (server_out_tx, server_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
         let (server_wake_read, server_wake_write) = wake_pair();
@@ -101,20 +109,20 @@ pub fn run() {
         server_game.map_name = map_name.clone();
 
         if let Err(err) = server_game.brush_world.load_file(&map_name) {
-            println!("[map] {err}");
+            log::warn!("[map] {err}");
         } else {
-            println!("[map] {map_name}");
+            log::info!("[map] {map_name}");
         }
 
         #[cfg(feature = "client")]
         std::thread::spawn(move || {
-            println!("Starting Server loop");
+            log::info!("Starting Server loop");
             server::server_loop(server_game);
         });
 
         #[cfg(not(feature = "client"))]
         {
-            println!("Entering Server loop");
+            log::info!("Entering Server loop");
             server::server_loop(server_game);
         }
     }
@@ -126,7 +134,7 @@ pub fn run() {
         let (client_wake_read, client_wake_write) = wake_pair();
         let shutdown = Arc::new(AtomicBool::new(false));
         let net_shutdown = Arc::clone(&shutdown);
-        println!("Starting Client network loop");
+        log::info!("Starting Client network loop");
         let net = std::thread::spawn(move || {
             client::client_network_loop(
                 SocketAddr::from_str("127.0.0.1:25400").expect("Failed to create SocketAddr"),
@@ -148,11 +156,11 @@ pub fn run() {
         client_game.map_name = map_name.clone();
 
         if let Err(err) = client_game.brush_world.load_file(&map_name) {
-            println!("[map] {err}");
+            log::warn!("[map] {err}");
         } else {
-            println!("[map] {map_name}");
+            log::info!("[map] {map_name}");
         }
-        println!("Entering Client loop");
+        log::info!("Entering Client loop");
         client::client_loop(client_game, shutdown);
         let _ = net.join();
     }
