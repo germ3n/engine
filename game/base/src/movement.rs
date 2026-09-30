@@ -145,6 +145,14 @@ impl Prediction {
         }
     }
 
+    pub fn pending(&self) -> usize {
+        self.cmds.len()
+    }
+
+    pub fn acked(&self) -> u64 {
+        self.ack
+    }
+
     pub fn push(&mut self, cmd: UserCommand) {
         self.cmds.push_back(cmd);
 

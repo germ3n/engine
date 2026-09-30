@@ -1,19 +1,6 @@
-use crate::ui::shader as wgsl;
 use windows::core::{s, PCSTR};
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{ID3DBlob, ID3DInclude};
-
-pub fn mesh_sm5(cache: &wgsl::Registry) -> Result<String, String> {
-    cache.hlsl(wgsl::MESH)
-}
-
-pub fn color_sm5(cache: &wgsl::Registry) -> Result<String, String> {
-    cache.hlsl(wgsl::COLOR)
-}
-
-pub fn text_sm5(cache: &wgsl::Registry) -> Result<String, String> {
-    cache.hlsl(wgsl::TEXT)
-}
 
 pub fn compile(source: &str, entry: PCSTR, target: PCSTR) -> Result<ID3DBlob, String> {
     let mut code = None;

@@ -855,15 +855,35 @@ fn reconcile_player(
     prediction: &mut Prediction,
     transform: &NetTransform,
 ) {
-    if transform.handle != prediction.local || !prediction.take_ack(transform.ack) {
+    if transform.handle != prediction.local {
         return;
     }
+
+    if !prediction.take_ack(transform.ack) {
+        log::debug!(
+            "[pred] skip stale ack={} have={}",
+            transform.ack,
+            prediction.acked(),
+        );
+
+        return;
+    }
+
+    let (predicted_pos, predicted_vel) = match game.entities.get(transform.handle) {
+        Some(entity) => {
+            let base = entity.base();
+
+            (base.position, base.velocity)
+        }
+        None => return,
+    };
 
     let mut position = transform.position;
     let mut velocity = transform.velocity;
     let mut angles = transform.angles;
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
+    let pending = prediction.pending();
     prediction.replay(
         &mut position,
         &mut velocity,
@@ -873,6 +893,45 @@ fn reconcile_player(
         &game.brush_world,
         &game.voxel_world,
     );
+
+    let dx = predicted_pos.x - position.x;
+    let dy = predicted_pos.y - position.y;
+    let dz = predicted_pos.z - position.z;
+    let err = (dx * dx + dy * dy + dz * dz).sqrt();
+    let dvx = predicted_vel.x - velocity.x;
+    let dvy = predicted_vel.y - velocity.y;
+    let dvz = predicted_vel.z - velocity.z;
+    let dvel = (dvx * dvx + dvy * dvy + dvz * dvz).sqrt();
+    let base_dx = predicted_pos.x - transform.position.x;
+    let base_dy = predicted_pos.y - transform.position.y;
+    let base_dz = predicted_pos.z - transform.position.z;
+    let base_err = (base_dx * base_dx + base_dy * base_dy + base_dz * base_dz).sqrt();
+    let noisy = err > 0.01 || dvel > 0.05;
+
+    if noisy || should_log_pred() {
+        log::info!(
+            "[pred] {} ack={} pending={} err={:.4} ({:.4},{:.4},{:.4}) dvel={:.4} ({:.4},{:.4},{:.4}) base={:.4} sv=({:.4},{:.4},{:.4}) cl=({:.4},{:.4},{:.4}) g={:.2}",
+            if noisy { "ERR" } else { "ok" },
+            transform.ack,
+            pending,
+            err,
+            dx,
+            dy,
+            dz,
+            dvel,
+            dvx,
+            dvy,
+            dvz,
+            base_err,
+            transform.position.x,
+            transform.position.y,
+            transform.position.z,
+            predicted_pos.x,
+            predicted_pos.y,
+            predicted_pos.z,
+            gravity,
+        );
+    }
 
     if let Some(entity) = game.entities.get_mut(transform.handle) {
         let base = entity.base_mut();
@@ -892,6 +951,26 @@ fn reconcile_player(
             Some(velocity),
         ),
     );
+}
+
+fn should_log_pred() -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static LAST_MS: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let prev = LAST_MS.load(Ordering::Relaxed);
+
+    if now.saturating_sub(prev) < 500 {
+        return false;
+    }
+
+    LAST_MS.store(now, Ordering::Relaxed);
+
+    true
 }
 
 fn note_remote(
