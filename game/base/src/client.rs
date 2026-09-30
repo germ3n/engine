@@ -24,7 +24,6 @@ use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
 use crate::ui::backend;
-use crate::ui::menu::draw_menu;
 use crate::ui::voxel::FlyCamera;
 use crate::ui::window::Window;
 use crate::ui::Color;
@@ -319,7 +318,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         scene_revision,
                         &camera.scene(aspect, game.voxel_world.scale() as f32),
                     );
-                    draw_menu(client_window, &mut game);
+                    
+                    game.run_hook("MenuPaint", ());
 
                     let draw_commands = {
                         let mut q = game.script_engine.render_queue.lock().unwrap();
@@ -888,7 +888,7 @@ fn reconcile_player(
         base.angles = angles;
     }
 
-    prediction.snap_view(position);
+    prediction.correct_view(position);
 
     game.run_hook(
         "TransformUpdated",

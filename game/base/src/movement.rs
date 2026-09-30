@@ -108,6 +108,24 @@ impl Prediction {
         self.span_ready = true;
     }
 
+    pub fn correct_view(&mut self, position: Vector3) {
+        if !self.span_ready {
+            self.snap_view(position);
+
+            return;
+        }
+
+        let dx = position.x - self.span_to.x;
+        let dy = position.y - self.span_to.y;
+        let dz = position.z - self.span_to.z;
+
+        if dx * dx + dy * dy + dz * dz < 1e-8 {
+            return;
+        }
+
+        self.span_to = position;
+    }
+
     pub fn view_origin(&self, alpha: f64) -> Option<Vector3> {
         if !self.span_ready {
             return None;
@@ -138,7 +156,7 @@ impl Prediction {
     }
 
     pub fn take_ack(&mut self, ack: u64) -> bool {
-        if ack < self.ack {
+        if ack <= self.ack {
             return false;
         }
 
@@ -1085,6 +1103,29 @@ mod tests {
         assert!(near(mid.x, 5.0));
         assert!(prediction.view_origin(-1.0).unwrap().x.abs() < 1e-6);
         assert!(near(prediction.view_origin(2.0).unwrap().x, 10.0));
+    }
+
+    #[test]
+    fn take_ack_ignores_duplicates_and_correct_view_keeps_span() {
+        let mut prediction = Prediction::new();
+        prediction.push(UserCommand {
+            tick: 1,
+            buttons: InputButtons::NONE,
+            wish: Vector3::new(0.0, 0.0, 0.0),
+            view: Angle3::new(0.0, 0.0, 0.0),
+        });
+        prediction.note_step(Vector3::new(0.0, 0.0, 0.0), Vector3::new(4.0, 0.0, 0.0));
+
+        assert!(prediction.take_ack(1));
+        assert!(!prediction.take_ack(1));
+
+        prediction.correct_view(Vector3::new(4.0, 0.0, 0.0));
+        let mid = prediction.view_origin(0.5).unwrap();
+        assert!(near(mid.x, 2.0));
+
+        prediction.correct_view(Vector3::new(6.0, 0.0, 0.0));
+        let mid = prediction.view_origin(0.5).unwrap();
+        assert!(near(mid.x, 3.0));
     }
 
     #[test]
