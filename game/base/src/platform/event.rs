@@ -40,7 +40,7 @@ pub enum ElementState {
     Released,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
     Right,

@@ -4,6 +4,7 @@ mod client;
 mod console;
 mod entities;
 mod r#enum;
+mod input;
 mod movement;
 mod network;
 pub mod plugin;

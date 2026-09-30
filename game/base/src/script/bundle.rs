@@ -16,7 +16,7 @@ mod tests {
     use crate::console::{ConVar, ConVarValue};
     use crate::script::{Realm, ScriptEngine};
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack
@@ -52,7 +52,8 @@ mod tests {
                 Some(true),
             )),
         );
-        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars));
+        let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
+        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars), binds);
         let len: f64 = engine
             .lua
             .load("return Vector3(3, 4, 0):len()")

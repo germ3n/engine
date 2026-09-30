@@ -1,3 +1,4 @@
+use crate::input::{PadButton, PadButtons};
 use crate::platform::event::{
     DeviceEvent, ElementState, Event, KeyCode, KeyboardInput, Modifiers, MouseButton,
     MouseScrollDelta, Touch, TouchPhase, WindowEvent,
@@ -6,7 +7,6 @@ use crate::platform::gamepad::GamepadState;
 use crate::platform::host::{Control, HostOps};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
-use crate::r#enum::InputButtons;
 use gilrs::{Axis, Button, Gilrs};
 use winit::event::{
     DeviceEvent as WinitDeviceEvent, ElementState as WinitElementState, Event as WinitEvent,
@@ -495,67 +495,40 @@ fn sample_pad(
         return GamepadState::idle();
     };
 
-    let mut forward = crate::platform::gamepad::stick(pad.value(Axis::LeftStickY), left_deadzone);
-    let mut right = crate::platform::gamepad::stick(pad.value(Axis::LeftStickX), left_deadzone);
-
-    if pad.is_pressed(Button::DPadUp) {
-        forward += 1.0;
-    }
-
-    if pad.is_pressed(Button::DPadDown) {
-        forward -= 1.0;
-    }
-
-    if pad.is_pressed(Button::DPadRight) {
-        right += 1.0;
-    }
-
-    if pad.is_pressed(Button::DPadLeft) {
-        right -= 1.0;
-    }
-
     GamepadState {
-        forward: forward.clamp(-1.0, 1.0),
-        right: right.clamp(-1.0, 1.0),
+        forward: crate::platform::gamepad::stick(pad.value(Axis::LeftStickY), left_deadzone),
+        right: crate::platform::gamepad::stick(pad.value(Axis::LeftStickX), left_deadzone),
         look_x: crate::platform::gamepad::stick(pad.value(Axis::RightStickX), right_deadzone),
         look_y: crate::platform::gamepad::stick(pad.value(Axis::RightStickY), right_deadzone),
         buttons: pad_buttons(&pad),
     }
 }
 
-fn pad_buttons(pad: &gilrs::Gamepad) -> InputButtons {
-    let mut buttons = InputButtons::NONE;
+fn pad_buttons(pad: &gilrs::Gamepad) -> PadButtons {
+    let mut buttons = PadButtons::NONE;
+    const PAIRS: [(Button, PadButton); 16] = [
+        (Button::South, PadButton::South),
+        (Button::East, PadButton::East),
+        (Button::West, PadButton::West),
+        (Button::North, PadButton::North),
+        (Button::LeftTrigger, PadButton::LeftTrigger),
+        (Button::LeftTrigger2, PadButton::LeftTrigger2),
+        (Button::RightTrigger, PadButton::RightTrigger),
+        (Button::RightTrigger2, PadButton::RightTrigger2),
+        (Button::LeftThumb, PadButton::LeftThumb),
+        (Button::RightThumb, PadButton::RightThumb),
+        (Button::Select, PadButton::Select),
+        (Button::Start, PadButton::Start),
+        (Button::DPadUp, PadButton::DPadUp),
+        (Button::DPadDown, PadButton::DPadDown),
+        (Button::DPadLeft, PadButton::DPadLeft),
+        (Button::DPadRight, PadButton::DPadRight),
+    ];
 
-    if pad.is_pressed(Button::RightTrigger2) {
-        buttons |= InputButtons::IN_ATTACK;
-    }
-
-    if pad.is_pressed(Button::LeftTrigger2) {
-        buttons |= InputButtons::IN_ATTACK2;
-    }
-
-    if pad.is_pressed(Button::West) {
-        buttons |= InputButtons::IN_USE;
-    }
-
-    if pad.is_pressed(Button::RightTrigger) {
-        buttons |= InputButtons::IN_SPRINT;
-    }
-
-    if pad.is_pressed(Button::LeftTrigger) {
-        buttons |= InputButtons::IN_WALK;
-    }
-
-    if pad.is_pressed(Button::LeftThumb) {
-        buttons |= InputButtons::IN_DUCK;
-    }
-
-    if pad.is_pressed(Button::South) {
-        buttons |= InputButtons::IN_JUMP;
-    }
-
-    if pad.is_pressed(Button::East) {
-        buttons |= InputButtons::IN_RELOAD;
+    for (source, mapped) in PAIRS {
+        if pad.is_pressed(source) {
+            buttons.insert(mapped);
+        }
     }
 
     buttons

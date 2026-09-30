@@ -1,9 +1,10 @@
 use crate::console::ConVar;
+use crate::input::Binds;
 use crate::script::bundle::{self, load_bytecode};
 use crate::script::libs::engine::publish_clock;
 use crate::script::libs::{
-    register_angle3_lib, register_convar_lib, register_engine_lib, register_net_lib,
-    register_surface_lib, register_vector3_lib,
+    register_angle3_lib, register_console_lib, register_convar_lib, register_engine_lib,
+    register_net_lib, register_surface_lib, register_vector3_lib,
 };
 use crate::ui::Color;
 use mlua::{Lua, LuaOptions, RegistryKey, StdLib};
@@ -57,7 +58,12 @@ pub struct ScriptEngine {
 }
 
 impl ScriptEngine {
-    pub fn new(realm: Realm, tick_interval: f64, cvars: Arc<HashMap<String, Arc<ConVar>>>) -> Self {
+    pub fn new(
+        realm: Realm,
+        tick_interval: f64,
+        cvars: Arc<HashMap<String, Arc<ConVar>>>,
+        binds: Arc<Mutex<Binds>>,
+    ) -> Self {
         let (usermsg_sender, usermsg_receiver) = std::sync::mpsc::channel();
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
         lua.globals()
@@ -87,6 +93,7 @@ impl ScriptEngine {
             }
 
             register_convar_lib(&lua, cvars);
+            register_console_lib(&lua, binds);
             register_vector3_lib(&lua);
             register_angle3_lib(&lua);
         }

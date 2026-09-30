@@ -1,5 +1,6 @@
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
+use crate::input::Action;
 use crate::movement::{self, NetPose, Prediction, UserCommand};
 use crate::network::events::{EntitySnapshot, NetTransform};
 use crate::network::packet::{
@@ -192,6 +193,7 @@ impl SnapshotIngress {
 
 pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
     let (host, mut held_window) = client_surface();
+    let binds = game.binds.clone();
 
     crate::script::bundle::load_bytecode(
         &game.script_engine.lua,
@@ -220,8 +222,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut remotes: HashMap<EntityHandle, VecDeque<NetPose>> = HashMap::new();
     let session_start = Instant::now();
     let mut captured = false;
-    let mut attack = false;
     let mut keys = HashSet::new();
+    let mut mouse = HashSet::new();
     let mut touches = Vec::new();
 
     host.run(move |event, host, control| {
@@ -263,7 +265,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     if let Some(code) = input.key_code {
                         if code == KeyCode::Escape && input.state == ElementState::Pressed {
                             captured = false;
-                            attack = false;
+                            mouse.clear();
                             host.set_cursor_grabbed(false);
                         } else if input.state == ElementState::Pressed {
                             keys.insert(code);
@@ -272,19 +274,18 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         }
                     }
                 }
-                WindowEvent::MouseInput {
-                    state,
-                    button: MouseButton::Left,
-                } => {
+                WindowEvent::MouseInput { state, button } => {
                     if state == ElementState::Pressed {
                         if captured {
-                            attack = true;
+                            mouse.insert(button);
                         }
 
-                        captured = true;
-                        host.set_cursor_grabbed(true);
+                        if button == MouseButton::Left {
+                            captured = true;
+                            host.set_cursor_grabbed(true);
+                        }
                     } else {
-                        attack = false;
+                        mouse.remove(&button);
                     }
                 }
                 WindowEvent::Touch(touch) => {
@@ -521,12 +522,24 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                 let speed = game.voxel_world.scale() as f32 * 14.0;
                 let (touch_forward, touch_right) = touch_wish(&touches);
-                let mut forward =
-                    held_key(&keys, KeyCode::KeyW) - held_key(&keys, KeyCode::KeyS) + touch_forward;
-                let mut right =
-                    held_key(&keys, KeyCode::KeyD) - held_key(&keys, KeyCode::KeyA) + touch_right;
-                let up = held_key(&keys, KeyCode::Space)
-                    - held_key(&keys, KeyCode::ShiftLeft).max(held_key(&keys, KeyCode::ShiftRight));
+                let (left_dz, right_dz) = crate::console::pad_deadzones(&game.cvars, 0);
+                let pad = host.gamepad(0, left_dz, right_dz);
+                let (mut forward, mut right, up, buttons) = {
+                    let binds = binds.lock().unwrap();
+                    let (axis_forward, axis_right) = binds.axis_held(&keys, &mouse, pad.buttons);
+                    let buttons = binds.buttons_held(&keys, &mouse, pad.buttons);
+                    let up = binds.action_held(Action::Jump, &keys, &mouse, pad.buttons) as i32
+                        as f32
+                        - binds.action_held(Action::Sprint, &keys, &mouse, pad.buttons) as i32
+                            as f32;
+
+                    (
+                        axis_forward + touch_forward,
+                        axis_right + touch_right,
+                        up,
+                        buttons,
+                    )
+                };
                 let vr = client_window.vr_input();
 
                 if prediction.arm_look {
@@ -548,9 +561,6 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     forward += vr.move_y;
                     right += vr.move_x;
                 }
-
-                let (left_dz, right_dz) = crate::console::pad_deadzones(&game.cvars, 0);
-                let pad = host.gamepad(0, left_dz, right_dz);
 
                 if !vr.active {
                     let yaw = pad.look_x * PAD_LOOK * frame_dt;
@@ -599,18 +609,15 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         predict_tick(
                             &mut game,
                             &mut prediction,
-                            &keys,
-                            attack,
+                            buttons,
                             forward,
                             right,
                             vr.yaw,
-                            pad.buttons,
                         );
                     }
                 }
 
                 if possessed {
-                    let buttons = command_buttons(&keys, attack, pad.buttons);
                     let alpha = if game.tick_interval > 0.0 {
                         (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
                     } else {
@@ -757,40 +764,6 @@ fn touch_wish(points: &[TouchPoint]) -> (f32, f32) {
     (forward.clamp(-1.0, 1.0), right.clamp(-1.0, 1.0))
 }
 
-fn held_key(keys: &HashSet<KeyCode>, code: KeyCode) -> f32 {
-    if keys.contains(&code) {
-        1.0
-    } else {
-        0.0
-    }
-}
-
-fn command_buttons(keys: &HashSet<KeyCode>, attack: bool, pad: InputButtons) -> InputButtons {
-    let mut buttons = pad;
-
-    if attack {
-        buttons |= InputButtons::IN_ATTACK;
-    }
-
-    if keys.contains(&KeyCode::Space) {
-        buttons |= InputButtons::IN_JUMP;
-    }
-
-    if keys.contains(&KeyCode::ShiftLeft) || keys.contains(&KeyCode::ShiftRight) {
-        buttons |= InputButtons::IN_SPRINT;
-    }
-
-    if keys.contains(&KeyCode::ControlLeft) || keys.contains(&KeyCode::ControlRight) {
-        buttons |= InputButtons::IN_DUCK;
-    }
-
-    if keys.contains(&KeyCode::AltLeft) || keys.contains(&KeyCode::AltRight) {
-        buttons |= InputButtons::IN_WALK;
-    }
-
-    buttons
-}
-
 fn command_view(look: Angle3, vr_yaw: f32) -> Angle3 {
     let mut view = look;
     view.y += vr_yaw.to_degrees();
@@ -819,12 +792,10 @@ fn place_camera(camera: &mut FlyCamera, origin: Vector3, look: Angle3, eye: f64)
 fn predict_tick(
     game: &mut GameState<FromServer, ClientToServer>,
     prediction: &mut Prediction,
-    keys: &HashSet<KeyCode>,
-    attack: bool,
+    buttons: InputButtons,
     forward: f32,
     right: f32,
     vr_yaw: f32,
-    pad: InputButtons,
 ) {
     if !game.entities.is_valid(prediction.local) {
         return;
@@ -841,7 +812,7 @@ fn predict_tick(
     };
     let cmd = UserCommand {
         tick: game.tick_count,
-        buttons: command_buttons(keys, attack, pad),
+        buttons,
         wish: Vector3::new(forward as f64, right as f64, 0.0),
         view: command_view(prediction.look, vr_yaw),
     };

@@ -1,4 +1,4 @@
-use crate::r#enum::InputButtons;
+use crate::input::PadButtons;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GamepadState {
@@ -6,7 +6,7 @@ pub struct GamepadState {
     pub right: f32,
     pub look_x: f32,
     pub look_y: f32,
-    pub buttons: InputButtons,
+    pub buttons: PadButtons,
 }
 
 impl GamepadState {
@@ -16,7 +16,7 @@ impl GamepadState {
             right: 0.0,
             look_x: 0.0,
             look_y: 0.0,
-            buttons: InputButtons::NONE,
+            buttons: PadButtons::NONE,
         }
     }
 }
