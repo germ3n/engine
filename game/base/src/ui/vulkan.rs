@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::shader;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -800,24 +801,26 @@ impl Pipelines {
         let color_layout = layout(&gpu.device, 16, &[])?;
         let text_sets = [descriptor_layout(&gpu.device)?];
         let text_layout = layout(&gpu.device, 16, &text_sets)?;
-        let mesh_vert = spirv(naga::ShaderStage::Vertex, MESH_VERT)?;
-        let mesh_frag = spirv(naga::ShaderStage::Fragment, MESH_FRAG)?;
-        let color_vert = spirv(naga::ShaderStage::Vertex, COLOR_VERT)?;
-        let color_frag = spirv(naga::ShaderStage::Fragment, COLOR_FRAG)?;
-        let text_vert = spirv(naga::ShaderStage::Vertex, TEXT_VERT)?;
-        let text_frag = spirv(naga::ShaderStage::Fragment, TEXT_FRAG)?;
-        let mesh_vs = shader(&gpu.device, &mesh_vert)?;
-        let mesh_fs = shader(&gpu.device, &mesh_frag)?;
-        let color_vs = shader(&gpu.device, &color_vert)?;
-        let color_fs = shader(&gpu.device, &color_frag)?;
-        let text_vs = shader(&gpu.device, &text_vert)?;
-        let text_fs = shader(&gpu.device, &text_frag)?;
+        let mesh_vert = shader::spirv(shader::MESH, naga::ShaderStage::Vertex, "mesh_vert")?;
+        let mesh_frag = shader::spirv(shader::MESH, naga::ShaderStage::Fragment, "mesh_frag")?;
+        let color_vert = shader::spirv(shader::COLOR, naga::ShaderStage::Vertex, "color_vert")?;
+        let color_frag = shader::spirv(shader::COLOR, naga::ShaderStage::Fragment, "color_frag")?;
+        let text_vert = shader::spirv(shader::TEXT, naga::ShaderStage::Vertex, "text_vert")?;
+        let text_frag = shader::spirv(shader::TEXT, naga::ShaderStage::Fragment, "text_frag")?;
+        let mesh_vs = shader_module(&gpu.device, &mesh_vert)?;
+        let mesh_fs = shader_module(&gpu.device, &mesh_frag)?;
+        let color_vs = shader_module(&gpu.device, &color_vert)?;
+        let color_fs = shader_module(&gpu.device, &color_frag)?;
+        let text_vs = shader_module(&gpu.device, &text_vert)?;
+        let text_fs = shader_module(&gpu.device, &text_frag)?;
         let mesh = pipeline(
             &gpu.device,
             swap_pass,
             mesh_layout,
             mesh_vs,
             mesh_fs,
+            c"mesh_vert",
+            c"mesh_frag",
             &mesh_attrs(),
             24,
             true,
@@ -830,6 +833,8 @@ impl Pipelines {
             mesh_layout,
             mesh_vs,
             mesh_fs,
+            c"mesh_vert",
+            c"mesh_frag",
             &mesh_attrs(),
             24,
             true,
@@ -842,6 +847,8 @@ impl Pipelines {
             color_layout,
             color_vs,
             color_fs,
+            c"color_vert",
+            c"color_frag",
             &color_attrs(),
             24,
             false,
@@ -854,6 +861,8 @@ impl Pipelines {
             text_layout,
             text_vs,
             text_fs,
+            c"text_vert",
+            c"text_frag",
             &text_attrs(),
             32,
             false,
@@ -1751,6 +1760,8 @@ fn pipeline(
     layout: vk::PipelineLayout,
     vert: vk::ShaderModule,
     frag: vk::ShaderModule,
+    vert_entry: &CStr,
+    frag_entry: &CStr,
     attrs: &[vk::VertexInputAttributeDescription],
     stride: u32,
     depth: bool,
@@ -1761,11 +1772,11 @@ fn pipeline(
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::VERTEX)
             .module(vert)
-            .name(c"main"),
+            .name(vert_entry),
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(frag)
-            .name(c"main"),
+            .name(frag_entry),
     ];
     let binding = vk::VertexInputBindingDescription::default()
         .binding(0)
@@ -1833,7 +1844,7 @@ fn pipeline(
     }
 }
 
-fn shader(device: &ash::Device, words: &[u32]) -> Result<vk::ShaderModule, String> {
+fn shader_module(device: &ash::Device, words: &[u32]) -> Result<vk::ShaderModule, String> {
     let info = vk::ShaderModuleCreateInfo::default().code(words);
 
     unsafe { device.create_shader_module(&info, None) }.map_err(vk_err)
@@ -2044,25 +2055,6 @@ fn text_attrs() -> [vk::VertexInputAttributeDescription; 3] {
     ]
 }
 
-fn spirv(stage: naga::ShaderStage, source: &str) -> Result<Vec<u32>, String> {
-    let mut frontend = naga::front::glsl::Frontend::default();
-    let module = frontend
-        .parse(&naga::front::glsl::Options::from(stage), source)
-        .map_err(|err| format!("shader {err:?}"))?;
-    let caps = naga::valid::Capabilities::default() | naga::valid::Capabilities::IMMEDIATES;
-    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), caps)
-        .validate(&module)
-        .map_err(|err| format!("shader {err:?}"))?;
-    let options = naga::back::spv::Options::default();
-    let pipeline = naga::back::spv::PipelineOptions {
-        shader_stage: stage,
-        entry_point: "main".to_string(),
-    };
-
-    naga::back::spv::write_vec(&module, &info, &options, Some(&pipeline))
-        .map_err(|err| format!("shader {err}"))
-}
-
 fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     let corners = [
         [x, y],
@@ -2257,88 +2249,6 @@ fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     GlyphQuad { verts }
 }
 
-const MESH_VERT: &str = r#"
-#version 450
-layout(location = 0) in vec3 a_pos;
-layout(location = 1) in vec3 a_color;
-layout(push_constant) uniform Push {
-    mat4 view_proj;
-} pc;
-layout(location = 0) out vec3 v_color;
-void main() {
-    gl_Position = pc.view_proj * vec4(a_pos, 1.0);
-    v_color = a_color;
-}
-"#;
-
-const MESH_FRAG: &str = r#"
-#version 450
-layout(location = 0) in vec3 v_color;
-layout(location = 0) out vec4 frag;
-void main() {
-    frag = vec4(v_color, 1.0);
-}
-"#;
-
-const COLOR_VERT: &str = r#"
-#version 450
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec4 a_color;
-layout(push_constant) uniform Push {
-    vec4 resolution;
-} pc;
-layout(location = 0) out vec4 v_color;
-void main() {
-    vec2 unit = a_pos / pc.resolution.xy;
-    vec2 clip = unit * 2.0 - 1.0;
-    clip.y = -clip.y;
-    gl_Position = vec4(clip, 0.0, 1.0);
-    v_color = a_color;
-}
-"#;
-
-const COLOR_FRAG: &str = r#"
-#version 450
-layout(location = 0) in vec4 v_color;
-layout(location = 0) out vec4 frag;
-void main() {
-    frag = v_color;
-}
-"#;
-
-const TEXT_VERT: &str = r#"
-#version 450
-layout(location = 0) in vec2 a_pos;
-layout(location = 1) in vec2 a_uv;
-layout(location = 2) in vec4 a_color;
-layout(push_constant) uniform Push {
-    vec4 resolution;
-} pc;
-layout(location = 0) out vec2 v_uv;
-layout(location = 1) out vec4 v_color;
-void main() {
-    vec2 unit = a_pos / pc.resolution.xy;
-    vec2 clip = unit * 2.0 - 1.0;
-    clip.y = -clip.y;
-    gl_Position = vec4(clip, 0.0, 1.0);
-    v_uv = a_uv;
-    v_color = a_color;
-}
-"#;
-
-const TEXT_FRAG: &str = r#"
-#version 450
-layout(set = 0, binding = 0) uniform texture2D atlas_tex;
-layout(set = 0, binding = 1) uniform sampler atlas_sampler;
-layout(location = 0) in vec2 v_uv;
-layout(location = 1) in vec4 v_color;
-layout(location = 0) out vec4 frag;
-void main() {
-    float coverage = texture(sampler2D(atlas_tex, atlas_sampler), v_uv).r;
-    frag = vec4(v_color.rgb, v_color.a * coverage);
-}
-"#;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2347,15 +2257,15 @@ mod tests {
 
     #[test]
     fn vulkan_shaders_compile() {
-        let mesh = spirv(naga::ShaderStage::Vertex, MESH_VERT).unwrap();
-        let color = spirv(naga::ShaderStage::Vertex, COLOR_VERT).unwrap();
-        let text = spirv(naga::ShaderStage::Fragment, TEXT_FRAG).unwrap();
+        let mesh = shader::spirv(shader::MESH, naga::ShaderStage::Vertex, "mesh_vert").unwrap();
+        let color = shader::spirv(shader::COLOR, naga::ShaderStage::Vertex, "color_vert").unwrap();
+        let text = shader::spirv(shader::TEXT, naga::ShaderStage::Fragment, "text_frag").unwrap();
         assert_eq!(mesh[0], 0x07230203);
         assert_eq!(color[0], 0x07230203);
         assert_eq!(text[0], 0x07230203);
-        spirv(naga::ShaderStage::Fragment, MESH_FRAG).unwrap();
-        spirv(naga::ShaderStage::Fragment, COLOR_FRAG).unwrap();
-        spirv(naga::ShaderStage::Vertex, TEXT_VERT).unwrap();
+        shader::spirv(shader::MESH, naga::ShaderStage::Fragment, "mesh_frag").unwrap();
+        shader::spirv(shader::COLOR, naga::ShaderStage::Fragment, "color_frag").unwrap();
+        shader::spirv(shader::TEXT, naga::ShaderStage::Vertex, "text_vert").unwrap();
     }
 
     #[test]

@@ -135,12 +135,15 @@ impl D3D12Window {
         let srv_gpu = unsafe { srv_heap.GetGPUDescriptorHandleForHeapStart() };
         let plain_root = plain_root(&device)?;
         let text_root = text_root(&device)?;
-        let mesh_vs = shader::vs5(shader::MESH_SM5, s!("mesh_vert"))?;
-        let mesh_ps = shader::ps5(shader::MESH_SM5, s!("mesh_frag"))?;
-        let color_vs = shader::vs5(shader::COLOR_SM5, s!("color_vert"))?;
-        let color_ps = shader::ps5(shader::COLOR_SM5, s!("color_frag"))?;
-        let text_vs = shader::vs5(shader::TEXT_SM5, s!("text_vert"))?;
-        let text_ps = shader::ps5(shader::TEXT_SM5, s!("text_frag"))?;
+        let mesh_src = shader::mesh_sm5()?;
+        let color_src = shader::color_sm5()?;
+        let text_src = shader::text_sm5()?;
+        let mesh_vs = shader::vs5(&mesh_src, s!("mesh_vert"))?;
+        let mesh_ps = shader::ps5(&mesh_src, s!("mesh_frag"))?;
+        let color_vs = shader::vs5(&color_src, s!("color_vert"))?;
+        let color_ps = shader::ps5(&color_src, s!("color_frag"))?;
+        let text_vs = shader::vs5(&text_src, s!("text_vert"))?;
+        let text_ps = shader::ps5(&text_src, s!("text_frag"))?;
         let mesh_pso = pipeline(
             &device,
             &plain_root,
@@ -1458,10 +1461,10 @@ fn shader_bytecode(blob: &windows::Win32::Graphics::Direct3D::ID3DBlob) -> D3D12
     }
 }
 
-fn element(name: PCSTR, format: DXGI_FORMAT, offset: u32) -> D3D12_INPUT_ELEMENT_DESC {
+fn element(name: PCSTR, index: u32, format: DXGI_FORMAT, offset: u32) -> D3D12_INPUT_ELEMENT_DESC {
     D3D12_INPUT_ELEMENT_DESC {
         SemanticName: name,
-        SemanticIndex: 0,
+        SemanticIndex: index,
         Format: format,
         InputSlot: 0,
         AlignedByteOffset: offset,
@@ -1472,23 +1475,23 @@ fn element(name: PCSTR, format: DXGI_FORMAT, offset: u32) -> D3D12_INPUT_ELEMENT
 
 fn mesh_elements() -> [D3D12_INPUT_ELEMENT_DESC; 2] {
     [
-        element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
-        element(s!("COLOR"), DXGI_FORMAT_R32G32B32_FLOAT, 12),
+        element(s!("LOC"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0),
+        element(s!("LOC"), 1, DXGI_FORMAT_R32G32B32_FLOAT, 12),
     ]
 }
 
 fn color_elements() -> [D3D12_INPUT_ELEMENT_DESC; 2] {
     [
-        element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0),
-        element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 8),
+        element(s!("LOC"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+        element(s!("LOC"), 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 8),
     ]
 }
 
 fn text_elements() -> [D3D12_INPUT_ELEMENT_DESC; 3] {
     [
-        element(s!("POSITION"), DXGI_FORMAT_R32G32_FLOAT, 0),
-        element(s!("TEXCOORD"), DXGI_FORMAT_R32G32_FLOAT, 8),
-        element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 16),
+        element(s!("LOC"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+        element(s!("LOC"), 1, DXGI_FORMAT_R32G32_FLOAT, 8),
+        element(s!("LOC"), 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 16),
     ]
 }
 

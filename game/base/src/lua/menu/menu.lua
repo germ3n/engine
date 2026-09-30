@@ -24,4 +24,5 @@ net.add_callback("Test", function(reader)
 
     local p = pad.get(0)
     print(p:forward(), p:a(), p:gas(), p:brake(), p:clutch())
+    print(pad.count)
 end);

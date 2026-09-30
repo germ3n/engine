@@ -16,8 +16,6 @@ pub enum GfxWindow {
     D3D12(crate::ui::d3d::D3D12Window),
     #[cfg(windows)]
     D3D11(crate::ui::d3d::D3D11Window),
-    #[cfg(windows)]
-    D3D9(crate::ui::d3d::D3D9Window),
     #[cfg(not(target_os = "ios"))]
     Vulkan(VulkanWindow),
 }
@@ -72,20 +70,6 @@ pub fn create(surface: &Surface) -> GfxWindow {
         }
     }
 
-    #[cfg(windows)]
-    if chosen("d3d9") {
-        match crate::ui::d3d::D3D9Window::try_new(surface) {
-            Ok(window) => {
-                println!("[gfx] d3d9");
-
-                return GfxWindow::D3D9(window);
-            }
-            Err(err) => {
-                println!("[gfx] d3d9 failed: {err}");
-            }
-        }
-    }
-
     #[cfg(not(target_os = "ios"))]
     if chosen("vulkan") {
         match VulkanWindow::try_new(surface) {
@@ -135,8 +119,6 @@ macro_rules! each_window {
             GfxWindow::D3D12($window) => $body,
             #[cfg(windows)]
             GfxWindow::D3D11($window) => $body,
-            #[cfg(windows)]
-            GfxWindow::D3D9($window) => $body,
             #[cfg(not(target_os = "ios"))]
             GfxWindow::Vulkan($window) => $body,
         }

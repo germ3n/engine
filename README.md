@@ -42,13 +42,13 @@ Controls: click to capture the mouse. WASD to move, mouse to look, Space to jump
 
 ## Graphics
 
-Set `ENGINE_GFX` to pick a backend. With it unset, the first one that initializes is used: Metal on Apple, D3D12 then D3D11 then D3D9 on Windows, then Vulkan, then OpenGL.
+Set `ENGINE_GFX` to pick a backend. With it unset, the first one that initializes is used: Metal on Apple, D3D12 then D3D11 on Windows, then Vulkan, then OpenGL.
 
 ```sh
 ENGINE_GFX=vulkan cargo run -p base
 ```
 
-`opengl`, `vulkan`, `metal`, `d3d12`, `d3d11`, and `d3d9` are the names. OpenVR is used when a headset is present.
+`opengl`, `vulkan`, `metal`, `d3d12`, and `d3d11` are the names. OpenVR is used when a headset is present.
 
 Set `ENGINE_HOST` to pick the window/event-loop host. Default is `winit`. `sdl2` and `xbox` are reserved stubs.
 

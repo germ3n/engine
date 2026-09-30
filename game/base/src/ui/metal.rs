@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::shader;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -16,85 +17,6 @@ use objc::{msg_send, sel, sel_impl};
 use raw_window_handle::RawWindowHandle;
 #[cfg(target_os = "ios")]
 use std::ffi::c_void;
-
-const SHADERS: &str = r#"
-#include <metal_stdlib>
-using namespace metal;
-
-struct MeshIn {
-    float3 position [[attribute(0)]];
-    float3 color [[attribute(1)]];
-};
-
-struct MeshOut {
-    float4 position [[position]];
-    float3 color;
-};
-
-vertex MeshOut mesh_vert(MeshIn in [[stage_in]], constant float4x4 &view_proj [[buffer(1)]]) {
-    MeshOut out;
-    out.position = view_proj * float4(in.position, 1.0);
-    out.color = in.color;
-    return out;
-}
-
-fragment float4 mesh_frag(MeshOut in [[stage_in]]) {
-    return float4(in.color, 1.0);
-}
-
-struct ColorIn {
-    float2 position [[attribute(0)]];
-    float4 color [[attribute(1)]];
-};
-
-struct ColorOut {
-    float4 position [[position]];
-    float4 color;
-};
-
-vertex ColorOut color_vert(ColorIn in [[stage_in]], constant float2 &resolution [[buffer(1)]]) {
-    float2 unit = in.position / resolution;
-    float2 clip = unit * 2.0 - 1.0;
-    clip.y = -clip.y;
-    ColorOut out;
-    out.position = float4(clip, 0.0, 1.0);
-    out.color = in.color;
-    return out;
-}
-
-fragment float4 color_frag(ColorOut in [[stage_in]]) {
-    return in.color;
-}
-
-struct TextIn {
-    float2 position [[attribute(0)]];
-    float2 uv [[attribute(1)]];
-    float4 color [[attribute(2)]];
-};
-
-struct TextOut {
-    float4 position [[position]];
-    float2 uv;
-    float4 color;
-};
-
-vertex TextOut text_vert(TextIn in [[stage_in]], constant float2 &resolution [[buffer(1)]]) {
-    float2 unit = in.position / resolution;
-    float2 clip = unit * 2.0 - 1.0;
-    clip.y = -clip.y;
-    TextOut out;
-    out.position = float4(clip, 0.0, 1.0);
-    out.uv = in.uv;
-    out.color = in.color;
-    return out;
-}
-
-fragment float4 text_frag(TextOut in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
-    constexpr sampler samp(filter::linear);
-    float coverage = atlas.sample(samp, in.uv).r;
-    return float4(in.color.rgb, in.color.a * coverage);
-}
-"#;
 
 #[derive(Clone, Copy)]
 struct GlyphQuad {
@@ -146,25 +68,31 @@ impl MetalWindow {
     pub fn try_new(surface: &Surface) -> Result<Self, String> {
         let device = Device::system_default().ok_or("no metal device")?;
         let queue = device.new_command_queue();
-        let library = device
-            .new_library_with_source(SHADERS, &CompileOptions::new())
+        let mesh_lib = device
+            .new_library_with_source(&shader::msl(shader::MESH)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
-        let mesh_vert = library
+        let color_lib = device
+            .new_library_with_source(&shader::msl(shader::COLOR)?, &CompileOptions::new())
+            .map_err(|err| format!("shader: {err}"))?;
+        let text_lib = device
+            .new_library_with_source(&shader::msl(shader::TEXT)?, &CompileOptions::new())
+            .map_err(|err| format!("shader: {err}"))?;
+        let mesh_vert = mesh_lib
             .get_function("mesh_vert", None)
             .map_err(|err| format!("mesh_vert: {err}"))?;
-        let mesh_frag = library
+        let mesh_frag = mesh_lib
             .get_function("mesh_frag", None)
             .map_err(|err| format!("mesh_frag: {err}"))?;
-        let color_vert = library
+        let color_vert = color_lib
             .get_function("color_vert", None)
             .map_err(|err| format!("color_vert: {err}"))?;
-        let color_frag = library
+        let color_frag = color_lib
             .get_function("color_frag", None)
             .map_err(|err| format!("color_frag: {err}"))?;
-        let text_vert = library
+        let text_vert = text_lib
             .get_function("text_vert", None)
             .map_err(|err| format!("text_vert: {err}"))?;
-        let text_frag = library
+        let text_frag = text_lib
             .get_function("text_frag", None)
             .map_err(|err| format!("text_frag: {err}"))?;
 
@@ -415,7 +343,7 @@ impl Window for MetalWindow {
 
             let command = self.queue.new_command_buffer();
             let encoder = command.new_render_command_encoder(pass);
-            let resolution = [width as f32, height as f32];
+            let resolution = [width as f32, height as f32, 0.0, 0.0];
 
             if self.draw_mesh {
                 if let Some(mesh) = self.mesh.as_ref() {
@@ -671,7 +599,7 @@ fn bind_bytes(
     depth: &DepthStencilStateRef,
     bytes: &[u8],
     vertices: usize,
-    resolution: &[f32; 2],
+    resolution: &[f32; 4],
     texture: Option<&TextureRef>,
 ) {
     if bytes.is_empty() || vertices == 0 {
@@ -691,7 +619,7 @@ fn bind_bytes(
     };
     encoder.set_vertex_bytes(
         1,
-        std::mem::size_of::<[f32; 2]>() as u64,
+        std::mem::size_of::<[f32; 4]>() as u64,
         resolution.as_ptr() as *const _,
     );
 

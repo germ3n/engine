@@ -22,7 +22,7 @@ wincode = { version = "0.6.1", features = ["derive"] }
 bitflags = "2.13.2"
 ash = "0.38.0"
 ash-window = "0.13.0"
-naga = { version = "30.0.1", features = ["glsl-in", "spv-out", "wgsl-in"] }
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "glsl-out", "msl-out", "hlsl-out"] }
 glyph_brush = { version = "0.7", default-features = false }
 zstd = "0.14.0"
 memmap2 = "0.9.11"
@@ -52,7 +52,6 @@ windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D_Fxc",
-    "Win32_Graphics_Direct3D9",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",

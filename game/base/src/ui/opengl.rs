@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::shader;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -97,9 +98,21 @@ impl OpenGLWindow {
                 gl_display.get_proc_address(c_str.as_c_str())
             })
         };
+        let (ui_vert, _) = shader::glsl(
+            shader::UI,
+            naga::ShaderStage::Vertex,
+            "ui_vert",
+            shader::glsl_version(),
+        )?;
+        let (ui_frag, _) = shader::glsl(
+            shader::UI,
+            naga::ShaderStage::Fragment,
+            "ui_frag",
+            shader::glsl_version(),
+        )?;
         let (shader_program, vao, vbo) = unsafe {
             let vs = gl.create_shader(glow::VERTEX_SHADER).unwrap();
-            gl.shader_source(vs, UI_VERT);
+            gl.shader_source(vs, &ui_vert);
             gl.compile_shader(vs);
 
             if !gl.get_shader_compile_status(vs) {
@@ -107,7 +120,7 @@ impl OpenGLWindow {
             }
 
             let fs = gl.create_shader(glow::FRAGMENT_SHADER).unwrap();
-            gl.shader_source(fs, UI_FRAG);
+            gl.shader_source(fs, &ui_frag);
             gl.compile_shader(fs);
 
             if !gl.get_shader_compile_status(fs) {
@@ -127,9 +140,8 @@ impl OpenGLWindow {
             let vbo = gl.create_buffer().unwrap();
             gl.bind_vertex_array(Some(vao));
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-            let pos_attrib = gl.get_attrib_location(program, "aPos").unwrap();
-            gl.vertex_attrib_pointer_f32(pos_attrib, 2, glow::FLOAT, false, 8, 0);
-            gl.enable_vertex_attrib_array(pos_attrib);
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
+            gl.enable_vertex_attrib_array(0);
 
             (program, vao, vbo)
         };
@@ -264,13 +276,16 @@ impl Window for OpenGLWindow {
 
             if let Some(loc) = self
                 .gl
-                .get_uniform_location(self.shader_program, "uResolution")
+                .get_uniform_location(self.shader_program, "_immediates_binding_vs.resolution")
             {
                 self.gl
                     .uniform_2_f32(Some(&loc), width as f32, height as f32);
             }
 
-            if let Some(loc) = self.gl.get_uniform_location(self.shader_program, "uColor") {
+            if let Some(loc) = self
+                .gl
+                .get_uniform_location(self.shader_program, "_immediates_binding_fs.color")
+            {
                 let [r, g, b, a] = color.as_rgba_f32();
                 self.gl.uniform_4_f32(Some(&loc), r, g, b, a);
             }
@@ -449,102 +464,6 @@ impl Drop for OpenGLWindow {
     }
 }
 
-#[cfg(not(target_os = "android"))]
-const UI_VERT: &str = r#"
-#version 330 core
-in vec2 aPos;
-uniform vec2 uResolution;
-void main() {
-    vec2 zeroToOne = aPos / uResolution;
-    vec2 zeroToTwo = zeroToOne * 2.0;
-    vec2 clipSpace = zeroToTwo - 1.0;
-    gl_Position = vec4(clipSpace.x, -clipSpace.y, 0.0, 1.0);
-}
-"#;
-
-#[cfg(target_os = "android")]
-const UI_VERT: &str = r#"
-#version 300 es
-precision highp float;
-in vec2 aPos;
-uniform vec2 uResolution;
-void main() {
-    vec2 zeroToOne = aPos / uResolution;
-    vec2 zeroToTwo = zeroToOne * 2.0;
-    vec2 clipSpace = zeroToTwo - 1.0;
-    gl_Position = vec4(clipSpace.x, -clipSpace.y, 0.0, 1.0);
-}
-"#;
-
-#[cfg(not(target_os = "android"))]
-const UI_FRAG: &str = r#"
-#version 330 core
-out vec4 FragColor;
-uniform vec4 uColor;
-void main() {
-    FragColor = uColor;
-}
-"#;
-
-#[cfg(target_os = "android")]
-const UI_FRAG: &str = r#"
-#version 300 es
-precision highp float;
-out vec4 FragColor;
-uniform vec4 uColor;
-void main() {
-    FragColor = uColor;
-}
-"#;
-
-#[cfg(not(target_os = "android"))]
-const MESH_VERT: &str = r#"
-#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aColor;
-uniform mat4 uViewProj;
-out vec3 vColor;
-void main() {
-    gl_Position = uViewProj * vec4(aPos, 1.0);
-    vColor = aColor;
-}
-"#;
-
-#[cfg(target_os = "android")]
-const MESH_VERT: &str = r#"
-#version 300 es
-precision highp float;
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aColor;
-uniform mat4 uViewProj;
-out vec3 vColor;
-void main() {
-    gl_Position = uViewProj * vec4(aPos, 1.0);
-    vColor = aColor;
-}
-"#;
-
-#[cfg(not(target_os = "android"))]
-const MESH_FRAG: &str = r#"
-#version 330 core
-in vec3 vColor;
-out vec4 FragColor;
-void main() {
-    FragColor = vec4(vColor, 1.0);
-}
-"#;
-
-#[cfg(target_os = "android")]
-const MESH_FRAG: &str = r#"
-#version 300 es
-precision highp float;
-in vec3 vColor;
-out vec4 FragColor;
-void main() {
-    FragColor = vec4(vColor, 1.0);
-}
-"#;
-
 struct ColoredMesh {
     program: glow::Program,
     vao: glow::VertexArray,
@@ -573,7 +492,7 @@ impl ColoredMesh {
                 program,
                 vao,
                 vbo,
-                view_proj: gl.get_uniform_location(program, "uViewProj"),
+                view_proj: gl.get_uniform_location(program, "_immediates_binding_vs.view_proj"),
                 vertex_count: 0,
                 revision: 0,
                 ready: false,
@@ -697,10 +616,25 @@ impl GlEyes {
 }
 
 fn link_mesh_program(gl: &glow::Context) -> glow::Program {
+    let (mesh_vert, _) = shader::glsl(
+        shader::MESH,
+        naga::ShaderStage::Vertex,
+        "mesh_vert",
+        shader::glsl_version(),
+    )
+    .expect("mesh vert");
+    let (mesh_frag, _) = shader::glsl(
+        shader::MESH,
+        naga::ShaderStage::Fragment,
+        "mesh_frag",
+        shader::glsl_version(),
+    )
+    .expect("mesh frag");
+
     unsafe {
         let program = gl.create_program().unwrap();
-        let vert = compile_mesh_shader(gl, glow::VERTEX_SHADER, MESH_VERT);
-        let frag = compile_mesh_shader(gl, glow::FRAGMENT_SHADER, MESH_FRAG);
+        let vert = compile_mesh_shader(gl, glow::VERTEX_SHADER, &mesh_vert);
+        let frag = compile_mesh_shader(gl, glow::FRAGMENT_SHADER, &mesh_frag);
         gl.attach_shader(program, vert);
         gl.attach_shader(program, frag);
         gl.link_program(program);
