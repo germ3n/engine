@@ -2,6 +2,7 @@ use crate::platform::Surface;
 use crate::ui::d3d::draw::{attach_desktop, bytes_of, push_outline, push_rect, Desktop, TextFrame};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes, blob_text};
+use crate::ui::shader as shaders;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -92,6 +93,13 @@ impl D3D12Window {
         let height = desktop.height;
         let factory = factory()?;
         let adapter = adapter(&factory)?;
+        let cache = {
+            let desc = unsafe { adapter.GetDesc1().map_err(|err| err.to_string())? };
+            shaders::Registry::for_device(&shaders::id_from_luid(
+                desc.AdapterLuid.LowPart,
+                desc.AdapterLuid.HighPart,
+            ))
+        };
         let mut device_slot: Option<ID3D12Device> = None;
         unsafe {
             D3D12CreateDevice(&adapter, D3D_FEATURE_LEVEL_11_0, &mut device_slot)
@@ -135,9 +143,9 @@ impl D3D12Window {
         let srv_gpu = unsafe { srv_heap.GetGPUDescriptorHandleForHeapStart() };
         let plain_root = plain_root(&device)?;
         let text_root = text_root(&device)?;
-        let mesh_src = shader::mesh_sm5()?;
-        let color_src = shader::color_sm5()?;
-        let text_src = shader::text_sm5()?;
+        let mesh_src = shader::mesh_sm5(&cache)?;
+        let color_src = shader::color_sm5(&cache)?;
+        let text_src = shader::text_sm5(&cache)?;
         let mesh_vs = shader::vs5(&mesh_src, s!("mesh_vert"))?;
         let mesh_ps = shader::ps5(&mesh_src, s!("mesh_frag"))?;
         let color_vs = shader::vs5(&color_src, s!("color_vert"))?;

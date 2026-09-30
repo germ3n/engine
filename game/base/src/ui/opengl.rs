@@ -98,13 +98,18 @@ impl OpenGLWindow {
                 gl_display.get_proc_address(c_str.as_c_str())
             })
         };
-        let (ui_vert, _) = shader::glsl(
+        let cache = {
+            let vendor = unsafe { gl.get_parameter_string(glow::VENDOR) };
+            let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
+            shader::Registry::for_device(&shader::id_from_text(&[&vendor, &renderer]))
+        };
+        let ui_vert = cache.glsl(
             shader::UI,
             naga::ShaderStage::Vertex,
             "ui_vert",
             shader::glsl_version(),
         )?;
-        let (ui_frag, _) = shader::glsl(
+        let ui_frag = cache.glsl(
             shader::UI,
             naga::ShaderStage::Fragment,
             "ui_frag",
@@ -145,7 +150,7 @@ impl OpenGLWindow {
 
             (program, vao, vbo)
         };
-        let colored_mesh = ColoredMesh::new(&gl);
+        let colored_mesh = ColoredMesh::new(&gl, &cache);
         let mut opengl_window = Self {
             width,
             height,
@@ -475,9 +480,9 @@ struct ColoredMesh {
 }
 
 impl ColoredMesh {
-    fn new(gl: &glow::Context) -> Self {
+    fn new(gl: &glow::Context, cache: &shader::Registry) -> Self {
         unsafe {
-            let program = link_mesh_program(gl);
+            let program = link_mesh_program(gl, cache);
             let vao = gl.create_vertex_array().unwrap();
             let vbo = gl.create_buffer().unwrap();
             gl.bind_vertex_array(Some(vao));
@@ -615,21 +620,23 @@ impl GlEyes {
     }
 }
 
-fn link_mesh_program(gl: &glow::Context) -> glow::Program {
-    let (mesh_vert, _) = shader::glsl(
-        shader::MESH,
-        naga::ShaderStage::Vertex,
-        "mesh_vert",
-        shader::glsl_version(),
-    )
-    .expect("mesh vert");
-    let (mesh_frag, _) = shader::glsl(
-        shader::MESH,
-        naga::ShaderStage::Fragment,
-        "mesh_frag",
-        shader::glsl_version(),
-    )
-    .expect("mesh frag");
+fn link_mesh_program(gl: &glow::Context, cache: &shader::Registry) -> glow::Program {
+    let mesh_vert = cache
+        .glsl(
+            shader::MESH,
+            naga::ShaderStage::Vertex,
+            "mesh_vert",
+            shader::glsl_version(),
+        )
+        .expect("mesh vert");
+    let mesh_frag = cache
+        .glsl(
+            shader::MESH,
+            naga::ShaderStage::Fragment,
+            "mesh_frag",
+            shader::glsl_version(),
+        )
+        .expect("mesh frag");
 
     unsafe {
         let program = gl.create_program().unwrap();

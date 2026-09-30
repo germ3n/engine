@@ -4,6 +4,7 @@ use crate::ui::d3d::draw::{
 };
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
+use crate::ui::shader as shaders;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -87,9 +88,10 @@ impl D3D11Window {
         let height = desktop.height;
         let (device, context, swap) = device_swap(desktop.hwnd, width, height)?;
         let (rtv, depth, dsv) = targets(&device, &swap, width, height)?;
-        let mesh_src = shader::mesh_sm5()?;
-        let color_src = shader::color_sm5()?;
-        let text_src = shader::text_sm5()?;
+        let cache = adapter_cache(&device)?;
+        let mesh_src = shader::mesh_sm5(&cache)?;
+        let color_src = shader::color_sm5(&cache)?;
+        let text_src = shader::text_sm5(&cache)?;
         let mesh_vs_blob = shader::vs5(&mesh_src, s!("mesh_vert"))?;
         let mesh_ps_blob = shader::ps5(&mesh_src, s!("mesh_frag"))?;
         let color_vs_blob = shader::vs5(&color_src, s!("color_vert"))?;
@@ -608,6 +610,17 @@ impl D3D11Window {
             self.context.Draw(vertices, 0);
         }
     }
+}
+
+fn adapter_cache(device: &ID3D11Device) -> Result<shaders::Registry, String> {
+    let dxgi: IDXGIDevice = device.cast().map_err(|err| err.to_string())?;
+    let adapter: IDXGIAdapter = unsafe { dxgi.GetAdapter().map_err(|err| err.to_string())? };
+    let desc = unsafe { adapter.GetDesc().map_err(|err| err.to_string())? };
+
+    Ok(shaders::Registry::for_device(&shaders::id_from_luid(
+        desc.AdapterLuid.LowPart,
+        desc.AdapterLuid.HighPart,
+    )))
 }
 
 fn device_swap(

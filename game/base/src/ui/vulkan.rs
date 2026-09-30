@@ -791,6 +791,7 @@ impl Drop for Pipelines {
 
 impl Pipelines {
     fn create(gpu: &Gpu, format: vk::Format) -> Result<Self, String> {
+        let cache = shader::Registry::for_device(&device_uuid(&gpu.instance, gpu.physical));
         let swap_pass = render_pass(&gpu.device, format, vk::ImageLayout::PRESENT_SRC_KHR)?;
         let eye_pass = render_pass(
             &gpu.device,
@@ -801,12 +802,12 @@ impl Pipelines {
         let color_layout = layout(&gpu.device, 16, &[])?;
         let text_sets = [descriptor_layout(&gpu.device)?];
         let text_layout = layout(&gpu.device, 16, &text_sets)?;
-        let mesh_vert = shader::spirv(shader::MESH, naga::ShaderStage::Vertex, "mesh_vert")?;
-        let mesh_frag = shader::spirv(shader::MESH, naga::ShaderStage::Fragment, "mesh_frag")?;
-        let color_vert = shader::spirv(shader::COLOR, naga::ShaderStage::Vertex, "color_vert")?;
-        let color_frag = shader::spirv(shader::COLOR, naga::ShaderStage::Fragment, "color_frag")?;
-        let text_vert = shader::spirv(shader::TEXT, naga::ShaderStage::Vertex, "text_vert")?;
-        let text_frag = shader::spirv(shader::TEXT, naga::ShaderStage::Fragment, "text_frag")?;
+        let mesh_vert = cache.spirv(shader::MESH, naga::ShaderStage::Vertex, "mesh_vert")?;
+        let mesh_frag = cache.spirv(shader::MESH, naga::ShaderStage::Fragment, "mesh_frag")?;
+        let color_vert = cache.spirv(shader::COLOR, naga::ShaderStage::Vertex, "color_vert")?;
+        let color_frag = cache.spirv(shader::COLOR, naga::ShaderStage::Fragment, "color_frag")?;
+        let text_vert = cache.spirv(shader::TEXT, naga::ShaderStage::Vertex, "text_vert")?;
+        let text_frag = cache.spirv(shader::TEXT, naga::ShaderStage::Fragment, "text_frag")?;
         let mesh_vs = shader_module(&gpu.device, &mesh_vert)?;
         let mesh_fs = shader_module(&gpu.device, &mesh_frag)?;
         let color_vs = shader_module(&gpu.device, &color_vert)?;
@@ -1451,6 +1452,16 @@ fn create_device(
         .enabled_extension_names(&ptrs);
 
     unsafe { instance.create_device(physical, &info, None) }.map_err(vk_err)
+}
+
+fn device_uuid(instance: &ash::Instance, physical: vk::PhysicalDevice) -> String {
+    let mut id = vk::PhysicalDeviceIDProperties::default();
+    let mut props = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
+    unsafe {
+        instance.get_physical_device_properties2(physical, &mut props);
+    }
+
+    shader::id_from_bytes(&id.device_uuid)
 }
 
 fn pick_device(

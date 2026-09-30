@@ -68,14 +68,15 @@ impl MetalWindow {
     pub fn try_new(surface: &Surface) -> Result<Self, String> {
         let device = Device::system_default().ok_or("no metal device")?;
         let queue = device.new_command_queue();
+        let cache = shader::Registry::for_device(&shader::id_from_u64(device.registry_id()));
         let mesh_lib = device
-            .new_library_with_source(&shader::msl(shader::MESH)?, &CompileOptions::new())
+            .new_library_with_source(&cache.msl(shader::MESH)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
         let color_lib = device
-            .new_library_with_source(&shader::msl(shader::COLOR)?, &CompileOptions::new())
+            .new_library_with_source(&cache.msl(shader::COLOR)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
         let text_lib = device
-            .new_library_with_source(&shader::msl(shader::TEXT)?, &CompileOptions::new())
+            .new_library_with_source(&cache.msl(shader::TEXT)?, &CompileOptions::new())
             .map_err(|err| format!("shader: {err}"))?;
         let mesh_vert = mesh_lib
             .get_function("mesh_vert", None)

@@ -2,6 +2,10 @@ use naga::back;
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, ShaderStage};
 
+mod cache;
+
+pub use cache::{id_from_bytes, id_from_luid, id_from_text, id_from_u64, Registry};
+
 pub const MESH: &str = r#"
 struct Constants {
     view_proj: mat4x4<f32>,
