@@ -54,8 +54,7 @@ impl IntoLua for Angle3 {
 }
 
 pub fn register_angle3_lib(lua: &Lua) {
-    let bytecode =
-        crate::script::bundle::bytes("lua/libs/angle3.luac", crate::script::bundle::ANGLE3);
+    let bytecode = crate::script::bundle::bytes("lua/libs/angle3.luac");
     let exports: Table = crate::script::bundle::load_bytecode(lua, "angle3.lua", &bytecode)
         .eval()
         .expect("Failed to execute angle3.lua");

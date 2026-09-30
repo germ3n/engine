@@ -1,26 +1,11 @@
-use std::borrow::Cow;
-
-pub const HOOK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/hook.luac"));
-pub const NET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/net.luac"));
-pub const VECTOR3: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/vector3.luac"));
-pub const ANGLE3: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/angle3.luac"));
-pub const MENU: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lua/menu.luac"));
-
-pub fn bytes(path: &str, fallback: &'static [u8]) -> Cow<'static, [u8]> {
+pub fn bytes(path: &str) -> Vec<u8> {
     match crate::fs::read(path) {
         Ok(bytes) => {
             log::info!("[lua] loaded {path} from fs ({} bytes)", bytes.len());
 
-            Cow::Owned(bytes)
+            bytes
         }
-        Err(err) => {
-            log::warn!(
-                "[lua] {path} missing from fs ({err}), using embedded fallback ({} bytes)",
-                fallback.len()
-            );
-
-            Cow::Borrowed(fallback)
-        }
+        Err(err) => panic!("[lua] failed to load {path}: {err}"),
     }
 }
 
@@ -38,6 +23,33 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    fn boot_fs() {
+        if crate::fs::try_global().is_some() {
+            return;
+        }
+
+        let fs = crate::fs::Fs::boot().expect("fs boot");
+        crate::fs::set_global(Arc::new(fs));
+    }
+
+    #[test]
+    fn bundled_scripts_are_bytecode() {
+        boot_fs();
+        let scripts = [
+            "lua/libs/hook.luac",
+            "lua/libs/net.luac",
+            "lua/libs/vector3.luac",
+            "lua/libs/angle3.luac",
+            "lua/menu/menu.luac",
+        ];
+
+        for path in scripts {
+            let bytes = bytes(path);
+            assert!(bytes.starts_with(b"\x1bLJ"), "{path}");
+            assert!(!contains(&bytes, b"storage[event_id][identifier] = callback"));
+        }
+    }
+
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack
             .windows(needle.len())
@@ -45,22 +57,8 @@ mod tests {
     }
 
     #[test]
-    fn bundled_scripts_are_bytecode() {
-        let scripts = [HOOK, NET, VECTOR3, ANGLE3, MENU];
-
-        for bytes in scripts {
-            assert!(bytes.starts_with(b"\x1bLJ"));
-        }
-
-        assert!(!contains(HOOK, b"storage[event_id][identifier] = callback"));
-        assert!(!contains(
-            MENU,
-            b"todo: maybe error when exceeding capacity"
-        ));
-    }
-
-    #[test]
     fn bundled_scripts_run() {
+        boot_fs();
         let mut cvars = HashMap::new();
         cvars.insert(
             "sv_gravity".to_string(),
@@ -89,7 +87,7 @@ mod tests {
             .exec()
             .unwrap();
         engine.run_hook("Ping", 0.0, 0.0, 1, ());
-        let menu = bytes("lua/menu/menu.luac", MENU);
+        let menu = bytes("lua/menu/menu.luac");
         load_bytecode(&engine.lua, "menu.lua", &menu)
             .exec()
             .unwrap();
