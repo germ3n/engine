@@ -1,7 +1,8 @@
-target/
-Cargo.lock
+base.pak
+game/base/base.pak
 .DS_Store
 cache/
+target/
 mobile/android/app/src/main/jniLibs/
 mobile/ios/build/
 mobile/android/app/build/

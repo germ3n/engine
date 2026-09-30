@@ -1,7 +1,6 @@
 use crate::console::ConVar;
 use crate::input::Binds;
 use crate::platform::PadCache;
-use crate::script::bundle::{self, load_bytecode};
 use crate::script::libs::engine::publish_clock;
 use crate::script::libs::{
     register_angle3_lib, register_console_lib, register_convar_lib, register_engine_lib,
@@ -79,17 +78,11 @@ impl ScriptEngine {
             .expect("Failed to set MENU global");
 
         {
-            let hook = bundle::bytes("lua/libs/hook.luac");
-            load_bytecode(&lua, "hook.lua", &hook)
-                .exec()
-                .expect("Failed to execute hook.lua");
+            crate::script::exec(&lua, "hook.lua", "lua/libs/hook.luac");
 
             register_engine_lib(&lua, tick_interval);
             if !matches!(realm, Realm::Menu) {
-                let net = bundle::bytes("lua/libs/net.luac");
-                load_bytecode(&lua, "net.lua", &net)
-                    .exec()
-                    .expect("Failed to execute net.lua");
+                crate::script::exec(&lua, "net.lua", "lua/libs/net.luac");
 
                 register_net_lib(&lua, usermsg_sender);
             } else {
