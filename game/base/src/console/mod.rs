@@ -34,6 +34,15 @@ pub struct CliArgs {
 
     #[arg(long)]
     pub connect: Option<String>,
+
+    #[arg(long = "fakelag", default_value_t = 0)]
+    pub fakelag: u32,
+
+    #[arg(long = "fakejitter", default_value_t = 0)]
+    pub fakejitter: u32,
+
+    #[arg(long = "fakeloss", default_value_t = 0)]
+    pub fakeloss: u32,
 }
 
 pub fn get_cmdline_args() -> CliArgs {
@@ -47,6 +56,9 @@ pub fn get_cmdline_args() -> CliArgs {
             tickrate: 60,
             connect_lobby: None,
             connect: None,
+            fakelag: 0,
+            fakejitter: 0,
+            fakeloss: 0,
         };
     }
 

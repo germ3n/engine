@@ -43,6 +43,20 @@ impl NetworkClient {
     }
 
     pub fn send_message(&self, message: &[u8]) -> Result<(), String> {
+        let Some(message) = crate::network::sim::enqueue_client(message.to_vec()) else {
+            return Ok(());
+        };
+
+        self.send_raw(&message)
+    }
+
+    pub fn flush_sim(&self) {
+        crate::network::sim::flush_client(|bytes| {
+            let _ = self.send_raw(bytes);
+        });
+    }
+
+    fn send_raw(&self, message: &[u8]) -> Result<(), String> {
         if self.steam {
             if !crate::network::steam::send_client(message) {
                 return Err("steam is not connected".to_string());

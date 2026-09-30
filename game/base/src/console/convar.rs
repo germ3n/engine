@@ -1,5 +1,5 @@
 use mlua::RegistryKey;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub enum ConVarValue {
@@ -9,7 +9,8 @@ pub enum ConVarValue {
     Bool(bool),
 }
 
-#[derive(Debug)]
+type ChangeFn = Arc<dyn Fn(&ConVarValue) + Send + Sync>;
+
 pub struct ConVar {
     pub name: String,
     pub description: String,
@@ -18,6 +19,7 @@ pub struct ConVar {
     pub has_cheat_flag: bool,
     pub is_replicated_to_clients: bool,
     pub callbacks: Mutex<Vec<RegistryKey>>,
+    rust_callbacks: Mutex<Vec<ChangeFn>>,
 }
 
 impl ConVar {
@@ -36,12 +38,30 @@ impl ConVar {
             has_cheat_flag: is_cheat.unwrap_or(false),
             is_replicated_to_clients: is_replicated.unwrap_or(false),
             callbacks: Mutex::new(Vec::new()),
+            rust_callbacks: Mutex::new(Vec::new()),
         }
     }
 
     pub fn set_value(&self, new_value: ConVarValue) {
-        let mut val = self.value.lock().unwrap();
-        *val = new_value;
+        {
+            let mut val = self.value.lock().unwrap();
+            *val = new_value.clone();
+        }
+
+        let callbacks = self.rust_callbacks.lock().unwrap();
+        for callback in callbacks.iter() {
+            callback(&new_value);
+        }
+    }
+
+    pub fn add_change_callback<F>(&self, callback: F)
+    where
+        F: Fn(&ConVarValue) + Send + Sync + 'static,
+    {
+        self.rust_callbacks
+            .lock()
+            .unwrap()
+            .push(Arc::new(callback));
     }
 
     pub fn reset(&self) {

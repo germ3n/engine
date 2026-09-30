@@ -52,6 +52,7 @@ impl<In, Out> GameState<In, Out> {
                 Some(true),
             )),
         );
+        register_net_sim_cvars(&mut cvars);
 
         for idx in 0..4 {
             let entries = [
@@ -174,5 +175,56 @@ impl<In, Out> GameState<In, Out> {
                 log::warn!("[net] outbound disconnected");
             }
         }
+    }
+}
+
+fn register_net_sim_cvars(cvars: &mut HashMap<String, Arc<ConVar>>) {
+    let settings = crate::network::sim::settings();
+    insert_sim_cvar(
+        cvars,
+        "net_fakelag",
+        settings.lag_ms,
+        "Fake network lag in milliseconds",
+        |value| crate::network::sim::set_lag_ms(cvar_u32(value)),
+    );
+    insert_sim_cvar(
+        cvars,
+        "net_fakejitter",
+        settings.jitter_ms,
+        "Fake network jitter in milliseconds",
+        |value| crate::network::sim::set_jitter_ms(cvar_u32(value)),
+    );
+    insert_sim_cvar(
+        cvars,
+        "net_fakeloss",
+        settings.loss_pct,
+        "Fake packet loss percentage (0-100)",
+        |value| crate::network::sim::set_loss_pct(cvar_u32(value)),
+    );
+}
+
+fn insert_sim_cvar(
+    cvars: &mut HashMap<String, Arc<ConVar>>,
+    name: &str,
+    default: u32,
+    description: &str,
+    on_change: impl Fn(&ConVarValue) + Send + Sync + 'static,
+) {
+    let cvar = Arc::new(ConVar::new(
+        name,
+        ConVarValue::Integer(default as i64),
+        description,
+        Some(false),
+        Some(false),
+    ));
+    cvar.add_change_callback(on_change);
+    cvars.insert(name.to_string(), cvar);
+}
+
+fn cvar_u32(value: &ConVarValue) -> u32 {
+    match value {
+        ConVarValue::Integer(value) => (*value).max(0) as u32,
+        ConVarValue::Float(value) => (*value).max(0.0) as u32,
+        _ => 0,
     }
 }

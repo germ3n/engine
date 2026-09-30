@@ -3,6 +3,7 @@ pub mod events;
 pub mod packet;
 pub mod reliable;
 pub mod server;
+pub mod sim;
 pub mod steam;
 pub mod usermessage;
 

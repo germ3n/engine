@@ -76,6 +76,11 @@ pub fn run() {
     }
 
     crate::network::steam::startup(cmdargs.connect_lobby, cmdargs.connect.as_deref());
+    crate::network::sim::configure(crate::network::sim::Settings {
+        lag_ms: cmdargs.fakelag,
+        jitter_ms: cmdargs.fakejitter,
+        loss_pct: cmdargs.fakeloss,
+    });
 
     let fs = match crate::fs::Fs::boot() {
         Ok(fs) => Arc::new(fs),

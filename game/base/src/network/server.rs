@@ -282,6 +282,22 @@ impl NetworkServer {
     }
 
     pub fn send_to(&self, addr: SocketAddr, message: &[u8]) -> Result<(), String> {
+        let Some((addr, message)) =
+            crate::network::sim::enqueue_server(addr, message.to_vec())
+        else {
+            return Ok(());
+        };
+
+        self.send_raw(addr, &message)
+    }
+
+    pub fn flush_sim(&self) {
+        crate::network::sim::flush_server(|addr, bytes| {
+            let _ = self.send_raw(addr, bytes);
+        });
+    }
+
+    fn send_raw(&self, addr: SocketAddr, message: &[u8]) -> Result<(), String> {
         if crate::network::steam::send_host(addr, message) {
             return Ok(());
         }
@@ -293,10 +309,9 @@ impl NetworkServer {
     }
 
     pub fn send_message(&self, message: &[u8]) -> Result<(), String> {
-        for addr in self.clients.keys() {
-            self.socket
-                .send_to(message, addr)
-                .map_err(|e| e.to_string())?;
+        let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
+        for addr in addrs {
+            self.send_to(addr, message)?;
         }
 
         Ok(())

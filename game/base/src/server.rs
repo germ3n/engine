@@ -455,6 +455,8 @@ pub fn server_network_loop(
         if !got_packet {
             wait_socket(&server.socket, &mut wake);
         }
+
+        server.flush_sim();
     }
 }
 

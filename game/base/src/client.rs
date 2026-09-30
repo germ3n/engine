@@ -1598,6 +1598,8 @@ pub fn client_network_loop(
         if !got_packet {
             wait_socket(client.socket(), &mut wake);
         }
+
+        client.flush_sim();
     }
 }
 
