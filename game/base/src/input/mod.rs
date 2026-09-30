@@ -89,6 +89,13 @@ pub enum PadButton {
     DPadDown,
     DPadLeft,
     DPadRight,
+    PedalGas,
+    PedalBrake,
+    PedalClutch,
+    Paddle1,
+    Paddle2,
+    Paddle3,
+    Paddle4,
 }
 
 impl PadButton {
@@ -110,6 +117,13 @@ impl PadButton {
             Self::DPadDown => "dpad_down",
             Self::DPadLeft => "dpad_left",
             Self::DPadRight => "dpad_right",
+            Self::PedalGas => "pad_gas",
+            Self::PedalBrake => "pad_brake",
+            Self::PedalClutch => "pad_clutch",
+            Self::Paddle1 => "pad_paddle1",
+            Self::Paddle2 => "pad_paddle2",
+            Self::Paddle3 => "pad_paddle3",
+            Self::Paddle4 => "pad_paddle4",
         }
     }
 
@@ -131,6 +145,13 @@ impl PadButton {
             "dpad_down" => Self::DPadDown,
             "dpad_left" => Self::DPadLeft,
             "dpad_right" => Self::DPadRight,
+            "pad_gas" | "pad_accelerator" | "pad_throttle" => Self::PedalGas,
+            "pad_brake" => Self::PedalBrake,
+            "pad_clutch" => Self::PedalClutch,
+            "pad_paddle1" | "paddle1" | "pad_p1" => Self::Paddle1,
+            "pad_paddle2" | "paddle2" | "pad_p2" => Self::Paddle2,
+            "pad_paddle3" | "paddle3" | "pad_p3" => Self::Paddle3,
+            "pad_paddle4" | "paddle4" | "pad_p4" => Self::Paddle4,
             _ => return None,
         })
     }
@@ -568,6 +589,17 @@ mod tests {
                 Binding::Key(KeyCode::ShiftLeft),
                 Binding::Key(KeyCode::ShiftRight)
             ]
+        );
+    }
+
+    #[test]
+    fn pedal_names_parse() {
+        assert_eq!(PadButton::parse("pad_gas"), Some(PadButton::PedalGas));
+        assert_eq!(PadButton::parse("pad_brake"), Some(PadButton::PedalBrake));
+        assert_eq!(PadButton::parse("pad_clutch"), Some(PadButton::PedalClutch));
+        assert_eq!(
+            Binding::parse("pad_throttle").unwrap(),
+            vec![Binding::Pad(PadButton::PedalGas)]
         );
     }
 }

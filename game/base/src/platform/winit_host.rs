@@ -7,7 +7,8 @@ use crate::platform::gamepad::GamepadState;
 use crate::platform::host::{Control, HostOps};
 use crate::platform::surface::Surface;
 use crate::platform::HostKind;
-use gilrs::{Axis, Button, Gilrs};
+use gilrs::{ev::Code, Axis, AxisOrBtn, Button, GamepadId, Gilrs};
+use std::collections::HashMap;
 use winit::event::{
     DeviceEvent as WinitDeviceEvent, ElementState as WinitElementState, Event as WinitEvent,
     MouseButton as WinitMouseButton, MouseScrollDelta as WinitMouseScrollDelta,
@@ -101,6 +102,7 @@ pub struct WinitHost {
     window: Option<WinitWindow>,
     surface: Option<Surface>,
     pads: Option<Gilrs>,
+    paddle_codes: HashMap<GamepadId, [Option<u32>; 4]>,
 }
 
 impl WinitHost {
@@ -122,6 +124,7 @@ impl WinitHost {
                 window: None,
                 surface: None,
                 pads,
+                paddle_codes: HashMap::new(),
             });
         }
 
@@ -138,6 +141,7 @@ impl WinitHost {
                 window: Some(window),
                 surface: Some(surface),
                 pads,
+                paddle_codes: HashMap::new(),
             })
         }
     }
@@ -266,7 +270,13 @@ impl HostOps for WinitHost {
     }
 
     fn gamepad(&mut self, index: usize, left_deadzone: f32, right_deadzone: f32) -> GamepadState {
-        sample_pad(&mut self.pads, index, left_deadzone, right_deadzone)
+        sample_pad(
+            &mut self.pads,
+            &mut self.paddle_codes,
+            index,
+            left_deadzone,
+            right_deadzone,
+        )
     }
 }
 
@@ -481,6 +491,7 @@ fn map_key_code(code: WinitKeyCode) -> Option<KeyCode> {
 
 fn sample_pad(
     pads: &mut Option<Gilrs>,
+    paddle_codes: &mut HashMap<GamepadId, [Option<u32>; 4]>,
     index: usize,
     left_deadzone: f32,
     right_deadzone: f32,
@@ -491,16 +502,144 @@ fn sample_pad(
 
     while pads.next_event().is_some() {}
 
-    let Some((_, pad)) = pads.gamepads().nth(index) else {
+    let Some((id, pad)) = pads.gamepads().nth(index) else {
         return GamepadState::idle();
     };
+
+    let pedal_dz = left_deadzone.min(0.15);
+    let gas = crate::platform::gamepad::pedal(pad.value(Axis::RightZ), pedal_dz);
+    let brake = crate::platform::gamepad::pedal(pad.value(Axis::LeftZ), pedal_dz);
+    let clutch = clutch_value(&pad, pedal_dz);
+    let mut buttons = pad_buttons(&pad);
+    let slots = paddle_codes.entry(id).or_insert([None; 4]);
+    note_paddle_codes(slots, &pad);
+    insert_paddles(&mut buttons, slots, &pad);
+
+    if gas > 0.0 {
+        buttons.insert(PadButton::PedalGas);
+    }
+
+    if brake > 0.0 {
+        buttons.insert(PadButton::PedalBrake);
+    }
+
+    if clutch > 0.0 {
+        buttons.insert(PadButton::PedalClutch);
+    }
 
     GamepadState {
         forward: crate::platform::gamepad::stick(pad.value(Axis::LeftStickY), left_deadzone),
         right: crate::platform::gamepad::stick(pad.value(Axis::LeftStickX), left_deadzone),
         look_x: crate::platform::gamepad::stick(pad.value(Axis::RightStickX), right_deadzone),
         look_y: crate::platform::gamepad::stick(pad.value(Axis::RightStickY), right_deadzone),
-        buttons: pad_buttons(&pad),
+        gas,
+        brake,
+        clutch,
+        buttons,
+    }
+}
+
+fn clutch_value(pad: &gilrs::Gamepad, deadzone: f32) -> f32 {
+    let from_c = pad
+        .button_data(Button::C)
+        .map(|data| data.value())
+        .unwrap_or(0.0);
+    let from_z = pad
+        .button_data(Button::Z)
+        .map(|data| data.value())
+        .unwrap_or(0.0);
+    let pressed = if pad.is_pressed(Button::C) || pad.is_pressed(Button::Z) {
+        1.0
+    } else {
+        0.0
+    };
+
+    crate::platform::gamepad::pedal(from_c.max(from_z).max(pressed), deadzone)
+}
+
+fn is_paddle_candidate(pad: &gilrs::Gamepad, code: Code) -> bool {
+    match pad.axis_or_btn_name(code) {
+        Some(AxisOrBtn::Btn(Button::Unknown))
+        | Some(AxisOrBtn::Btn(Button::C))
+        | Some(AxisOrBtn::Btn(Button::Z)) => true,
+        None => true,
+        _ => false,
+    }
+}
+
+fn note_paddle_codes(slots: &mut [Option<u32>; 4], pad: &gilrs::Gamepad) {
+    let mut known: Vec<u32> = slots.iter().filter_map(|slot| *slot).collect();
+
+    for (code, _) in pad.state().buttons() {
+        if !is_paddle_candidate(pad, code) {
+            continue;
+        }
+
+        let value = code.into_u32();
+
+        if known.contains(&value) {
+            continue;
+        }
+
+        known.push(value);
+    }
+
+    if pad.is_pressed(Button::C) {
+        if let Some(code) = pad.button_code(Button::C).or_else(|| Button::C.to_nec()) {
+            let value = code.into_u32();
+
+            if !known.contains(&value) {
+                known.push(value);
+            }
+        }
+    }
+
+    if pad.is_pressed(Button::Z) {
+        if let Some(code) = pad.button_code(Button::Z).or_else(|| Button::Z.to_nec()) {
+            let value = code.into_u32();
+
+            if !known.contains(&value) {
+                known.push(value);
+            }
+        }
+    }
+
+    known.sort_unstable();
+    known.dedup();
+
+    for idx in 0..4 {
+        slots[idx] = known.get(idx).copied();
+    }
+}
+
+fn insert_paddles(buttons: &mut PadButtons, slots: &[Option<u32>; 4], pad: &gilrs::Gamepad) {
+    const PADDLES: [PadButton; 4] = [
+        PadButton::Paddle1,
+        PadButton::Paddle2,
+        PadButton::Paddle3,
+        PadButton::Paddle4,
+    ];
+
+    for (idx, slot) in slots.iter().enumerate() {
+        let Some(expected) = *slot else {
+            continue;
+        };
+
+        let pressed = pad.state().buttons().any(|(code, data)| {
+            data.is_pressed() && code.into_u32() == expected
+        });
+
+        if pressed {
+            buttons.insert(PADDLES[idx]);
+        }
+    }
+
+    if pad.is_pressed(Button::C) && slots.iter().all(|slot| slot.is_none()) {
+        buttons.insert(PadButton::Paddle1);
+    }
+
+    if pad.is_pressed(Button::Z) && slots.iter().all(|slot| slot.is_none()) {
+        buttons.insert(PadButton::Paddle2);
     }
 }
 
