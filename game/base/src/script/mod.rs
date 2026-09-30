@@ -97,7 +97,21 @@ mod tests {
             .load("hook.add('Ping', 'id', function() end)")
             .exec()
             .unwrap();
-        engine.run_hook("Ping", 0.0, 0.0, 1, ());
+        let _: () = engine.run_hook("Ping", 0.0, 0.0, 1, ());
+        engine
+            .lua
+            .load(
+                "hook.add('Skip', 'id', function() return true, 'nope', 3 end)",
+            )
+            .exec()
+            .unwrap();
+        let (skip, reason, n): (bool, String, i32) =
+            engine.run_hook("Skip", 0.0, 0.0, 1, ());
+        assert!(skip);
+        assert_eq!(reason, "nope");
+        assert_eq!(n, 3);
+        let none: Option<bool> = engine.run_hook("Missing", 0.0, 0.0, 1, ());
+        assert_eq!(none, None);
         exec(&engine.lua, "menu.lua", "lua/menu/menu.luac");
     }
 }

@@ -125,14 +125,18 @@ impl<In, Out> GameState<In, Out> {
         }
     }
 
-    pub fn run_hook<A: mlua::IntoLuaMulti>(&self, hook_name: &str, args: A) {
+    pub fn run_hook<A, R>(&self, hook_name: &str, args: A) -> R
+    where
+        A: mlua::IntoLuaMulti,
+        R: mlua::FromLuaMulti,
+    {
         self.script_engine.run_hook(
             hook_name,
             self.cur_time,
             self.frame_time,
             self.tick_count,
             args,
-        );
+        )
     }
 
     pub fn run_usermessage<A: mlua::IntoLuaMulti>(&self, hash: u32, args: A) {

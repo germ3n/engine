@@ -12,7 +12,10 @@ end
 function hook.call(event_id, ...)
     if storage[event_id] then
         for identifier, callback in pairs(storage[event_id]) do
-            callback(...);
+            local a, b, c, d, e, f = callback(...);
+            if a ~= nil then
+                return a, b, c, d, e, f;
+            end
         end
     end
 end

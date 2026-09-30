@@ -313,7 +313,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         &camera.scene(aspect, game.voxel_world.scale() as f32),
                     );
 
-                    game.run_hook("MenuPaint", ());
+                    let _: () = game.run_hook("MenuPaint", ());
 
                     let draw_commands = {
                         let mut q = game.script_engine.render_queue.lock().unwrap();
@@ -942,7 +942,7 @@ fn reconcile_player(
 
     prediction.correct_view(position);
 
-    game.run_hook(
+    let _: () = game.run_hook(
         "TransformUpdated",
         (
             snapshot.handle,
@@ -1044,15 +1044,15 @@ fn apply_server_event(
 
     match message {
         ServerToClient::PlayerConnected { handle, name } => {
-            game.run_hook("PlayerConnected", (handle, name));
+            let _: () = game.run_hook("PlayerConnected", (handle, name));
         }
         ServerToClient::PlayerDisconnected { handle } => {
-            game.run_hook("PlayerDisconnected", handle);
+            let _: () = game.run_hook("PlayerDisconnected", handle);
         }
         ServerToClient::PlayerSpawned { handle } => {
             prediction.possess(handle);
             remotes.remove(&handle);
-            game.run_hook("PlayerSpawned", handle);
+            let _: () = game.run_hook("PlayerSpawned", handle);
         }
         ServerToClient::PlayerDamaged {
             handle,
@@ -1061,7 +1061,7 @@ fn apply_server_event(
             damage,
             new_health,
         } => {
-            game.run_hook(
+            let _: () = game.run_hook(
                 "PlayerDamaged",
                 (handle, attacker, inflictor, damage, new_health),
             );
@@ -1071,10 +1071,10 @@ fn apply_server_event(
             killer,
             inflictor,
         } => {
-            game.run_hook("PlayerDied", (handle, killer, inflictor));
+            let _: () = game.run_hook("PlayerDied", (handle, killer, inflictor));
         }
         ServerToClient::ModelChanged { handle, model } => {
-            game.run_hook("ModelChanged", (handle, model));
+            let _: () = game.run_hook("ModelChanged", (handle, model));
         }
         ServerToClient::TransformUpdated {
             handle,
@@ -1105,7 +1105,7 @@ fn apply_server_event(
                 }
             }
 
-            game.run_hook("TransformUpdated", (handle, position, angles, velocity));
+            let _: () = game.run_hook("TransformUpdated", (handle, position, angles, velocity));
         }
 
         ServerToClient::UserMessage { hash, data } => {
@@ -1191,7 +1191,7 @@ fn apply_server_event(
                         game.tick_interval,
                     );
 
-                    game.run_hook(
+                    let _: () = game.run_hook(
                         "TransformUpdated",
                         (
                             snapshot.handle,

@@ -125,19 +125,30 @@ impl ScriptEngine {
         self.usermsg_receiver.try_recv().ok()
     }
 
-    pub fn run_hook<A: mlua::IntoLuaMulti>(
+    pub fn run_hook<A, R>(
         &self,
         hook_name: &str,
         cur_time: f64,
         frame_time: f64,
         tick_count: u64,
         args: A,
-    ) {
+    ) -> R
+    where
+        A: mlua::IntoLuaMulti,
+        R: mlua::FromLuaMulti,
+    {
         publish_clock(&self.lua, cur_time, frame_time, tick_count);
         let call_fn: mlua::Function = self.lua.registry_value(&self.hook_caller).unwrap();
 
-        if let Err(err) = call_fn.call::<()>((hook_name, args)) {
-            log::error!("[LUA HOOK ERROR]: {}", err);
+        match call_fn.call::<R>((hook_name, args)) {
+            Ok(ret) => ret,
+            Err(err) => {
+                log::error!("[LUA HOOK ERROR]: {}", err);
+                self.lua
+                    .load("return")
+                    .eval()
+                    .unwrap_or_else(|err| panic!("hook return recovery failed: {err}"))
+            }
         }
     }
 
