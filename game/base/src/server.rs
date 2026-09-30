@@ -1,7 +1,7 @@
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::movement::{self, UserCommand};
-use crate::network::events::{EntitySnapshot, NetTransform};
+use crate::network::events::EntitySnapshot;
 use crate::network::packet::STREAM_STATE;
 use crate::network::packet::{
     encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart,
@@ -10,8 +10,7 @@ use crate::network::server::NetworkServer;
 use crate::network::server::ReliableSendError;
 use crate::network::usermessage::UserMsgReader;
 use crate::network::wait_socket;
-use crate::network::{ClientToServer, ServerToClient};
-use crate::network::{FromClient, NetSend, PacketType, ReliableBody, RECV_BUDGET};
+use crate::network::{ClientToServer, FromClient, NetSend, PacketType, ReliableBody, ServerToClient, RECV_BUDGET};
 use crate::r#enum::InputButtons;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
@@ -179,9 +178,18 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     peers.retain(|peer| *peer != addr);
                     drop_player(&mut game, addr, &mut players);
                 }
-                FromClient::Message { addr, event } => match event {
+                FromClient::Message { addr, event } => {
+                    match &event {
+                        ClientToServer::PlayerInput { .. } => {
+                            log::debug!("[sv] {} from {}", event.summary(), addr);
+                        }
+                        _ => {
+                            log::info!("[sv] {} from {}", event.summary(), addr);
+                        }
+                    }
+
+                    match event {
                     ClientToServer::UserMessage { hash, data } => {
-                        log::info!("[sv] usermessage {hash} from {addr}");
                         game.run_usermessage(hash, UserMsgReader::new(data));
                     }
                     ClientToServer::PlayerInput {
@@ -208,6 +216,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                         }
                     }
                     _ => {}
+                    }
                 },
             }
         }
@@ -844,6 +853,7 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
             position: base.position,
             angles: base.angles,
             velocity: base.velocity,
+            ack: 0,
         });
     }
 
@@ -881,6 +891,15 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
 
     let part_count = batches.len() as u16;
     for (idx, entities) in batches.into_iter().enumerate() {
+        log::info!(
+            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={}",
+            addr,
+            generation,
+            idx == 0,
+            idx,
+            part_count,
+            entities.len()
+        );
         game.send_state_to(
             addr,
             ServerToClient::WorldSnapshot {
@@ -900,8 +919,10 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
     let mut pending = Vec::new();
     for (handle, entity) in game.entities.iter() {
         let base = entity.base();
-        pending.push(NetTransform {
+        pending.push(EntitySnapshot {
             handle,
+            class_hash: entity.class_hash(),
+            health: entity.net_health(),
             position: base.position,
             angles: base.angles,
             velocity: base.velocity,
@@ -913,12 +934,18 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
         return;
     }
 
+    log::debug!(
+        "[sv] tick {} state for {} entities",
+        tick,
+        pending.len()
+    );
+
     if tick_fits(tick, 0, 1, &pending) {
         game.send_unreliable(ServerToClient::TickState {
             tick,
             part: 0,
             parts: 1,
-            transforms: pending,
+            entities: pending,
         });
 
         return;
@@ -926,8 +953,8 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
 
     let mut batches = Vec::new();
     let mut batch = Vec::new();
-    for transform in pending {
-        batch.push(transform);
+    for entity in pending {
+        batch.push(entity);
         if tick_fits(tick, u16::MAX, u16::MAX, &batch) {
             continue;
         }
@@ -953,12 +980,19 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
     }
 
     let part_count = batches.len() as u16;
-    for (idx, transforms) in batches.into_iter().enumerate() {
+    for (idx, entities) in batches.into_iter().enumerate() {
+        log::debug!(
+            "[sv] tick {} state part {}/{} ({} ents)",
+            tick,
+            idx,
+            part_count,
+            entities.len()
+        );
         game.send_unreliable(ServerToClient::TickState {
             tick,
             part: idx as u16,
             parts: part_count,
-            transforms,
+            entities,
         });
     }
 }
@@ -984,12 +1018,12 @@ fn snapshot_fits(
 }
 
 #[cfg(feature = "server")]
-fn tick_fits(tick: u64, part: u16, parts: u16, transforms: &[NetTransform]) -> bool {
+fn tick_fits(tick: u64, part: u16, parts: u16, entities: &[EntitySnapshot]) -> bool {
     let event = ServerToClient::TickState {
         tick,
         part,
         parts,
-        transforms: transforms.to_vec(),
+        entities: entities.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
 

@@ -2,7 +2,7 @@ use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::input::Action;
 use crate::movement::{self, NetPose, Prediction, UserCommand};
-use crate::network::events::{EntitySnapshot, NetTransform};
+use crate::network::events::EntitySnapshot;
 use crate::network::packet::{
     bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT,
     KEEPALIVE_INTERVAL, STREAM_STATE,
@@ -10,10 +10,10 @@ use crate::network::packet::{
 use crate::network::usermessage::UserMsgReader;
 use crate::network::wait_socket;
 use crate::network::{
-    take_unreliable, EnqueueStatus, FromServer, NetSend, PacketType, ReliableBody, ReliableChannel,
-    UnreliableAssembly, UnreliableInbox, OUTBOUND_CAP, RECV_BUDGET,
+    take_unreliable, ClientToServer, EnqueueStatus, FromServer, NetSend, NetworkClient, PacketType,
+    ReliableBody, ReliableChannel, ServerToClient, UnreliableAssembly, UnreliableInbox,
+    OUTBOUND_CAP, RECV_BUDGET,
 };
-use crate::network::{ClientToServer, NetworkClient, ServerToClient};
 use crate::platform::{
     DeviceEvent, ElementState, Event, HostKind, KeyCode, MouseButton, PlatformHost, Touch,
     TouchPhase, WindowEvent,
@@ -44,7 +44,7 @@ struct TickIngress {
     part_count: u16,
     filled: u16,
     started: bool,
-    parts: Vec<Option<Vec<NetTransform>>>,
+    parts: Vec<Option<Vec<EntitySnapshot>>>,
 }
 
 impl TickIngress {
@@ -63,8 +63,8 @@ impl TickIngress {
         tick: u64,
         part: u16,
         part_count: u16,
-        transforms: Vec<NetTransform>,
-    ) -> Option<Vec<NetTransform>> {
+        entities: Vec<EntitySnapshot>,
+    ) -> Option<Vec<EntitySnapshot>> {
         if part_count == 0 || part >= part_count || part_count > 1024 {
             return None;
         }
@@ -90,7 +90,7 @@ impl TickIngress {
         }
 
         if self.parts[part as usize].is_none() {
-            self.parts[part as usize] = Some(transforms);
+            self.parts[part as usize] = Some(entities);
             self.filled = self.filled.saturating_add(1);
         }
 
@@ -448,6 +448,11 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 entities,
                             } = message
                             {
+                                log::info!(
+                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={})",
+                                    entities.len()
+                                );
+
                                 if generation == world_generation {
                                     if let Some(built) = snapshot_ingress
                                         .push(generation, reset, part, parts, entities)
@@ -462,6 +467,15 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                         let interval = game.tick_interval;
 
                                         for entity in built.entities {
+                                            log::info!(
+                                                "[cl] snapshot spawn {:?} class={} hp={} pos=({:.2},{:.2},{:.2})",
+                                                entity.handle,
+                                                entity.class_hash,
+                                                entity.health,
+                                                entity.position.x,
+                                                entity.position.y,
+                                                entity.position.z
+                                            );
                                             apply_spawn(
                                                 &mut game,
                                                 &mut remotes,
@@ -847,23 +861,23 @@ fn predict_tick(
 fn reconcile_player(
     game: &mut GameState<FromServer, ClientToServer>,
     prediction: &mut Prediction,
-    transform: &NetTransform,
+    snapshot: &EntitySnapshot,
 ) {
-    if transform.handle != prediction.local {
+    if snapshot.handle != prediction.local {
         return;
     }
 
-    if !prediction.take_ack(transform.ack) {
+    if !prediction.take_ack(snapshot.ack) {
         log::debug!(
             "[pred] skip stale ack={} have={}",
-            transform.ack,
+            snapshot.ack,
             prediction.acked(),
         );
 
         return;
     }
 
-    let (predicted_pos, predicted_vel) = match game.entities.get(transform.handle) {
+    let (predicted_pos, predicted_vel) = match game.entities.get(snapshot.handle) {
         Some(entity) => {
             let base = entity.base();
 
@@ -872,9 +886,9 @@ fn reconcile_player(
         None => return,
     };
 
-    let mut position = transform.position;
-    let mut velocity = transform.velocity;
-    let mut angles = transform.angles;
+    let mut position = snapshot.position;
+    let mut velocity = snapshot.velocity;
+    let mut angles = snapshot.angles;
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
     let pending = prediction.pending();
@@ -896,38 +910,30 @@ fn reconcile_player(
     let dvy = predicted_vel.y - velocity.y;
     let dvz = predicted_vel.z - velocity.z;
     let dvel = (dvx * dvx + dvy * dvy + dvz * dvz).sqrt();
-    let base_dx = predicted_pos.x - transform.position.x;
-    let base_dy = predicted_pos.y - transform.position.y;
-    let base_dz = predicted_pos.z - transform.position.z;
+    let base_dx = predicted_pos.x - snapshot.position.x;
+    let base_dy = predicted_pos.y - snapshot.position.y;
+    let base_dz = predicted_pos.z - snapshot.position.z;
     let base_err = (base_dx * base_dx + base_dy * base_dy + base_dz * base_dz).sqrt();
     let noisy = err > 0.01 || dvel > 0.05;
 
     if noisy || should_log_pred() {
+        let _ = (pending, base_err);
         log::info!(
-            "[pred] {} ack={} pending={} err={:.4} ({:.4},{:.4},{:.4}) dvel={:.4} ({:.4},{:.4},{:.4}) base={:.4} sv=({:.4},{:.4},{:.4}) cl=({:.4},{:.4},{:.4}) g={:.2}",
+            "[pred] {} ack={} err={:.4} dvel={:.4} sv=({:.2},{:.2},{:.2}) cl=({:.2},{:.2},{:.2})",
             if noisy { "ERR" } else { "ok" },
-            transform.ack,
-            pending,
+            snapshot.ack,
             err,
-            dx,
-            dy,
-            dz,
             dvel,
-            dvx,
-            dvy,
-            dvz,
-            base_err,
-            transform.position.x,
-            transform.position.y,
-            transform.position.z,
+            snapshot.position.x,
+            snapshot.position.y,
+            snapshot.position.z,
             predicted_pos.x,
             predicted_pos.y,
             predicted_pos.z,
-            gravity,
         );
     }
 
-    if let Some(entity) = game.entities.get_mut(transform.handle) {
+    if let Some(entity) = game.entities.get_mut(snapshot.handle) {
         let base = entity.base_mut();
         base.position = position;
         base.velocity = velocity;
@@ -939,7 +945,7 @@ fn reconcile_player(
     game.run_hook(
         "TransformUpdated",
         (
-            transform.handle,
+            snapshot.handle,
             Some(position),
             Some(angles),
             Some(velocity),
@@ -1024,6 +1030,18 @@ fn apply_server_event(
     now: f64,
     message: ServerToClient,
 ) {
+    match &message {
+        ServerToClient::TickState { .. }
+        | ServerToClient::Pong { .. }
+        | ServerToClient::ServerTick { .. }
+        | ServerToClient::VoxelChunk(_) => {
+            log::debug!("[cl] {}", message.summary());
+        }
+        _ => {
+            log::info!("[cl] {}", message.summary());
+        }
+    }
+
     match message {
         ServerToClient::PlayerConnected { handle, name } => {
             game.run_hook("PlayerConnected", (handle, name));
@@ -1144,25 +1162,31 @@ fn apply_server_event(
             tick,
             part,
             parts,
-            transforms,
+            entities,
         } => {
-            if let Some(transforms) = tick_ingress.push(tick, part, parts, transforms) {
-                for transform in transforms {
-                    if transform.handle == prediction.local {
-                        reconcile_player(game, prediction, &transform);
+            if let Some(entities) = tick_ingress.push(tick, part, parts, entities) {
+                log::debug!(
+                    "[cl] tick {} assembled {} entity updates",
+                    tick,
+                    entities.len()
+                );
+
+                for snapshot in entities {
+                    if snapshot.handle == prediction.local {
+                        reconcile_player(game, prediction, &snapshot);
 
                         continue;
                     }
 
                     note_remote(
                         remotes,
-                        transform.handle,
+                        snapshot.handle,
                         NetPose {
                             tick,
                             time: now,
-                            position: transform.position,
-                            angles: transform.angles,
-                            velocity: transform.velocity,
+                            position: snapshot.position,
+                            angles: snapshot.angles,
+                            velocity: snapshot.velocity,
                         },
                         game.tick_interval,
                     );
@@ -1170,10 +1194,10 @@ fn apply_server_event(
                     game.run_hook(
                         "TransformUpdated",
                         (
-                            transform.handle,
-                            Some(transform.position),
-                            Some(transform.angles),
-                            Some(transform.velocity),
+                            snapshot.handle,
+                            Some(snapshot.position),
+                            Some(snapshot.angles),
+                            Some(snapshot.velocity),
                         ),
                     );
                 }
@@ -1181,7 +1205,7 @@ fn apply_server_event(
         }
 
         other => {
-            log::warn!("[cl] unhandled {other:?}");
+            log::warn!("[cl] unhandled {}", other.summary());
         }
     }
 }

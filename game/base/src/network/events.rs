@@ -14,14 +14,6 @@ pub struct EntitySnapshot {
     pub position: Vector3,
     pub angles: Angle3,
     pub velocity: Vector3,
-}
-
-#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
-pub struct NetTransform {
-    pub handle: EntityHandle,
-    pub position: Vector3,
-    pub angles: Angle3,
-    pub velocity: Vector3,
     pub ack: u64,
 }
 
@@ -154,7 +146,7 @@ pub enum ServerToClient {
         tick: u64,
         part: u16,
         parts: u16,
-        transforms: Vec<NetTransform>,
+        entities: Vec<EntitySnapshot>,
     },
     VoxelScale {
         scale: f64,
@@ -224,4 +216,184 @@ pub enum FromServer {
     Message(ServerToClient),
     Connected { generation: u32 },
     Disconnected,
+}
+
+impl ServerToClient {
+    pub fn summary(&self) -> String {
+        match self {
+            ServerToClient::MapChange { map_name } => format!("MapChange({map_name})"),
+            ServerToClient::GameStateChanged { state } => format!("GameStateChanged({state})"),
+            ServerToClient::ConVarReplicated { name, value } => {
+                format!("ConVarReplicated({name}={value})")
+            }
+            ServerToClient::EntitySpawned {
+                handle,
+                class_hash,
+                position,
+            } => format!(
+                "EntitySpawned({handle:?} class={class_hash} pos=({:.2},{:.2},{:.2}))",
+                position.x, position.y, position.z
+            ),
+            ServerToClient::EntityDespawned { handle } => format!("EntityDespawned({handle:?})"),
+            ServerToClient::EntityParented {
+                handle,
+                parent_handle,
+                attachment_point,
+            } => format!(
+                "EntityParented({handle:?} -> {parent_handle:?} attach={attachment_point})"
+            ),
+            ServerToClient::PlayerConnected { handle, name } => {
+                format!("PlayerConnected({handle:?} {name})")
+            }
+            ServerToClient::PlayerDisconnected { handle } => {
+                format!("PlayerDisconnected({handle:?})")
+            }
+            ServerToClient::PlayerSpawned { handle } => format!("PlayerSpawned({handle:?})"),
+            ServerToClient::PlayerDamaged {
+                handle,
+                attacker,
+                damage,
+                new_health,
+                ..
+            } => format!(
+                "PlayerDamaged({handle:?} by {attacker:?} dmg={damage} hp={new_health})"
+            ),
+            ServerToClient::PlayerDied {
+                handle,
+                killer,
+                ..
+            } => format!("PlayerDied({handle:?} killer={killer:?})"),
+            ServerToClient::ModelChanged { handle, model } => {
+                format!("ModelChanged({handle:?} {model})")
+            }
+            ServerToClient::FlagsChanged { handle, flags } => {
+                format!("FlagsChanged({handle:?} {flags:?})")
+            }
+            ServerToClient::TransformUpdated {
+                handle,
+                position,
+                angles,
+                velocity,
+            } => format!(
+                "TransformUpdated({handle:?} pos={} ang={} vel={})",
+                option_vec(position),
+                option_ang(angles),
+                option_vec(velocity)
+            ),
+            ServerToClient::PlaySound {
+                sound_hash,
+                entity_handle,
+                ..
+            } => format!("PlaySound(hash={sound_hash} ent={entity_handle:?})"),
+            ServerToClient::PlayEffect { effect_hash, .. } => {
+                format!("PlayEffect(hash={effect_hash})")
+            }
+            ServerToClient::AnimationTriggered {
+                handle,
+                sequence_id,
+                ..
+            } => format!("AnimationTriggered({handle:?} seq={sequence_id})"),
+            ServerToClient::UserMessage { hash, data } => {
+                format!("UserMessage(hash={hash} {}b)", data.len())
+            }
+            ServerToClient::ChatMessage {
+                sender_handle,
+                team_only,
+                text,
+            } => format!("ChatMessage({sender_handle:?} team={team_only} {text})"),
+            ServerToClient::VoiceChunk {
+                sender_handle,
+                data,
+            } => format!("VoiceChunk({sender_handle:?} {}b)", data.len()),
+            ServerToClient::Pong {
+                client_time,
+                server_time,
+            } => format!("Pong(client={client_time} server={server_time})"),
+            ServerToClient::ServerTick { tick } => format!("ServerTick({tick})"),
+            ServerToClient::WeaponFired {
+                entity_handle,
+                weapon_handle,
+            } => format!("WeaponFired(ent={entity_handle:?} wep={weapon_handle:?})"),
+            ServerToClient::WeaponReloaded { entity_handle } => {
+                format!("WeaponReloaded({entity_handle:?})")
+            }
+            ServerToClient::ItemEquipped {
+                entity_handle,
+                slot,
+                item_handle,
+            } => format!("ItemEquipped(ent={entity_handle:?} slot={slot} item={item_handle:?})"),
+            ServerToClient::WorldSnapshot {
+                generation,
+                reset,
+                part,
+                parts,
+                entities,
+            } => format!(
+                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={})",
+                entities.len()
+            ),
+            ServerToClient::TickState {
+                tick,
+                part,
+                parts,
+                entities,
+            } => format!(
+                "TickState(tick={tick} part={part}/{parts} ents={})",
+                entities.len()
+            ),
+            ServerToClient::VoxelScale { scale } => format!("VoxelScale({scale})"),
+            ServerToClient::VoxelChunk(update) => {
+                format!("VoxelChunk({} {} {})", update.x, update.y, update.z)
+            }
+        }
+    }
+}
+
+impl ClientToServer {
+    pub fn summary(&self) -> String {
+        match self {
+            ClientToServer::UserMessage { hash, data } => {
+                format!("UserMessage(hash={hash} {}b)", data.len())
+            }
+            ClientToServer::ChatMessage {
+                sender_handle,
+                team_only,
+                text,
+            } => format!("ChatMessage({sender_handle:?} team={team_only} {text})"),
+            ClientToServer::VoiceChunk {
+                sender_handle,
+                data,
+            } => format!("VoiceChunk({sender_handle:?} {}b)", data.len()),
+            ClientToServer::Ping { client_time } => format!("Ping({client_time})"),
+            ClientToServer::ClientReady { tick } => format!("ClientReady({tick})"),
+            ClientToServer::PlayerInput {
+                tick,
+                buttons,
+                movement,
+                viewangles,
+            } => format!(
+                "PlayerInput(tick={tick} buttons={buttons:?} wish=({:.2},{:.2},{:.2}) view=({:.1},{:.1},{:.1}))",
+                movement.x,
+                movement.y,
+                movement.z,
+                viewangles.p,
+                viewangles.y,
+                viewangles.r
+            ),
+        }
+    }
+}
+
+fn option_vec(value: &Option<Vector3>) -> String {
+    match value {
+        Some(v) => format!("({:.2},{:.2},{:.2})", v.x, v.y, v.z),
+        None => "-".to_string(),
+    }
+}
+
+fn option_ang(value: &Option<Angle3>) -> String {
+    match value {
+        Some(a) => format!("({:.1},{:.1},{:.1})", a.p, a.y, a.r),
+        None => "-".to_string(),
+    }
 }
