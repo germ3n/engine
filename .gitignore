@@ -1,6 +1,7 @@
 target/
 Cargo.lock
 .DS_Store
+cache/
 mobile/android/app/src/main/jniLibs/
 mobile/ios/build/
 mobile/android/app/build/
