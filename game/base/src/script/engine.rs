@@ -1,14 +1,20 @@
 use crate::console::ConVar;
+use crate::entities::EntityHandle;
 use crate::input::Binds;
+use crate::movement::UserCommand;
+use crate::network::events::{networked_summary, vars_summary, EntityNetworked, NetVar};
 use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
+use crate::script::libs::ents::EntityAccess;
 use crate::script::libs::{
     register_angle3_lib, register_console_lib, register_convar_lib, register_engine_lib,
-    register_net_lib, register_pad_lib, register_surface_lib, register_vector3_lib,
+    register_ents_lib, register_net_lib, register_pad_lib, register_scripted_ents_lib,
+    register_surface_lib, register_vector3_lib,
 };
 use crate::ui::Color;
 use mlua::{Lua, LuaOptions, RegistryKey, StdLib};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicPtr;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
@@ -54,6 +60,7 @@ pub struct ScriptEngine {
     pub net_caller: RegistryKey,
     pub tick_interval: f64,
     pub render_queue: RenderQueue,
+    pub entity_access: EntityAccess,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -101,6 +108,14 @@ impl ScriptEngine {
             register_surface_lib(&lua, render_queue.clone());
         }
 
+        let entity_access: EntityAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        if !matches!(realm, Realm::Menu) {
+            register_ents_lib(&lua, entity_access.clone());
+            register_scripted_ents_lib(&lua);
+            crate::script::libs::scripted_ents::load_entities(&lua, realm);
+            crate::script::autorun::load_autorun(&lua, realm);
+        }
+
         let hook_table: mlua::Table = lua.globals().get("hook").unwrap();
         let hook_call_fn: mlua::Function = hook_table.get("call").unwrap();
         let hook_caller = lua.create_registry_value(hook_call_fn).unwrap();
@@ -117,7 +132,251 @@ impl ScriptEngine {
             //window_ptr,
             tick_interval,
             render_queue: render_queue.clone(),
+            entity_access,
             usermsg_receiver,
+        }
+    }
+
+    fn has_ents(&self) -> bool {
+        !matches!(self.realm, Realm::Menu)
+    }
+
+    fn tag(&self) -> &'static str {
+        match self.realm {
+            Realm::Server => "sv",
+            Realm::Client => "cl",
+            Realm::Menu => "menu",
+        }
+    }
+
+    pub fn think_entities(&self, cur_time: f64, frame_time: f64, tick_count: u64) {
+        if !self.has_ents() {
+            return;
+        }
+
+        publish_clock(&self.lua, cur_time, frame_time, tick_count);
+
+        if let Err(err) = crate::script::libs::ents::think(&self.lua, cur_time) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
+        }
+    }
+
+    pub fn sync_removed(&self, handles: &[(EntityHandle, bool)]) {
+        if !self.has_ents() || handles.is_empty() {
+            return;
+        }
+
+        if let Err(err) = crate::script::libs::ents::removed(&self.lua, handles) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
+        }
+    }
+
+    pub fn net_spawn(&self, handle: EntityHandle, vars: &[NetVar]) -> bool {
+        if !self.has_ents() {
+            return false;
+        }
+
+        match crate::script::libs::ents::net_spawn(&self.lua, handle, vars) {
+            Ok(known) => {
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "[{} netvar] spawn {:?} known={} [{}]",
+                        self.tag(),
+                        handle,
+                        known,
+                        vars_summary(vars)
+                    );
+                }
+
+                known
+            }
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+
+                false
+            }
+        }
+    }
+
+    pub fn collect_networked(&self) -> Vec<EntityNetworked> {
+        if !self.has_ents() {
+            return Vec::new();
+        }
+
+        match crate::script::libs::ents::collect_networked(&self.lua) {
+            Ok(entities) => {
+                if !entities.is_empty() && log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "[{} netvar] dirty ents={} {}",
+                        self.tag(),
+                        entities.len(),
+                        networked_summary(&entities)
+                    );
+                }
+
+                entities
+            }
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn networked_state(&self, handle: Option<EntityHandle>) -> Vec<EntityNetworked> {
+        if !self.has_ents() {
+            return Vec::new();
+        }
+
+        match crate::script::libs::ents::networked_state(&self.lua, handle) {
+            Ok(entities) => {
+                if !entities.is_empty() && log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "[{} netvar] full state {:?} ents={} {}",
+                        self.tag(),
+                        handle,
+                        entities.len(),
+                        networked_summary(&entities)
+                    );
+                }
+
+                entities
+            }
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn apply_networked(&self, entities: &[EntityNetworked]) {
+        if !self.has_ents() || entities.is_empty() {
+            return;
+        }
+
+        match crate::script::libs::ents::apply_networked(&self.lua, entities) {
+            Ok((skipped, missing)) => {
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "[{} netvar] apply ents={} skipped_predicted={} missing={} {}",
+                        self.tag(),
+                        entities.len(),
+                        skipped,
+                        missing,
+                        networked_summary(entities)
+                    );
+                }
+            }
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+            }
+        }
+    }
+
+    pub fn run_predicted(&self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {
+        if !self.has_ents() {
+            return;
+        }
+
+        log::trace!(
+            "[{} netvar] predicted {:?} tick={} first_time={}",
+            self.tag(),
+            handle,
+            cmd.tick,
+            first_time
+        );
+
+        if let Err(err) = crate::script::libs::ents::predicted(&self.lua, handle, cmd, first_time) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
+        }
+    }
+
+    pub fn predicted_state(&self, handle: EntityHandle) -> Vec<EntityNetworked> {
+        if !self.has_ents() {
+            return Vec::new();
+        }
+
+        match crate::script::libs::ents::predicted_state(&self.lua, handle) {
+            Ok(entities) => {
+                if !entities.is_empty() && log::log_enabled!(log::Level::Trace) {
+                    log::trace!(
+                        "[{} netvar] predicted state {:?} ents={} {}",
+                        self.tag(),
+                        handle,
+                        entities.len(),
+                        networked_summary(&entities)
+                    );
+                }
+
+                entities
+            }
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn begin_reconcile(&self, entities: &[EntityNetworked]) {
+        if !self.has_ents() {
+            return;
+        }
+
+        if !entities.is_empty() && log::log_enabled!(log::Level::Trace) {
+            log::trace!(
+                "[{} netvar] reconcile begin ents={} {}",
+                self.tag(),
+                entities.len(),
+                networked_summary(entities)
+            );
+        }
+
+        if let Err(err) = crate::script::libs::ents::begin_reconcile(&self.lua, entities) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
+        }
+    }
+
+    pub fn end_reconcile(&self) {
+        if !self.has_ents() {
+            return;
+        }
+
+        match crate::script::libs::ents::end_reconcile(&self.lua) {
+            Ok(changed) => {
+                if changed > 0 {
+                    log::debug!("[{} netvar] reconcile mispredicted keys={}", self.tag(), changed);
+                }
+            }
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+            }
+        }
+    }
+
+    pub fn owner_changed(&self, handle: EntityHandle, owner: EntityHandle) {
+        if !self.has_ents() {
+            return;
+        }
+
+        log::debug!("[{} netvar] owner {:?} -> {:?}", self.tag(), handle, owner);
+
+        if let Err(err) = crate::script::libs::ents::owner_changed(&self.lua, handle, owner) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
+        }
+    }
+
+    pub fn set_local_player(&self, handle: EntityHandle) {
+        if !self.has_ents() {
+            return;
+        }
+
+        log::debug!("[{} netvar] local player {:?}", self.tag(), handle);
+
+        if let Err(err) = crate::script::libs::ents::set_local(&self.lua, handle) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
         }
     }
 

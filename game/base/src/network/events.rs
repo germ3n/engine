@@ -17,6 +17,30 @@ pub struct EntitySnapshot {
     pub ack: u64,
 }
 
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub enum NetValue {
+    Nil,
+    Bool(bool),
+    Int(i32),
+    Float(f64),
+    String(String),
+    Vector3(Vector3),
+    Angle3(Angle3),
+    Entity(EntityHandle),
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub struct NetVar {
+    pub key: String,
+    pub value: NetValue,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub struct EntityNetworked {
+    pub handle: EntityHandle,
+    pub vars: Vec<NetVar>,
+}
+
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum ServerToClient {
     MapChange {
@@ -34,9 +58,24 @@ pub enum ServerToClient {
         handle: EntityHandle,
         class_hash: u32,
         position: Vector3,
+        angles: Angle3,
+        owner: EntityHandle,
+        networked: Vec<NetVar>,
     },
     EntityDespawned {
         handle: EntityHandle,
+    },
+    EntityOwner {
+        handle: EntityHandle,
+        owner: EntityHandle,
+    },
+    NetworkedUpdate {
+        entities: Vec<EntityNetworked>,
+    },
+    PredictedState {
+        tick: u64,
+        player: EntitySnapshot,
+        entities: Vec<EntityNetworked>,
     },
     EntityParented {
         handle: EntityHandle,
@@ -141,6 +180,7 @@ pub enum ServerToClient {
         part: u16,
         parts: u16,
         entities: Vec<EntitySnapshot>,
+        networked: Vec<EntityNetworked>,
     },
     TickState {
         tick: u64,
@@ -218,6 +258,59 @@ pub enum FromServer {
     Disconnected,
 }
 
+impl NetValue {
+    pub fn summary(&self) -> String {
+        match self {
+            NetValue::Nil => "nil".to_string(),
+            NetValue::Bool(value) => value.to_string(),
+            NetValue::Int(value) => value.to_string(),
+            NetValue::Float(value) => format!("{value:.3}"),
+            NetValue::String(value) => format!("{value:?}"),
+            NetValue::Vector3(value) => format!("({:.2},{:.2},{:.2})", value.x, value.y, value.z),
+            NetValue::Angle3(value) => format!("({:.2},{:.2},{:.2})", value.p, value.y, value.r),
+            NetValue::Entity(handle) => format!("{handle:?}"),
+        }
+    }
+}
+
+pub fn vars_summary(vars: &[NetVar]) -> String {
+    let mut out = String::new();
+    let mut idx = 0;
+
+    while idx < vars.len() {
+        if idx > 0 {
+            out.push(' ');
+        }
+
+        out.push_str(&vars[idx].key);
+        out.push('=');
+        out.push_str(&vars[idx].value.summary());
+        idx += 1;
+    }
+
+    out
+}
+
+pub fn networked_summary(entities: &[EntityNetworked]) -> String {
+    let mut out = String::new();
+    let mut idx = 0;
+
+    while idx < entities.len() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+
+        out.push_str(&format!(
+            "{:?}[{}]",
+            entities[idx].handle,
+            vars_summary(&entities[idx].vars)
+        ));
+        idx += 1;
+    }
+
+    out
+}
+
 impl ServerToClient {
     pub fn summary(&self) -> String {
         match self {
@@ -230,11 +323,32 @@ impl ServerToClient {
                 handle,
                 class_hash,
                 position,
+                networked,
+                ..
             } => format!(
-                "EntitySpawned({handle:?} class={class_hash} pos=({:.2},{:.2},{:.2}))",
-                position.x, position.y, position.z
+                "EntitySpawned({handle:?} class={class_hash} pos=({:.2},{:.2},{:.2}) vars={})",
+                position.x,
+                position.y,
+                position.z,
+                networked.len()
             ),
             ServerToClient::EntityDespawned { handle } => format!("EntityDespawned({handle:?})"),
+            ServerToClient::NetworkedUpdate { entities } => {
+                format!("NetworkedUpdate(ents={})", entities.len())
+            }
+            ServerToClient::EntityOwner { handle, owner } => {
+                format!("EntityOwner({handle:?} owner={owner:?})")
+            }
+            ServerToClient::PredictedState {
+                tick,
+                player,
+                entities,
+            } => format!(
+                "PredictedState(tick={tick} ack={} player={:?} ents={})",
+                player.ack,
+                player.handle,
+                entities.len()
+            ),
             ServerToClient::EntityParented {
                 handle,
                 parent_handle,
@@ -328,9 +442,11 @@ impl ServerToClient {
                 part,
                 parts,
                 entities,
+                networked,
             } => format!(
-                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={})",
-                entities.len()
+                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={})",
+                entities.len(),
+                networked.len()
             ),
             ServerToClient::TickState {
                 tick,

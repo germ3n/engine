@@ -10,6 +10,7 @@ pub trait Networkable {
 
 pub struct BaseEntityData {
     pub handle: EntityHandle,
+    pub owner: EntityHandle,
     pub position: Vector3,
     pub angles: Angle3,
     pub velocity: Vector3,
@@ -19,6 +20,7 @@ impl Default for BaseEntityData {
     fn default() -> Self {
         Self {
             handle: EntityHandle::NULL,
+            owner: EntityHandle::NULL,
             position: Vector3 {
                 x: 0.0,
                 y: 0.0,
@@ -54,4 +56,10 @@ pub trait BaseEntity: Networkable {
     fn net_health(&self) -> i32 {
         0
     }
+
+    fn is_spawned(&self) -> bool {
+        true
+    }
+
+    fn set_spawned(&mut self, _spawned: bool) {}
 }

@@ -26,6 +26,10 @@ pub struct EntityList {
     frame: FrameInfo,
     max_entities: usize,
     count: usize,
+    removed: Vec<(EntityHandle, bool)>,
+    net_spawned: Vec<EntityHandle>,
+    owner_changed: Vec<EntityHandle>,
+    revision: u64,
 }
 
 impl Default for EntityList {
@@ -48,7 +52,61 @@ impl EntityList {
             frame: FrameInfo::default(),
             max_entities: max_entities.clamp(1, EntityHandle::MAX_ENTITIES),
             count: 0,
+            removed: Vec::new(),
+            net_spawned: Vec::new(),
+            owner_changed: Vec::new(),
+            revision: 0,
         }
+    }
+
+    pub fn take_owner_changed(&mut self) -> Vec<EntityHandle> {
+        std::mem::take(&mut self.owner_changed)
+    }
+
+    pub fn set_owner(&mut self, handle: EntityHandle, owner: EntityHandle) -> bool {
+        let Some(entity) = self.get_mut(handle) else {
+            return false;
+        };
+
+        if entity.base().owner == owner {
+            return true;
+        }
+
+        entity.base_mut().owner = owner;
+        let spawned = entity.is_spawned();
+
+        if spawned {
+            self.owner_changed.push(handle);
+        }
+
+        true
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn take_removed(&mut self) -> Vec<(EntityHandle, bool)> {
+        std::mem::take(&mut self.removed)
+    }
+
+    pub fn take_net_spawned(&mut self) -> Vec<EntityHandle> {
+        std::mem::take(&mut self.net_spawned)
+    }
+
+    pub fn mark_spawned(&mut self, handle: EntityHandle) -> bool {
+        let Some(entity) = self.get_mut(handle) else {
+            return false;
+        };
+
+        if entity.is_spawned() {
+            return false;
+        }
+
+        entity.set_spawned(true);
+        self.net_spawned.push(handle);
+
+        true
     }
 
     pub fn len(&self) -> usize {
@@ -88,6 +146,13 @@ impl EntityList {
             Some(slot) => slot.generation == handle.generation() && slot_entity(slot).is_some(),
             None => false,
         }
+    }
+
+    pub fn handle_at(&self, index: u32) -> Option<EntityHandle> {
+        let slot = self.slots.get(index as usize)?;
+        slot_entity(slot).as_ref()?;
+
+        Some(EntityHandle::new(index, slot.generation))
     }
 
     pub fn get(&self, handle: EntityHandle) -> Option<&DynEntity> {
@@ -144,6 +209,7 @@ impl EntityList {
         slot.generation = generation;
         *slot.entity.get_mut() = Some(entity);
         self.count += 1;
+        self.revision += 1;
 
         if wants_think {
             self.add_think(handle);
@@ -183,6 +249,7 @@ impl EntityList {
         slot.generation = handle.generation();
         *slot.entity.get_mut() = Some(entity);
         self.count += 1;
+        self.revision += 1;
 
         if wants_think {
             self.add_think(handle);
@@ -194,11 +261,21 @@ impl EntityList {
     }
 
     pub fn clear(&mut self) {
+        for (idx, slot) in self.slots.iter().enumerate() {
+            if let Some(entity) = slot_entity(slot) {
+                self.removed
+                    .push((EntityHandle::new(idx as u32, slot.generation), entity.is_spawned()));
+            }
+        }
+
         self.slots.clear();
         self.free.clear();
         self.think_list.clear();
         self.commands.clear();
+        self.net_spawned.clear();
+        self.owner_changed.clear();
         self.count = 0;
+        self.revision += 1;
     }
 
     pub fn remove(&mut self, handle: EntityHandle) -> bool {
@@ -215,10 +292,15 @@ impl EntityList {
         self.remove_think(handle);
 
         let slot = &mut self.slots[idx];
-        *slot.entity.get_mut() = None;
+        let Some(entity) = slot.entity.get_mut().take() else {
+            return false;
+        };
+
         slot.generation = EntityHandle::next_generation(slot.generation);
+        self.removed.push((handle, entity.is_spawned()));
         self.free.push_back(handle.index());
         self.count -= 1;
+        self.revision += 1;
 
         true
     }

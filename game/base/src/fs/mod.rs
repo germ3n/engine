@@ -112,6 +112,8 @@ impl Fs {
             "lua/libs/net.luac",
             "lua/libs/vector3.luac",
             "lua/libs/angle3.luac",
+            "lua/libs/ents.luac",
+            "lua/libs/scripted_ents.luac",
             "lua/menu/menu.luac",
             "shaders/mesh.wgsl",
             "shaders/color.wgsl",
@@ -189,6 +191,24 @@ impl Fs {
         }
 
         return false;
+    }
+
+    pub fn priority(&self, path: &str) -> Option<usize> {
+        if pak::check_name(path).is_err() {
+            return None;
+        }
+
+        let mut idx = self.mounts.len();
+
+        while idx > 0 {
+            idx -= 1;
+
+            if mount_exists(&self.mounts[idx], path) {
+                return Some(idx);
+            }
+        }
+
+        return None;
     }
 
     pub fn read(&self, path: &str) -> Result<Vec<u8>, String> {
@@ -431,7 +451,12 @@ fn walk_dir(dir: &Path, relative: &str, prefix: &str, out: &mut Vec<String>) {
         };
 
         if path.is_dir() {
-            walk_dir(&path, &virtual_path, prefix, out);
+            if prefix.is_empty()
+                || virtual_path.starts_with(prefix)
+                || prefix.starts_with(&format!("{virtual_path}/"))
+            {
+                walk_dir(&path, &virtual_path, prefix, out);
+            }
         } else if path.is_file() && (prefix.is_empty() || virtual_path.starts_with(prefix)) {
             out.push(virtual_path);
         }

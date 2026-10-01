@@ -1,7 +1,7 @@
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::movement::{self, UserCommand};
-use crate::network::events::EntitySnapshot;
+use crate::network::events::{EntityNetworked, EntitySnapshot};
 use crate::network::packet::STREAM_STATE;
 use crate::network::packet::{
     encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart,
@@ -12,9 +12,10 @@ use crate::network::usermessage::UserMsgReader;
 use crate::network::wait_socket;
 use crate::network::{ClientToServer, FromClient, NetSend, PacketType, ReliableBody, ServerToClient, RECV_BUDGET};
 use crate::r#enum::InputButtons;
+use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender};
@@ -80,6 +81,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut accumulated_time = 0.0;
     let mut peers = Vec::new();
     let mut players = Vec::new();
+    let _: () = game.run_hook("Initialize", ());
 
     loop {
         let now = Instant::now();
@@ -102,6 +104,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                 tick_count: game.tick_count,
             });
             game.entities.tick_all();
+            game.think_entities();
             simulate_players(&mut game, &mut players);
 
             ticked = true;
@@ -131,21 +134,25 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                                 ack: 0,
                             });
                             log::info!("[sv] spawn {handle:?}");
+                            let _: () = game.run_hook("PlayerSpawned", handle);
                             let mut idx = 0;
 
                             while idx < players.len() {
                                 if players[idx].addr != addr {
-                                    let origin = game
+                                    let (origin, angles) = game
                                         .entities
                                         .get(handle)
-                                        .map(|entity| entity.base().position)
-                                        .unwrap_or(Vector3::new(0.0, 28.0, 2.0));
+                                        .map(|entity| (entity.base().position, entity.base().angles))
+                                        .unwrap_or((Vector3::new(0.0, 28.0, 2.0), Angle3::default()));
                                     game.send_reliable_to(
                                         players[idx].addr,
                                         ServerToClient::EntitySpawned {
                                             handle,
                                             class_hash: Player::CLASS_HASH,
                                             position: origin,
+                                            angles,
+                                            owner: EntityHandle::NULL,
+                                            networked: Vec::new(),
                                         },
                                     );
                                 }
@@ -155,7 +162,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                         }
                     }
 
-                    emit_snapshot(&game, addr, generation);
+                    emit_snapshot(&mut game, addr, generation);
                     emit_voxel_baseline(&game, addr);
                     game.send_state_to(
                         addr,
@@ -225,8 +232,11 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             game.send_reliable(ServerToClient::UserMessage { hash, data });
         }
 
+        emit_entity_changes(&mut game);
+
         if ticked {
             emit_tick_state(&game, &players);
+            emit_predicted_state(&mut game, &players);
             emit_voxel_dirty(&mut game, &peers);
         }
 
@@ -726,7 +736,6 @@ fn drop_player(
 
         let handle = players[idx].player;
         game.entities.remove(handle);
-        game.send_reliable(ServerToClient::EntityDespawned { handle });
         players.remove(idx);
     }
 }
@@ -795,6 +804,7 @@ fn apply_command(
     base.position = position;
     base.velocity = velocity;
     base.angles = angles;
+    game.run_predicted(handle, cmd, true);
 
     true
 }
@@ -844,63 +854,82 @@ fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[S
 }
 
 #[cfg(feature = "server")]
-fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr, generation: u32) {
+fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketAddr, generation: u32) {
+    let mut states: HashMap<EntityHandle, EntityNetworked> = game
+        .networked_state(None)
+        .into_iter()
+        .map(|entity| (entity.handle, entity))
+        .collect();
     let mut pending = Vec::new();
     for (handle, entity) in game.entities.iter() {
+        if !entity.is_spawned() {
+            continue;
+        }
+
         let base = entity.base();
-        pending.push(EntitySnapshot {
-            handle,
-            class_hash: entity.class_hash(),
-            health: entity.net_health(),
-            position: base.position,
-            angles: base.angles,
-            velocity: base.velocity,
-            ack: 0,
-        });
+        pending.push((
+            EntitySnapshot {
+                handle,
+                class_hash: entity.class_hash(),
+                health: entity.net_health(),
+                position: base.position,
+                angles: base.angles,
+                velocity: base.velocity,
+                ack: 0,
+            },
+            states.remove(&handle),
+        ));
     }
 
     let mut batches = Vec::new();
     if pending.is_empty() {
-        batches.push(Vec::new());
+        batches.push((Vec::new(), Vec::new()));
     }
 
     let mut batch = Vec::new();
-    for entity in pending {
+    let mut networked = Vec::new();
+    for (entity, state) in pending {
+        let has_state = state.is_some();
         batch.push(entity);
-        if snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch) {
+        networked.extend(state);
+        if snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch, &networked) {
             continue;
         }
 
         let overflow = batch.pop().unwrap();
+        let overflow_state = if has_state { networked.pop() } else { None };
         if !batch.is_empty() {
-            batches.push(std::mem::take(&mut batch));
+            batches.push((std::mem::take(&mut batch), std::mem::take(&mut networked)));
         }
 
         batch.push(overflow);
-        if !snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch) {
+        networked.extend(overflow_state);
+        if !snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch, &networked) {
             log::warn!("[sv] snapshot entity too large");
             batch.clear();
+            networked.clear();
         }
     }
 
     if !batch.is_empty() {
-        batches.push(batch);
+        batches.push((batch, networked));
     }
 
     if batches.is_empty() {
-        batches.push(Vec::new());
+        batches.push((Vec::new(), Vec::new()));
     }
 
     let part_count = batches.len() as u16;
-    for (idx, entities) in batches.into_iter().enumerate() {
+    for (idx, (entities, networked)) in batches.into_iter().enumerate() {
         log::info!(
-            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={}",
+            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={} networked={}",
             addr,
             generation,
             idx == 0,
             idx,
             part_count,
-            entities.len()
+            entities.len(),
+            networked.len()
         );
         game.send_state_to(
             addr,
@@ -910,8 +939,157 @@ fn emit_snapshot(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr,
                 part: idx as u16,
                 parts: part_count,
                 entities,
+                networked,
             },
         );
+    }
+
+    let mut owners = Vec::new();
+    for (handle, entity) in game.entities.iter() {
+        let owner = entity.base().owner;
+
+        if entity.is_spawned() && !owner.is_null() {
+            owners.push((handle, owner));
+        }
+    }
+
+    for (handle, owner) in owners {
+        game.send_state_to(addr, ServerToClient::EntityOwner { handle, owner });
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_predicted_state(game: &mut GameState<FromClient, ServerToClient>, players: &[RemotePlayer]) {
+    let tick = game.tick_count;
+    let mut idx = 0;
+
+    while idx < players.len() {
+        let handle = players[idx].player;
+        let Some(player) = game.entities.get(handle).map(|entity| {
+            let base = entity.base();
+
+            EntitySnapshot {
+                handle,
+                class_hash: entity.class_hash(),
+                health: entity.net_health(),
+                position: base.position,
+                angles: base.angles,
+                velocity: base.velocity,
+                ack: players[idx].ack,
+            }
+        }) else {
+            idx += 1;
+
+            continue;
+        };
+
+        let mut event = ServerToClient::PredictedState {
+            tick,
+            player,
+            entities: game.predicted_state(handle),
+        };
+        let size = wincode::serialized_size(&event).unwrap() as usize;
+
+        log::trace!("[sv netvar] send predicted {:?} ack={} bytes={}", handle, players[idx].ack, size);
+
+        if size > unreliable_message_limit() {
+            log::warn!("[sv] predicted state too large for {:?}", handle);
+
+            if let ServerToClient::PredictedState { entities, .. } = &mut event {
+                entities.clear();
+            }
+        }
+
+        game.send_unreliable_to(players[idx].addr, event);
+        idx += 1;
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
+    for handle in game.take_despawned() {
+        game.send_reliable(ServerToClient::EntityDespawned { handle });
+    }
+
+    for handle in game.entities.take_owner_changed() {
+        let Some(owner) = game.entities.get(handle).map(|entity| entity.base().owner) else {
+            continue;
+        };
+
+        log::debug!("[sv netvar] send owner {:?} -> {:?}", handle, owner);
+        game.send_reliable(ServerToClient::EntityOwner { handle, owner });
+    }
+
+    for handle in game.entities.take_net_spawned() {
+        let Some((class_hash, position, angles, owner)) = game.entities.get(handle).map(|entity| {
+            (
+                entity.class_hash(),
+                entity.base().position,
+                entity.base().angles,
+                entity.base().owner,
+            )
+        }) else {
+            continue;
+        };
+
+        let networked = game
+            .networked_state(Some(handle))
+            .pop()
+            .map(|entity| entity.vars)
+            .unwrap_or_default();
+        log::debug!(
+            "[sv netvar] send spawn {:?} class={} owner={:?} vars={}",
+            handle,
+            class_hash,
+            owner,
+            networked.len()
+        );
+        game.send_reliable(ServerToClient::EntitySpawned {
+            handle,
+            class_hash,
+            position,
+            angles,
+            owner,
+            networked,
+        });
+    }
+
+    let updates = game.collect_networked();
+
+    if updates.is_empty() {
+        return;
+    }
+
+    let header = wincode::serialized_size(&ServerToClient::NetworkedUpdate {
+        entities: Vec::new(),
+    })
+    .unwrap() as usize;
+    let mut batch = Vec::new();
+    let mut size = header;
+    for entity in updates {
+        let entity_size = wincode::serialized_size(&entity).unwrap() as usize;
+
+        if encoded_packet_count(header + entity_size).is_none() {
+            log::warn!("[sv] networked update too large");
+
+            continue;
+        }
+
+        if encoded_packet_count(size + entity_size).is_none() {
+            log::debug!("[sv netvar] send update ents={} bytes={}", batch.len(), size);
+            game.send_reliable(ServerToClient::NetworkedUpdate {
+                entities: std::mem::take(&mut batch),
+            });
+            size = header;
+        }
+
+        batch.push(entity);
+        size += entity_size;
+    }
+
+    if !batch.is_empty() {
+        log::debug!("[sv netvar] send update ents={} bytes={}", batch.len(), size);
+        game.send_reliable(ServerToClient::NetworkedUpdate { entities: batch });
     }
 }
 
@@ -920,6 +1098,10 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
     let tick = game.tick_count;
     let mut pending = Vec::new();
     for (handle, entity) in game.entities.iter() {
+        if !entity.is_spawned() {
+            continue;
+        }
+
         let base = entity.base();
         pending.push(EntitySnapshot {
             handle,
@@ -1006,6 +1188,7 @@ fn snapshot_fits(
     part: u16,
     parts: u16,
     entities: &[EntitySnapshot],
+    networked: &[EntityNetworked],
 ) -> bool {
     let event = ServerToClient::WorldSnapshot {
         generation,
@@ -1013,6 +1196,7 @@ fn snapshot_fits(
         part,
         parts,
         entities: entities.to_vec(),
+        networked: networked.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
 

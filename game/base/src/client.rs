@@ -1,8 +1,8 @@
 use crate::entities::context::FrameInfo;
-use crate::entities::{EntityHandle, Player};
+use crate::entities::{EntityHandle, Player, ScriptedEntity};
 use crate::input::Action;
 use crate::movement::{self, NetPose, Prediction, UserCommand};
-use crate::network::events::EntitySnapshot;
+use crate::network::events::{EntityNetworked, EntitySnapshot, NetVar};
 use crate::network::packet::{
     bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT,
     KEEPALIVE_INTERVAL, STREAM_STATE,
@@ -115,6 +115,7 @@ impl TickIngress {
 struct BuiltSnapshot {
     reset: bool,
     entities: Vec<EntitySnapshot>,
+    networked: Vec<EntityNetworked>,
 }
 
 struct SnapshotIngress {
@@ -122,7 +123,7 @@ struct SnapshotIngress {
     reset: bool,
     part_count: u16,
     filled: u16,
-    parts: Vec<Option<Vec<EntitySnapshot>>>,
+    parts: Vec<Option<(Vec<EntitySnapshot>, Vec<EntityNetworked>)>>,
 }
 
 impl SnapshotIngress {
@@ -143,6 +144,7 @@ impl SnapshotIngress {
         part: u16,
         part_count: u16,
         entities: Vec<EntitySnapshot>,
+        networked: Vec<EntityNetworked>,
     ) -> Option<BuiltSnapshot> {
         if part_count == 0 || part >= part_count || part_count > 1024 {
             return None;
@@ -164,7 +166,7 @@ impl SnapshotIngress {
         }
 
         if self.parts[part as usize].is_none() {
-            self.parts[part as usize] = Some(entities);
+            self.parts[part as usize] = Some((entities, networked));
             self.filled = self.filled.saturating_add(1);
         }
 
@@ -173,15 +175,18 @@ impl SnapshotIngress {
         }
 
         let mut built_entities = Vec::new();
+        let mut built_networked = Vec::new();
         for slot in self.parts.drain(..) {
-            if let Some(batch) = slot {
+            if let Some((batch, networked)) = slot {
                 built_entities.extend(batch);
+                built_networked.extend(networked);
             }
         }
 
         let built = BuiltSnapshot {
             reset: self.reset,
             entities: built_entities,
+            networked: built_networked,
         };
         self.filled = 0;
         self.part_count = 0;
@@ -446,16 +451,18 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 part,
                                 parts,
                                 entities,
+                                networked,
                             } = message
                             {
                                 log::info!(
-                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={})",
-                                    entities.len()
+                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={})",
+                                    entities.len(),
+                                    networked.len()
                                 );
 
                                 if generation == world_generation {
                                     if let Some(built) = snapshot_ingress
-                                        .push(generation, reset, part, parts, entities)
+                                        .push(generation, reset, part, parts, entities, networked)
                                     {
                                         if built.reset {
                                             game.entities.clear();
@@ -465,8 +472,14 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                                         let now = session_start.elapsed().as_secs_f64();
                                         let interval = game.tick_interval;
+                                        let mut states: HashMap<EntityHandle, Vec<NetVar>> = built
+                                            .networked
+                                            .into_iter()
+                                            .map(|entity| (entity.handle, entity.vars))
+                                            .collect();
 
                                         for entity in built.entities {
+                                            let vars = states.remove(&entity.handle).unwrap_or_default();
                                             log::info!(
                                                 "[cl] snapshot spawn {:?} class={} hp={} pos=({:.2},{:.2},{:.2})",
                                                 entity.handle,
@@ -482,6 +495,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                                 now,
                                                 interval,
                                                 entity,
+                                                &vars,
                                             );
                                         }
 
@@ -620,6 +634,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         tick_count: game.tick_count,
                     });
                     game.entities.tick_all();
+                    game.think_entities();
 
                     if possessed {
                         predict_tick(&mut game, &mut prediction, buttons, forward, right, vr.yaw);
@@ -850,6 +865,7 @@ fn predict_tick(
         base.angles = angles;
     }
 
+    game.run_predicted(prediction.local, &cmd, true);
     game.send_unreliable(ClientToServer::PlayerInput {
         tick: cmd.tick,
         buttons: cmd.buttons,
@@ -862,6 +878,7 @@ fn reconcile_player(
     game: &mut GameState<FromServer, ClientToServer>,
     prediction: &mut Prediction,
     snapshot: &EntitySnapshot,
+    predicted: &[EntityNetworked],
 ) {
     if snapshot.handle != prediction.local {
         return;
@@ -892,15 +909,33 @@ fn reconcile_player(
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
     let pending = prediction.pending();
-    prediction.replay(
-        &mut position,
-        &mut velocity,
-        &mut angles,
-        dt,
-        gravity,
-        &game.brush_world,
-        &game.voxel_world,
-    );
+    let handle = snapshot.handle;
+    let mut prev = prediction.base_buttons();
+    game.begin_reconcile(predicted);
+
+    for cmd in prediction.commands() {
+        movement::step(
+            &mut position,
+            &mut velocity,
+            &mut angles,
+            &cmd,
+            prev,
+            dt,
+            gravity,
+            &game.brush_world,
+            &game.voxel_world,
+        );
+        prev = cmd.buttons;
+
+        if let Some(entity) = game.entities.get_mut(handle) {
+            let base = entity.base_mut();
+            base.position = position;
+            base.velocity = velocity;
+            base.angles = angles;
+        }
+
+        game.run_predicted(handle, &cmd, false);
+    }
 
     let dx = predicted_pos.x - position.x;
     let dy = predicted_pos.y - position.y;
@@ -940,6 +975,7 @@ fn reconcile_player(
         base.angles = angles;
     }
 
+    game.end_reconcile();
     prediction.correct_view(position);
 
     let _: () = game.run_hook(
@@ -1032,6 +1068,8 @@ fn apply_server_event(
 ) {
     match &message {
         ServerToClient::TickState { .. }
+        | ServerToClient::PredictedState { .. }
+        | ServerToClient::NetworkedUpdate { .. }
         | ServerToClient::Pong { .. }
         | ServerToClient::ServerTick { .. }
         | ServerToClient::VoxelChunk(_) => {
@@ -1051,6 +1089,7 @@ fn apply_server_event(
         }
         ServerToClient::PlayerSpawned { handle } => {
             prediction.possess(handle);
+            game.set_local_player(handle);
             remotes.remove(&handle);
             let _: () = game.run_hook("PlayerSpawned", handle);
         }
@@ -1131,32 +1170,75 @@ fn apply_server_event(
             handle,
             class_hash,
             position,
+            angles,
+            owner,
+            networked,
         } => {
-            if class_hash == Player::CLASS_HASH && !game.entities.is_valid(handle) {
+            if game.entities.is_valid(handle) {
+                return;
+            }
+
+            if class_hash == Player::CLASS_HASH {
                 let mut player = Player::new();
                 player.base.position = position;
+                player.base.angles = angles;
+                player.base.owner = owner;
                 game.entities.insert_at(handle, Box::new(player));
-                note_remote(
-                    remotes,
-                    handle,
-                    NetPose {
-                        tick: 0,
-                        time: now,
-                        position,
-                        angles: Angle3::new(0.0, 0.0, 0.0),
-                        velocity: Vector3::new(0.0, 0.0, 0.0),
-                    },
-                    game.tick_interval,
-                );
+            } else if !spawn_scripted(
+                game,
+                handle,
+                class_hash,
+                position,
+                angles,
+                Vector3::new(0.0, 0.0, 0.0),
+                owner,
+                &networked,
+            ) {
+                return;
             }
+
+            note_remote(
+                remotes,
+                handle,
+                NetPose {
+                    tick: 0,
+                    time: now,
+                    position,
+                    angles,
+                    velocity: Vector3::new(0.0, 0.0, 0.0),
+                },
+                game.tick_interval,
+            );
         }
         ServerToClient::EntityDespawned { handle } => {
             game.entities.remove(handle);
+            game.sync_entities();
             remotes.remove(&handle);
 
             if prediction.local == handle {
                 prediction.clear();
+                game.set_local_player(EntityHandle::NULL);
             }
+        }
+        ServerToClient::NetworkedUpdate { entities } => {
+            game.apply_networked(&entities);
+        }
+        ServerToClient::PredictedState {
+            tick: _,
+            player,
+            entities,
+        } => {
+            if player.handle == prediction.local {
+                reconcile_player(game, prediction, &player, &entities);
+            }
+        }
+        ServerToClient::EntityOwner { handle, owner } => {
+            let Some(entity) = game.entities.get_mut(handle) else {
+                return;
+            };
+
+            entity.base_mut().owner = owner;
+            game.owner_changed(handle, owner);
         }
         ServerToClient::TickState {
             tick,
@@ -1173,8 +1255,6 @@ fn apply_server_event(
 
                 for snapshot in entities {
                     if snapshot.handle == prediction.local {
-                        reconcile_player(game, prediction, &snapshot);
-
                         continue;
                     }
 
@@ -1913,19 +1993,35 @@ fn apply_spawn(
     now: f64,
     interval: f64,
     entity: EntitySnapshot,
+    vars: &[NetVar],
 ) {
-    if entity.class_hash != Player::CLASS_HASH {
-        log::warn!("[cl] unknown class {}", entity.class_hash);
+    if entity.class_hash == Player::CLASS_HASH {
+        let mut player = Player::new();
+        player.health = entity.health;
+        player.base.position = entity.position;
+        player.base.angles = entity.angles;
+        player.base.velocity = entity.velocity;
+        game.entities.insert_at(entity.handle, Box::new(player));
 
+        if !vars.is_empty() {
+            game.apply_networked(&[EntityNetworked {
+                handle: entity.handle,
+                vars: vars.to_vec(),
+            }]);
+        }
+    } else if !spawn_scripted(
+        game,
+        entity.handle,
+        entity.class_hash,
+        entity.position,
+        entity.angles,
+        entity.velocity,
+        EntityHandle::NULL,
+        vars,
+    ) {
         return;
     }
 
-    let mut player = Player::new();
-    player.health = entity.health;
-    player.base.position = entity.position;
-    player.base.angles = entity.angles;
-    player.base.velocity = entity.velocity;
-    game.entities.insert_at(entity.handle, Box::new(player));
     note_remote(
         remotes,
         entity.handle,
@@ -1938,4 +2034,36 @@ fn apply_spawn(
         },
         interval,
     );
+}
+
+fn spawn_scripted(
+    game: &mut GameState<FromServer, ClientToServer>,
+    handle: EntityHandle,
+    class_hash: u32,
+    position: Vector3,
+    angles: Angle3,
+    velocity: Vector3,
+    owner: EntityHandle,
+    vars: &[NetVar],
+) -> bool {
+    let mut entity = ScriptedEntity::new(class_hash);
+    entity.spawned = true;
+    entity.base.position = position;
+    entity.base.angles = angles;
+    entity.base.velocity = velocity;
+    entity.base.owner = owner;
+
+    if !game.entities.insert_at(handle, Box::new(entity)) {
+        return false;
+    }
+
+    if game.net_spawn(handle, vars) {
+        return true;
+    }
+
+    log::warn!("[cl] unknown class {}", class_hash);
+    game.entities.remove(handle);
+    game.sync_entities();
+
+    false
 }

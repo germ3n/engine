@@ -1,10 +1,14 @@
 use crate::console::{ConVar, ConVarValue};
-use crate::entities::EntityList;
+use crate::entities::{EntityHandle, EntityList};
 use crate::fs::Fs;
 use crate::input::{binds_path, load_or_defaults, Binds};
+use crate::movement::UserCommand;
+use crate::network::events::{EntityNetworked, NetVar};
 use crate::network::NetSend;
 use crate::network::NetWake;
 use crate::platform::PadCache;
+use crate::script::libs::engine::publish_clock;
+use crate::script::libs::ents::EntityScope;
 use crate::script::{Realm, ScriptEngine};
 use crate::world::{BrushMap, VoxelWorld};
 use std::collections::HashMap;
@@ -29,6 +33,7 @@ pub struct GameState<In, Out> {
     pub cur_time: f64,
     pub frame_time: f64,
     pub tick_count: u64,
+    despawned: Vec<EntityHandle>,
     wake: NetWake,
 }
 
@@ -121,32 +126,110 @@ impl<In, Out> GameState<In, Out> {
             cur_time: 0.0,
             frame_time: 0.0,
             tick_count: 0,
+            despawned: Vec::new(),
             wake,
         }
     }
 
-    pub fn run_hook<A, R>(&self, hook_name: &str, args: A) -> R
+    fn with_entities<R>(&mut self, f: impl FnOnce(&ScriptEngine) -> R) -> R {
+        let removed = self.entities.take_removed();
+        let entities: *mut EntityList = &mut self.entities;
+        let _scope = EntityScope::new(&self.script_engine.entity_access, entities);
+
+        if !removed.is_empty() {
+            if matches!(self.realm, Realm::Server) {
+                for (handle, spawned) in &removed {
+                    if *spawned {
+                        self.despawned.push(*handle);
+                    }
+                }
+            }
+
+            self.script_engine.sync_removed(&removed);
+        }
+
+        f(&self.script_engine)
+    }
+
+    pub fn run_hook<A, R>(&mut self, hook_name: &str, args: A) -> R
     where
         A: mlua::IntoLuaMulti,
         R: mlua::FromLuaMulti,
     {
-        self.script_engine.run_hook(
-            hook_name,
-            self.cur_time,
-            self.frame_time,
-            self.tick_count,
-            args,
-        )
+        let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
+
+        self.with_entities(|engine| {
+            engine.run_hook(hook_name, cur_time, frame_time, tick_count, args)
+        })
     }
 
-    pub fn run_usermessage<A: mlua::IntoLuaMulti>(&self, hash: u32, args: A) {
-        self.script_engine.run_usermessage(
-            hash,
-            self.cur_time,
-            self.frame_time,
-            self.tick_count,
-            args,
-        );
+    pub fn run_usermessage<A: mlua::IntoLuaMulti>(&mut self, hash: u32, args: A) {
+        let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
+
+        self.with_entities(|engine| {
+            engine.run_usermessage(hash, cur_time, frame_time, tick_count, args);
+        });
+    }
+
+    pub fn think_entities(&mut self) {
+        let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
+
+        self.with_entities(|engine| engine.think_entities(cur_time, frame_time, tick_count));
+    }
+
+    pub fn sync_entities(&mut self) {
+        self.with_entities(|_| ());
+    }
+
+    pub fn take_despawned(&mut self) -> Vec<EntityHandle> {
+        self.sync_entities();
+
+        std::mem::take(&mut self.despawned)
+    }
+
+    pub fn net_spawn(&mut self, handle: EntityHandle, vars: &[NetVar]) -> bool {
+        self.with_entities(|engine| engine.net_spawn(handle, vars))
+    }
+
+    pub fn collect_networked(&mut self) -> Vec<EntityNetworked> {
+        self.with_entities(|engine| engine.collect_networked())
+    }
+
+    pub fn networked_state(&mut self, handle: Option<EntityHandle>) -> Vec<EntityNetworked> {
+        self.with_entities(|engine| engine.networked_state(handle))
+    }
+
+    pub fn apply_networked(&mut self, entities: &[EntityNetworked]) {
+        self.with_entities(|engine| engine.apply_networked(entities));
+    }
+
+    pub fn run_predicted(&mut self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {
+        let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
+
+        self.with_entities(|engine| {
+            publish_clock(&engine.lua, cur_time, frame_time, tick_count);
+            engine.run_predicted(handle, cmd, first_time);
+        });
+    }
+
+    pub fn predicted_state(&mut self, handle: EntityHandle) -> Vec<EntityNetworked> {
+        self.with_entities(|engine| engine.predicted_state(handle))
+    }
+
+    pub fn begin_reconcile(&mut self, entities: &[EntityNetworked]) {
+        self.with_entities(|engine| engine.begin_reconcile(entities));
+    }
+
+    pub fn end_reconcile(&mut self) {
+        self.with_entities(|engine| engine.end_reconcile());
+    }
+
+    pub fn owner_changed(&mut self, handle: EntityHandle, owner: EntityHandle) {
+        self.with_entities(|engine| engine.owner_changed(handle, owner));
+    }
+
+    pub fn set_local_player(&mut self, handle: EntityHandle) {
+        self.with_entities(|engine| engine.set_local_player(handle));
     }
 
     pub fn send_reliable(&self, event: Out) {

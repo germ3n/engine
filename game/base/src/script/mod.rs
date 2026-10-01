@@ -1,8 +1,50 @@
+pub mod autorun;
 pub mod engine;
 pub mod libs;
 
 pub use engine::Realm;
 pub use engine::ScriptEngine;
+
+use std::collections::BTreeMap;
+
+pub fn run_file(lua: &mlua::Lua, path: &str) -> Result<(), String> {
+    let bytes = crate::fs::read(path)?;
+    let mode = if bytes.starts_with(b"\x1bLJ") {
+        mlua::chunk::ChunkMode::Binary
+    } else {
+        mlua::chunk::ChunkMode::Text
+    };
+
+    lua.load(&bytes)
+        .set_name(path)
+        .set_mode(mode)
+        .exec()
+        .map_err(|err| err.to_string())
+}
+
+pub fn pick_scripts(fs: &crate::fs::Fs, paths: &[String]) -> Vec<String> {
+    let mut picked: BTreeMap<&str, (&String, Option<usize>, bool)> = BTreeMap::new();
+
+    for path in paths {
+        let (stem, compiled) = if let Some(stem) = path.strip_suffix(".luac") {
+            (stem, true)
+        } else if let Some(stem) = path.strip_suffix(".lua") {
+            (stem, false)
+        } else {
+            continue;
+        };
+        let priority = fs.priority(path);
+
+        match picked.get(stem) {
+            Some((_, best, best_compiled)) if (*best, *best_compiled) >= (priority, compiled) => {}
+            _ => {
+                picked.insert(stem, (path, priority, compiled));
+            }
+        }
+    }
+
+    picked.into_values().map(|(path, _, _)| path.clone()).collect()
+}
 
 pub fn exec(lua: &mlua::Lua, name: &str, path: &str) {
     let bytes = read(path);
@@ -58,6 +100,8 @@ mod tests {
             "lua/libs/net.luac",
             "lua/libs/vector3.luac",
             "lua/libs/angle3.luac",
+            "lua/libs/ents.luac",
+            "lua/libs/scripted_ents.luac",
             "lua/menu/menu.luac",
         ];
 

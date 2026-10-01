@@ -161,6 +161,8 @@ fn compile_bundled_lua() {
         "src/script/libs/net.lua",
         "src/script/libs/vector3.lua",
         "src/script/libs/angle3.lua",
+        "src/script/libs/ents.lua",
+        "src/script/libs/scripted_ents.lua",
         "src/lua/menu/menu.lua",
     ];
 
@@ -169,6 +171,48 @@ fn compile_bundled_lua() {
         let stem = src.file_stem().unwrap().to_string_lossy();
         let dest = lua_out.join(format!("{stem}.luac"));
         compile_lua(&src, &dest, strip);
+    }
+
+    for relative in content_scripts(&manifest_dir) {
+        let src = manifest_dir.join("src/lua").join(&relative);
+        let dest = lua_out.join("content").join(format!("{relative}c"));
+        compile_lua(&src, &dest, strip);
+    }
+}
+
+const CONTENT_DIRS: [&str; 2] = ["autorun", "entities"];
+
+fn content_scripts(manifest_dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+
+    for dir in CONTENT_DIRS {
+        let root = manifest_dir.join("src/lua").join(dir);
+        println!("cargo:rerun-if-changed={}", root.display());
+        collect_lua(&root, dir, &mut out);
+    }
+
+    out.sort();
+
+    out
+}
+
+fn collect_lua(dir: &std::path::Path, relative: &str, out: &mut Vec<String>) {
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in listing.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let child = format!("{relative}/{name}");
+
+        if path.is_dir() {
+            collect_lua(&path, &child, out);
+        } else if name.ends_with(".lua") {
+            out.push(child);
+        }
     }
 }
 
@@ -186,6 +230,8 @@ fn write_base_pak() {
         ("lua/libs/net.luac", "net.luac"),
         ("lua/libs/vector3.luac", "vector3.luac"),
         ("lua/libs/angle3.luac", "angle3.luac"),
+        ("lua/libs/ents.luac", "ents.luac"),
+        ("lua/libs/scripted_ents.luac", "scripted_ents.luac"),
         ("lua/menu/menu.luac", "menu.luac"),
     ];
     let mut owned = Vec::new();
@@ -197,6 +243,14 @@ fn write_base_pak() {
             panic!("failed to read {}: {err}", path.display());
         });
         owned.push((virtual_path.to_string(), bytes));
+    }
+
+    for relative in content_scripts(&manifest_dir) {
+        let path = lua_out.join("content").join(format!("{relative}c"));
+        let bytes = std::fs::read(&path).unwrap_or_else(|err| {
+            panic!("failed to read {}: {err}", path.display());
+        });
+        owned.push((format!("lua/{relative}c"), bytes));
     }
 
     for (virtual_path, source) in shaders {

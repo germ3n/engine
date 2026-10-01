@@ -23,6 +23,9 @@ pub fn register_engine_lib(lua: &Lua, tick_interval: f64) {
     engine_table
         .set("tick_count", 0u64)
         .expect("[engine] Failed setting tick_count");
+    engine_table
+        .set("first_time_predicted", true)
+        .expect("[engine] Failed setting first_time_predicted");
     lua.set_named_registry_value(ENGINE_TABLE, engine_table.clone())
         .expect("Failed to store engine table");
     lua.globals()

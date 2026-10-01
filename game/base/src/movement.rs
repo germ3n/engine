@@ -206,6 +206,14 @@ impl Prediction {
             prev = cmd.buttons;
         }
     }
+
+    pub fn base_buttons(&self) -> InputButtons {
+        self.prev_buttons
+    }
+
+    pub fn commands(&self) -> Vec<UserCommand> {
+        self.cmds.iter().copied().collect()
+    }
 }
 
 pub fn gravity(cvars: &HashMap<String, Arc<ConVar>>) -> f64 {
