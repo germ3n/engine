@@ -174,8 +174,8 @@ fn compile_sound_device() {
             }
         }
         "android" => {
-            println!("cargo:rustc-link-lib=aaudio");
-            println!("cargo:rustc-link-lib=OpenSLES");
+            println!("cargo:rustc-link-lib=dl");
+            println!("cargo:rustc-link-lib=m");
         }
         "linux" => {
             println!("cargo:rustc-link-lib=dl");
