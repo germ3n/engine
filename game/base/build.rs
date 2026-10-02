@@ -229,6 +229,14 @@ fn write_wiki() {
         manifest_dir.join("src/script/libs/net.rs").display()
     );
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let dest = wiki_html(&out_dir, &manifest_dir);
+
+    if let Err(err) = wiki::generate(&src, &dest) {
+        panic!("wiki: {err}");
+    }
+}
+
+fn wiki_html(out_dir: &std::path::Path, manifest_dir: &std::path::Path) -> std::path::PathBuf {
     let target_dir = out_dir
         .parent()
         .and_then(|path| path.parent())
@@ -236,11 +244,8 @@ fn write_wiki() {
         .and_then(|path| path.parent())
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| manifest_dir.join("../../target"));
-    let dest = target_dir.join("wiki/index.html");
 
-    if let Err(err) = wiki::generate(&src, &dest) {
-        panic!("wiki: {err}");
-    }
+    target_dir.join("wiki/index.html")
 }
 
 fn write_base_pak() {
@@ -291,6 +296,12 @@ fn write_base_pak() {
         });
         owned.push((virtual_path.to_string(), bytes));
     }
+
+    let wiki_path = wiki_html(&out_dir, &manifest_dir);
+    let wiki_bytes = std::fs::read(&wiki_path).unwrap_or_else(|err| {
+        panic!("failed to read {}: {err}", wiki_path.display());
+    });
+    owned.push(("wiki/index.html".to_string(), wiki_bytes));
 
     for (name, bytes) in &owned {
         files.push((name.as_str(), bytes.as_slice()));
