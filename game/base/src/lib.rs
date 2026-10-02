@@ -1,3 +1,4 @@
+mod anim;
 mod platform;
 
 mod client;

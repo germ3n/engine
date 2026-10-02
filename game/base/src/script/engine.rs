@@ -5,7 +5,7 @@ use crate::movement::UserCommand;
 use crate::network::events::{networked_summary, vars_summary, EntityNetworked, NetVar};
 use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
-use crate::script::libs::ents::EntityAccess;
+use crate::script::libs::ents::{AnimAccess, EntityAccess};
 use crate::script::libs::{
     register_angle3_lib, register_console_lib, register_convar_lib, register_engine_lib,
     register_ents_lib, register_net_lib, register_pad_lib, register_scripted_ents_lib,
@@ -61,6 +61,7 @@ pub struct ScriptEngine {
     pub tick_interval: f64,
     pub render_queue: RenderQueue,
     pub entity_access: EntityAccess,
+    pub anim_access: AnimAccess,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -109,8 +110,9 @@ impl ScriptEngine {
         }
 
         let entity_access: EntityAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let anim_access: AnimAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         if !matches!(realm, Realm::Menu) {
-            register_ents_lib(&lua, entity_access.clone());
+            register_ents_lib(&lua, entity_access.clone(), anim_access.clone());
             register_scripted_ents_lib(&lua);
             crate::script::libs::scripted_ents::load_entities(&lua, realm);
             crate::script::autorun::load_autorun(&lua, realm);
@@ -133,6 +135,7 @@ impl ScriptEngine {
             tick_interval,
             render_queue: render_queue.clone(),
             entity_access,
+            anim_access,
             usermsg_receiver,
         }
     }
@@ -281,6 +284,16 @@ impl ScriptEngine {
         }
 
         if let Err(err) = crate::script::libs::ents::present_interpolated(&self.lua, time) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
+        }
+    }
+
+    pub fn anim_event(&self, handle: EntityHandle, name: &str) {
+        if !self.has_ents() {
+            return;
+        }
+
+        if let Err(err) = crate::script::libs::ents::anim_event(&self.lua, handle, name) {
             log::error!("[LUA ENTS ERROR]: {}", err);
         }
     }

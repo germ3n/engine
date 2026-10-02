@@ -1,5 +1,6 @@
 use crate::platform::Surface;
 use crate::ui::shader;
+use crate::ui::skin::SkinBatch;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -31,6 +32,7 @@ pub struct OpenGLWindow {
     pub vbo: glow::Buffer,
     pub glyph_brushes: HashMap<String, GlyphBrush>,
     colored_mesh: ColoredMesh,
+    skin: SkinCache,
     vr: Option<Headset>,
     vr_failed: bool,
     vr_enable: bool,
@@ -151,6 +153,7 @@ impl OpenGLWindow {
             (program, vao, vbo)
         };
         let colored_mesh = ColoredMesh::new(&gl, &cache);
+        let skin = SkinCache::new(&gl, &cache);
         let mut opengl_window = Self {
             width,
             height,
@@ -162,6 +165,7 @@ impl OpenGLWindow {
             vbo,
             glyph_brushes: HashMap::new(),
             colored_mesh,
+            skin,
             vr: None,
             vr_failed: false,
             vr_enable: false,
@@ -235,6 +239,11 @@ impl Window for OpenGLWindow {
         }
     }
 
+    fn draw_skinned(&mut self, batch: &SkinBatch, view: &SceneView) {
+        let matrix = gl_view_proj(view);
+        self.skin.draw(&self.gl, batch, &matrix);
+    }
+
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
         self.colored_mesh.sync(&self.gl, vertices, revision);
         let eyes = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
@@ -274,6 +283,8 @@ impl Window for OpenGLWindow {
         let vertices: [f32; 12] = [x, y, x + w, y, x, y + h, x, y + h, x + w, y, x + w, y + h];
 
         unsafe {
+            self.gl.disable(glow::DEPTH_TEST);
+            self.gl.depth_mask(false);
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
@@ -360,6 +371,8 @@ impl Window for OpenGLWindow {
 
     fn render_text(&mut self) {
         unsafe {
+            self.gl.disable(glow::DEPTH_TEST);
+            self.gl.depth_mask(false);
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
@@ -535,6 +548,293 @@ impl ColoredMesh {
             gl.bind_vertex_array(Some(self.vao));
             gl.draw_arrays(glow::TRIANGLES, 0, self.vertex_count);
         }
+    }
+}
+
+struct SkinGpu {
+    vao: glow::VertexArray,
+    vbo: glow::Buffer,
+    ibo: glow::Buffer,
+    instances: glow::Buffer,
+    albedo: glow::Texture,
+    palette: glow::Texture,
+    index_count: i32,
+    vertices: usize,
+    albedo_size: (u32, u32),
+    palette_size: (i32, i32),
+}
+
+struct SkinCache {
+    program: glow::Program,
+    view_proj: Option<glow::UniformLocation>,
+    bones: Option<glow::UniformLocation>,
+    palette_loc: Option<glow::UniformLocation>,
+    albedo_loc: Option<glow::UniformLocation>,
+    meshes: HashMap<u64, SkinGpu>,
+}
+
+impl SkinCache {
+    fn new(gl: &glow::Context, cache: &shader::Registry) -> Self {
+        let program = link_skinned_program(gl, cache);
+
+        unsafe {
+            Self {
+                view_proj: gl.get_uniform_location(program, "_immediates_binding_vs.view_proj"),
+                bones: gl.get_uniform_location(program, "_immediates_binding_vs.bones"),
+                palette_loc: gl.get_uniform_location(program, "_group_0_binding_2_vs"),
+                albedo_loc: gl.get_uniform_location(program, "_group_0_binding_0_fs"),
+                program,
+                meshes: HashMap::new(),
+            }
+        }
+    }
+
+    fn draw(&mut self, gl: &glow::Context, batch: &SkinBatch, view_proj: &[f32; 16]) {
+        if batch.groups.is_empty() {
+            return;
+        }
+
+        unsafe {
+            gl.disable(glow::BLEND);
+            gl.enable(glow::DEPTH_TEST);
+            gl.depth_func(glow::LESS);
+            gl.enable(glow::CULL_FACE);
+            gl.cull_face(glow::BACK);
+            gl.use_program(Some(self.program));
+            gl.uniform_matrix_4_f32_slice(self.view_proj.as_ref(), false, view_proj);
+        }
+
+        let mut idx = 0;
+
+        while idx < batch.groups.len() {
+            let group = &batch.groups[idx];
+            self.sync(gl, group);
+            let gpu = &self.meshes[&group.key];
+
+            unsafe {
+                gl.uniform_1_u32(self.bones.as_ref(), group.bones);
+                gl.uniform_1_i32(self.palette_loc.as_ref(), 1);
+                gl.uniform_1_i32(self.albedo_loc.as_ref(), 0);
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(gpu.albedo));
+                gl.active_texture(glow::TEXTURE1);
+                gl.bind_texture(glow::TEXTURE_2D, Some(gpu.palette));
+                gl.bind_vertex_array(Some(gpu.vao));
+                gl.draw_elements_instanced(
+                    glow::TRIANGLES,
+                    gpu.index_count,
+                    glow::UNSIGNED_INT,
+                    0,
+                    group.palette_h as i32,
+                );
+                gl.bind_vertex_array(None);
+            }
+
+            idx += 1;
+        }
+
+        unsafe {
+            gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::CULL_FACE);
+            gl.depth_mask(false);
+        }
+    }
+
+    fn sync(&mut self, gl: &glow::Context, group: &crate::ui::skin::SkinGroup) {
+        let vertices = group.vertices.as_ptr() as usize;
+        let fresh = match self.meshes.get(&group.key) {
+            Some(gpu) => gpu.vertices != vertices,
+            None => true,
+        };
+
+        if fresh {
+            if let Some(old) = self.meshes.remove(&group.key) {
+                drop_skin(gl, old);
+            }
+
+            self.meshes.insert(group.key, upload_skin(gl, group));
+        }
+
+        let Some(gpu) = self.meshes.get_mut(&group.key) else {
+            return;
+        };
+
+        unsafe {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(gpu.instances));
+            let bytes = std::slice::from_raw_parts(
+                group.instances.as_ptr() as *const u8,
+                group.instances.len() * 4,
+            );
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+            let width = group.palette_w as i32;
+            let height = group.palette_h as i32;
+
+            if gpu.palette_size != (width, height) {
+                gl.bind_texture(glow::TEXTURE_2D, Some(gpu.palette));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA32F as i32,
+                    width,
+                    height,
+                    0,
+                    glow::RGBA,
+                    glow::FLOAT,
+                    Some(std::slice::from_raw_parts(
+                        group.palette.as_ptr() as *const u8,
+                        group.palette.len() * 4,
+                    )),
+                );
+                gpu.palette_size = (width, height);
+            } else {
+                gl.bind_texture(glow::TEXTURE_2D, Some(gpu.palette));
+                gl.tex_sub_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    width,
+                    height,
+                    glow::RGBA,
+                    glow::FLOAT,
+                    glow::PixelUnpackData::Slice(std::slice::from_raw_parts(
+                        group.palette.as_ptr() as *const u8,
+                        group.palette.len() * 4,
+                    )),
+                );
+            }
+        }
+    }
+}
+
+fn upload_skin(gl: &glow::Context, group: &crate::ui::skin::SkinGroup) -> SkinGpu {
+    unsafe {
+        let vao = gl.create_vertex_array().unwrap();
+        let vbo = gl.create_buffer().unwrap();
+        let ibo = gl.create_buffer().unwrap();
+        let instances = gl.create_buffer().unwrap();
+        let albedo = gl.create_texture().unwrap();
+        let palette = gl.create_texture().unwrap();
+        gl.bind_vertex_array(Some(vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        let vertex_bytes = std::slice::from_raw_parts(
+            group.vertices.as_ptr() as *const u8,
+            group.vertices.len() * 4,
+        );
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, vertex_bytes, glow::STATIC_DRAW);
+        let stride = 64;
+        attrib_f32(gl, 0, 3, stride, 0);
+        attrib_f32(gl, 1, 3, stride, 12);
+        attrib_f32(gl, 2, 2, stride, 24);
+        attrib_f32(gl, 3, 4, stride, 32);
+        attrib_f32(gl, 4, 4, stride, 48);
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(instances));
+        let mut attr = 5;
+
+        while attr < 9 {
+            let offset = (attr - 5) * 16;
+            attrib_f32(gl, attr, 4, 64, offset as i32);
+            gl.vertex_attrib_divisor(attr, 1);
+            attr += 1;
+        }
+
+        gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+        let index_bytes = std::slice::from_raw_parts(
+            group.indices.as_ptr() as *const u8,
+            group.indices.len() * 4,
+        );
+        gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, index_bytes, glow::STATIC_DRAW);
+        gl.bind_texture(glow::TEXTURE_2D, Some(albedo));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            group.albedo_w as i32,
+            group.albedo_h as i32,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            Some(group.albedo.as_ref()),
+        );
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
+        gl.bind_texture(glow::TEXTURE_2D, Some(palette));
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.bind_vertex_array(None);
+
+        SkinGpu {
+            vao,
+            vbo,
+            ibo,
+            instances,
+            albedo,
+            palette,
+            index_count: group.indices.len() as i32,
+            vertices: group.vertices.as_ptr() as usize,
+            albedo_size: (group.albedo_w, group.albedo_h),
+            palette_size: (0, 0),
+        }
+    }
+}
+
+fn attrib_f32(gl: &glow::Context, index: u32, size: i32, stride: i32, offset: i32) {
+    unsafe {
+        gl.vertex_attrib_pointer_f32(index, size, glow::FLOAT, false, stride, offset);
+        gl.enable_vertex_attrib_array(index);
+    }
+}
+
+fn drop_skin(gl: &glow::Context, gpu: SkinGpu) {
+    unsafe {
+        gl.delete_vertex_array(gpu.vao);
+        gl.delete_buffer(gpu.vbo);
+        gl.delete_buffer(gpu.ibo);
+        gl.delete_buffer(gpu.instances);
+        gl.delete_texture(gpu.albedo);
+        gl.delete_texture(gpu.palette);
+    }
+}
+
+fn link_skinned_program(gl: &glow::Context, cache: &shader::Registry) -> glow::Program {
+    let source = crate::ui::shaders::Program::Skinned.wgsl();
+    let vert = cache
+        .glsl(
+            &source,
+            naga::ShaderStage::Vertex,
+            "vs_main",
+            shader::glsl_version(),
+        )
+        .expect("skin vert");
+    let frag = cache
+        .glsl(
+            &source,
+            naga::ShaderStage::Fragment,
+            "fs_main",
+            shader::glsl_version(),
+        )
+        .expect("skin frag");
+
+    unsafe {
+        let program = gl.create_program().unwrap();
+        let vs = compile_mesh_shader(gl, glow::VERTEX_SHADER, &vert);
+        let fs = compile_mesh_shader(gl, glow::FRAGMENT_SHADER, &frag);
+        gl.attach_shader(program, vs);
+        gl.attach_shader(program, fs);
+        gl.link_program(program);
+
+        if !gl.get_program_link_status(program) {
+            log::warn!("[gl] skin link {}", gl.get_program_info_log(program));
+        }
+
+        gl.delete_shader(vs);
+        gl.delete_shader(fs);
+
+        program
     }
 }
 

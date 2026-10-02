@@ -6,6 +6,44 @@ use crate::world::ChunkUpdate;
 use std::net::SocketAddr;
 use wincode::{SchemaRead, SchemaWrite};
 
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug, PartialEq)]
+pub struct AnimSnapshot {
+    pub sequence: u16,
+    pub gesture: u16,
+    pub sequence_tick: u64,
+    pub gesture_tick: u64,
+    pub sequence_rate: f32,
+    pub gesture_rate: f32,
+    pub gesture_weight: f32,
+}
+
+impl Default for AnimSnapshot {
+    fn default() -> Self {
+        Self {
+            sequence: u16::MAX,
+            gesture: u16::MAX,
+            sequence_tick: 0,
+            gesture_tick: 0,
+            sequence_rate: 1.0,
+            gesture_rate: 1.0,
+            gesture_weight: 1.0,
+        }
+    }
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug)]
+pub struct EntityAnimNet {
+    pub handle: EntityHandle,
+    pub anim: AnimSnapshot,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub struct EntityModel {
+    pub handle: EntityHandle,
+    pub mesh: String,
+    pub clips: String,
+}
+
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub struct EntitySnapshot {
     pub handle: EntityHandle,
@@ -15,6 +53,7 @@ pub struct EntitySnapshot {
     pub angles: Angle3,
     pub velocity: Vector3,
     pub ack: u64,
+    pub anim: AnimSnapshot,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
@@ -82,6 +121,7 @@ pub enum ServerToClient {
         tick: u64,
         player: EntitySnapshot,
         entities: Vec<EntityNetworked>,
+        anims: Vec<EntityAnimNet>,
     },
     EntityParented {
         handle: EntityHandle,
@@ -115,6 +155,11 @@ pub enum ServerToClient {
     ModelChanged {
         handle: EntityHandle,
         model: String,
+    },
+    AnimModel {
+        handle: EntityHandle,
+        mesh: String,
+        clips: String,
     },
     FlagsChanged {
         handle: EntityHandle,
@@ -188,6 +233,7 @@ pub enum ServerToClient {
         entities: Vec<EntitySnapshot>,
         networked: Vec<EntityNetworked>,
         owners: Vec<EntityOwnership>,
+        models: Vec<EntityModel>,
     },
     TickState {
         tick: u64,
@@ -350,11 +396,13 @@ impl ServerToClient {
                 tick,
                 player,
                 entities,
+                anims,
             } => format!(
-                "PredictedState(tick={tick} ack={} player={:?} ents={})",
+                "PredictedState(tick={tick} ack={} player={:?} ents={} anims={})",
                 player.ack,
                 player.handle,
-                entities.len()
+                entities.len(),
+                anims.len()
             ),
             ServerToClient::EntityParented {
                 handle,
@@ -386,6 +434,9 @@ impl ServerToClient {
             } => format!("PlayerDied({handle:?} killer={killer:?})"),
             ServerToClient::ModelChanged { handle, model } => {
                 format!("ModelChanged({handle:?} {model})")
+            }
+            ServerToClient::AnimModel { handle, mesh, clips } => {
+                format!("AnimModel({handle:?} {mesh} {clips})")
             }
             ServerToClient::FlagsChanged { handle, flags } => {
                 format!("FlagsChanged({handle:?} {flags:?})")
@@ -451,11 +502,13 @@ impl ServerToClient {
                 entities,
                 networked,
                 owners,
+                models,
             } => format!(
-                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={})",
+                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={} models={})",
                 entities.len(),
                 networked.len(),
-                owners.len()
+                owners.len(),
+                models.len()
             ),
             ServerToClient::TickState {
                 tick,

@@ -1,14 +1,15 @@
+use crate::anim::AnimAssets;
 use crate::console::{ConVar, ConVarValue};
 use crate::entities::{EntityHandle, EntityList};
 use crate::fs::Fs;
 use crate::input::{binds_path, load_or_defaults, Binds};
 use crate::movement::UserCommand;
-use crate::network::events::{EntityNetworked, NetVar};
+use crate::network::events::{EntityAnimNet, EntityNetworked, NetVar};
 use crate::network::NetSend;
 use crate::network::NetWake;
 use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
-use crate::script::libs::ents::EntityScope;
+use crate::script::libs::ents::{AnimScope, EntityScope};
 use crate::script::{Realm, ScriptEngine};
 use crate::world::{BrushMap, VoxelWorld};
 use std::collections::HashMap;
@@ -33,6 +34,7 @@ pub struct GameState<In, Out> {
     pub cur_time: f64,
     pub frame_time: f64,
     pub tick_count: u64,
+    pub anims: AnimAssets,
     despawned: Vec<EntityHandle>,
     wake: NetWake,
 }
@@ -126,6 +128,7 @@ impl<In, Out> GameState<In, Out> {
             cur_time: 0.0,
             frame_time: 0.0,
             tick_count: 0,
+            anims: AnimAssets::new(matches!(realm, Realm::Server)),
             despawned: Vec::new(),
             wake,
         }
@@ -134,7 +137,9 @@ impl<In, Out> GameState<In, Out> {
     fn with_entities<R>(&mut self, f: impl FnOnce(&ScriptEngine) -> R) -> R {
         let removed = self.entities.take_removed();
         let entities: *mut EntityList = &mut self.entities;
+        let anims: *mut AnimAssets = &mut self.anims;
         let _scope = EntityScope::new(&self.script_engine.entity_access, entities);
+        let _anim_scope = AnimScope::new(&self.script_engine.anim_access, anims);
 
         if !removed.is_empty() {
             if matches!(self.realm, Realm::Server) {
@@ -209,10 +214,199 @@ impl<In, Out> GameState<In, Out> {
 
     pub fn run_predicted(&mut self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {
         let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
+        let events = self.advance_predicted_anim(handle, cmd.tick);
 
         self.with_entities(|engine| {
             publish_clock(&engine.lua, cur_time, frame_time, tick_count);
+
+            if first_time {
+                let mut idx = 0;
+
+                while idx < events.len() {
+                    engine.anim_event(events[idx].0, &events[idx].1);
+                    idx += 1;
+                }
+            }
+
             engine.run_predicted(handle, cmd, first_time);
+        });
+    }
+
+    fn advance_predicted_anim(&mut self, owner: EntityHandle, tick: u64) -> Vec<(EntityHandle, String)> {
+        let dt = self.tick_interval;
+        let mut handles = Vec::new();
+
+        for (handle, entity) in self.entities.iter() {
+            if entity.base().owner == owner && handle != owner {
+                handles.push(handle);
+            }
+        }
+
+        handles.insert(0, owner);
+        let mut events = Vec::new();
+        let mut idx = 0;
+
+        while idx < handles.len() {
+            let handle = handles[idx];
+            let owned = handle != owner;
+
+            if owned {
+                self.apply_root(handle, tick, dt);
+            }
+
+            if let Some(entity) = self.entities.get_mut(handle) {
+                self.anims
+                    .finish_playback(&mut entity.base_mut().anim, tick, dt);
+            }
+
+            if tick > 0 {
+                if let Some(entity) = self.entities.get(handle) {
+                    let names = self.anims.events(&entity.base().anim, (tick - 1) as f64, tick as f64, dt);
+                    let mut name_idx = 0;
+
+                    while name_idx < names.len() {
+                        events.push((handle, names[name_idx].clone()));
+                        name_idx += 1;
+                    }
+                }
+            }
+
+            idx += 1;
+        }
+
+        events
+    }
+
+    pub fn apply_root(&mut self, handle: EntityHandle, tick: u64, dt: f64) {
+        let Some((playback, yaw)) = self.entities.get(handle).map(|entity| {
+            let base = entity.base();
+
+            (base.anim, base.angles.y)
+        }) else {
+            return;
+        };
+        let Some(step) = self.anims.root_motion(&playback, yaw, tick, dt) else {
+            return;
+        };
+        let Some(entity) = self.entities.get_mut(handle) else {
+            return;
+        };
+        let base = entity.base_mut();
+        crate::movement::root_move(
+            &mut base.position,
+            &mut base.velocity,
+            &mut base.angles,
+            step,
+            dt,
+            crate::movement::gravity(&self.cvars),
+            &self.brush_world,
+            &self.voxel_world,
+        );
+    }
+
+    pub fn drive_free_anims(&mut self, players: &[EntityHandle]) -> Vec<(EntityHandle, String)> {
+        let tick = self.tick_count;
+        let dt = self.tick_interval;
+        let mut handles = Vec::new();
+
+        for (handle, entity) in self.entities.iter() {
+            let base = entity.base();
+
+            if players.iter().any(|player| *player == handle || base.owner == *player) {
+                continue;
+            }
+
+            if base.anim.mesh == crate::anim::NONE_ASSET {
+                continue;
+            }
+
+            handles.push(handle);
+        }
+
+        let mut events = Vec::new();
+        let mut idx = 0;
+
+        while idx < handles.len() {
+            let handle = handles[idx];
+            self.apply_root(handle, tick, dt);
+
+            if let Some(entity) = self.entities.get_mut(handle) {
+                self.anims
+                    .finish_playback(&mut entity.base_mut().anim, tick, dt);
+            }
+
+            if tick > 0 {
+                if let Some(entity) = self.entities.get(handle) {
+                    let names = self
+                        .anims
+                        .events(&entity.base().anim, (tick - 1) as f64, tick as f64, dt);
+                    let mut name_idx = 0;
+
+                    while name_idx < names.len() {
+                        events.push((handle, names[name_idx].clone()));
+                        name_idx += 1;
+                    }
+                }
+            }
+
+            idx += 1;
+        }
+
+        events
+    }
+
+    pub fn skin_batch(
+        &mut self,
+        local: EntityHandle,
+        local_pos: Option<crate::script::libs::vector3::Vector3>,
+        local_time: f64,
+        cull: crate::anim::Cull,
+    ) -> crate::ui::skin::SkinBatch {
+        let dt = self.tick_interval;
+        let mut inputs = Vec::new();
+
+        for (handle, entity) in self.entities.iter() {
+            let base = entity.base();
+
+            if base.anim.mesh == crate::anim::NONE_ASSET {
+                continue;
+            }
+
+            let position = if handle == local {
+                local_pos.unwrap_or(base.position)
+            } else {
+                base.position
+            };
+            let time = if handle == local {
+                local_time
+            } else {
+                base.anim.draw_tick as f64 + f64::from(base.anim.draw_frac)
+            };
+            inputs.push(crate::anim::DrawInput {
+                mesh: base.anim.mesh,
+                clips: base.anim.clips,
+                playback: base.anim,
+                position: [position.x as f32, position.y as f32, position.z as f32],
+                yaw: base.angles.y,
+                time,
+            });
+        }
+
+        self.anims.build_batch(&inputs, &cull, dt)
+    }
+
+    pub fn fire_anim_events(&mut self, events: Vec<(EntityHandle, String)>) {
+        if events.is_empty() {
+            return;
+        }
+
+        self.with_entities(|engine| {
+            let mut idx = 0;
+
+            while idx < events.len() {
+                engine.anim_event(events[idx].0, &events[idx].1);
+                idx += 1;
+            }
         });
     }
 
@@ -230,6 +424,47 @@ impl<In, Out> GameState<In, Out> {
 
     pub fn owner_changed(&mut self, handle: EntityHandle, owner: EntityHandle) {
         self.with_entities(|engine| engine.owner_changed(handle, owner));
+    }
+
+    pub fn owned_anims(&self, owner: EntityHandle) -> Vec<EntityAnimNet> {
+        let mut anims = Vec::new();
+
+        for (handle, entity) in self.entities.iter() {
+            if entity.base().owner != owner || handle == owner {
+                continue;
+            }
+
+            if entity.base().anim.mesh == crate::anim::NONE_ASSET {
+                continue;
+            }
+
+            anims.push(EntityAnimNet {
+                handle,
+                anim: entity.base().anim.snapshot(),
+            });
+        }
+
+        anims
+    }
+
+    pub fn take_anim_models(&mut self) -> Vec<crate::network::events::EntityModel> {
+        let raw = std::mem::take(&mut self.anims.dirty);
+        let mut models = Vec::new();
+        let mut idx = 0;
+
+        while idx < raw.len() {
+            let handle = EntityHandle(raw[idx]);
+
+            if let Some(entity) = self.entities.get(handle) {
+                if let Some((mesh, clips)) = self.anims.model_paths(&entity.base().anim) {
+                    models.push(crate::network::events::EntityModel { handle, mesh, clips });
+                }
+            }
+
+            idx += 1;
+        }
+
+        models
     }
 
     pub fn set_local_player(&mut self, handle: EntityHandle) {

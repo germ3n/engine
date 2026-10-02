@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
 pub type EntityAccess = Arc<AtomicPtr<EntityList>>;
+pub type AnimAccess = Arc<AtomicPtr<crate::anim::AnimAssets>>;
 
 const TAG_NIL: u8 = 0;
 const TAG_BOOL: u8 = 1;
@@ -31,6 +32,7 @@ pub const ENTS_BEGIN_RECONCILE: &str = "EntsBeginReconcile";
 pub const ENTS_END_RECONCILE: &str = "EntsEndReconcile";
 pub const ENTS_OWNER_CHANGED: &str = "EntsOwnerChanged";
 pub const ENTS_SET_LOCAL: &str = "EntsSetLocal";
+pub const ENTS_ANIM_EVENT: &str = "EntsAnimEvent";
 
 pub struct EntityScope<'a> {
     access: &'a AtomicPtr<EntityList>,
@@ -49,6 +51,42 @@ impl Drop for EntityScope<'_> {
     fn drop(&mut self) {
         self.access.store(self.previous, Ordering::Relaxed);
     }
+}
+
+pub struct AnimScope<'a> {
+    access: &'a AtomicPtr<crate::anim::AnimAssets>,
+    previous: *mut crate::anim::AnimAssets,
+}
+
+impl<'a> AnimScope<'a> {
+    pub fn new(access: &'a AtomicPtr<crate::anim::AnimAssets>, anims: *mut crate::anim::AnimAssets) -> Self {
+        let previous = access.swap(anims, Ordering::Relaxed);
+
+        Self { access, previous }
+    }
+}
+
+impl Drop for AnimScope<'_> {
+    fn drop(&mut self) {
+        self.access.store(self.previous, Ordering::Relaxed);
+    }
+}
+
+fn anims(access: &AtomicPtr<crate::anim::AnimAssets>) -> Result<&mut crate::anim::AnimAssets> {
+    let ptr = access.load(Ordering::Relaxed);
+
+    unsafe { ptr.as_mut() }.ok_or_else(|| Error::RuntimeError("animation is not available".to_string()))
+}
+
+fn clock(lua: &Lua) -> u64 {
+    let Ok(engine) = lua.globals().get::<Table>("engine") else {
+        return 0;
+    };
+    let Ok(tick) = engine.get::<u64>("tick_count") else {
+        return 0;
+    };
+
+    tick
 }
 
 fn entities(access: &AtomicPtr<EntityList>) -> Result<&mut EntityList> {
@@ -76,7 +114,7 @@ where
         .unwrap_or_else(|err| panic!("[ents] Failed setting {name}: {err}"));
 }
 
-fn build_native(lua: &Lua, access: &EntityAccess) -> Table {
+fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> Table {
     let native = lua.create_table().expect("Failed to create ents native table");
 
     let shared = access.clone();
@@ -221,6 +259,79 @@ fn build_native(lua: &Lua, access: &EntityAccess) -> Table {
         Ok(())
     });
 
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_model",
+        move |lua, (raw, mesh, clips): (u32, String, String)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            bank.assign(raw, &mut entity.base_mut().anim, &mesh, &clips)
+                .map_err(Error::RuntimeError)?;
+            let _ = lua;
+
+            Ok(())
+        },
+    );
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_sequence",
+        move |lua, (raw, name, rate): (u32, String, f64)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let clips = entity.base().anim.clips;
+            let id = bank
+                .sequence_id(clips, &name)
+                .ok_or_else(|| Error::RuntimeError(format!("unknown sequence {name}")))?;
+            entity
+                .base_mut()
+                .anim
+                .set_sequence(id, clock(lua), rate as f32);
+
+            Ok(())
+        },
+    );
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "play_gesture",
+        move |lua, (raw, name, rate, weight): (u32, String, f64, f64)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let clips = entity.base().anim.clips;
+            let id = bank
+                .sequence_id(clips, &name)
+                .ok_or_else(|| Error::RuntimeError(format!("unknown gesture {name}")))?;
+            entity
+                .base_mut()
+                .anim
+                .set_gesture(id, clock(lua), rate as f32, weight as f32);
+
+            Ok(())
+        },
+    );
+
+    let ents_access = access.clone();
+    add_native(lua, &native, "stop_gesture", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        entity.base_mut().anim.clear_gesture();
+
+        Ok(())
+    });
+
     let classes = lua.create_table().expect("Failed to create ents classes table");
     classes
         .raw_set(Player::CLASS_HASH, "Player")
@@ -232,9 +343,9 @@ fn build_native(lua: &Lua, access: &EntityAccess) -> Table {
     native
 }
 
-pub fn register_ents_lib(lua: &Lua, access: EntityAccess) {
+pub fn register_ents_lib(lua: &Lua, access: EntityAccess, anim_access: AnimAccess) {
     let install: Function = crate::script::eval(lua, "ents.lua", "lua/libs/ents.luac");
-    let native = build_native(lua, &access);
+    let native = build_native(lua, &access, &anim_access);
     let exports: Table = install
         .call(native)
         .unwrap_or_else(|err| panic!("Failed to install ents lib: {err}"));
@@ -253,6 +364,7 @@ pub fn register_ents_lib(lua: &Lua, access: EntityAccess) {
         ("end_reconcile", ENTS_END_RECONCILE),
         ("owner_changed", ENTS_OWNER_CHANGED),
         ("set_local", ENTS_SET_LOCAL),
+        ("anim_event", ENTS_ANIM_EVENT),
     ] {
         let function: Function = exports
             .get(key)
@@ -531,6 +643,13 @@ pub fn apply_networked(
     let blob = lua_blob(lua, encode_entities(entities)?)?;
 
     function.call((blob, time))
+}
+
+pub fn anim_event(lua: &Lua, handle: EntityHandle, name: &str) -> Result<()> {
+    let function: Function = lua.named_registry_value(ENTS_ANIM_EVENT)?;
+    let _: () = function.call((handle.0, name))?;
+
+    Ok(())
 }
 
 pub fn present_interpolated(lua: &Lua, time: f64) -> Result<()> {

@@ -1,5 +1,6 @@
 use crate::platform::Surface;
 use crate::ui::shader;
+use crate::ui::skin::SkinBatch;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
@@ -33,6 +34,8 @@ pub struct MetalWindow {
     mesh_pipeline: RenderPipelineState,
     color_pipeline: RenderPipelineState,
     text_pipeline: RenderPipelineState,
+    skin_pipeline: RenderPipelineState,
+    skin: MetalSkin,
     depth_write: DepthStencilState,
     depth_off: DepthStencilState,
     depth: Option<Texture>,
@@ -109,6 +112,17 @@ impl MetalWindow {
             true,
         )?;
         let text_pipeline = pipeline(&device, &text_vert, &text_frag, &text_vertex_desc(), true)?;
+        let skin_src = crate::ui::shaders::Program::Skinned.wgsl();
+        let skin_lib = device
+            .new_library_with_source(&cache.msl(&skin_src)?, &CompileOptions::new())
+            .map_err(|err| format!("shader: {err}"))?;
+        let skin_vert = skin_lib
+            .get_function("vs_main", None)
+            .map_err(|err| format!("vs_main: {err}"))?;
+        let skin_frag = skin_lib
+            .get_function("fs_main", None)
+            .map_err(|err| format!("fs_main: {err}"))?;
+        let skin_pipeline = pipeline(&device, &skin_vert, &skin_frag, &skin_vertex_desc(), false)?;
 
         let depth_write = depth_state(&device, MTLCompareFunction::Less, true);
         let depth_off = depth_state(&device, MTLCompareFunction::Always, false);
@@ -146,6 +160,8 @@ impl MetalWindow {
             mesh_pipeline,
             color_pipeline,
             text_pipeline,
+            skin_pipeline,
+            skin: MetalSkin::default(),
             depth_write,
             depth_off,
             depth: None,
@@ -186,6 +202,11 @@ impl Window for MetalWindow {
         self.clear = [red as f64, green as f64, blue as f64, 1.0];
         self.ui_verts.clear();
         self.draw_mesh = false;
+    }
+
+    fn draw_skinned(&mut self, batch: &SkinBatch, view: &SceneView) {
+        self.skin.batch = batch.clone();
+        self.skin.view = metal_view_proj(view);
     }
 
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
@@ -365,6 +386,14 @@ impl Window for MetalWindow {
                 }
             }
 
+            encode_skin(
+                &mut self.skin,
+                &self.device,
+                &encoder,
+                &self.skin_pipeline,
+                &self.depth_write,
+                &self.view_proj,
+            );
             bind_bytes(
                 encoder,
                 &self.device,
@@ -484,6 +513,14 @@ impl MetalWindow {
                     }
                 }
 
+                encode_skin(
+                    &mut self.skin,
+                    &self.device,
+                    &encoder,
+                    &self.skin_pipeline,
+                    &self.depth_write,
+                    &matrix,
+                );
                 encoder.end_encoding();
                 idx += 1;
             }
@@ -661,6 +698,217 @@ fn pipeline(
     }
 
     device.new_render_pipeline_state(&desc)
+}
+
+#[derive(Default)]
+struct MetalSkin {
+    batch: SkinBatch,
+    view: [f32; 16],
+    meshes: std::collections::HashMap<u64, MetalSkinMesh>,
+}
+
+struct MetalSkinMesh {
+    vertices: Buffer,
+    indices: Buffer,
+    instances: Buffer,
+    albedo: Texture,
+    palette: Texture,
+    index_count: u64,
+    vertex_ptr: usize,
+    palette_size: (u64, u64),
+}
+
+fn encode_skin(
+    skin: &mut MetalSkin,
+    device: &Device,
+    encoder: &RenderCommandEncoderRef,
+    pipeline: &RenderPipelineState,
+    depth: &DepthStencilState,
+    matrix: &[f32; 16],
+) {
+    if skin.batch.groups.is_empty() {
+        return;
+    }
+
+    encoder.set_render_pipeline_state(pipeline);
+    encoder.set_depth_stencil_state(depth);
+    encoder.set_cull_mode(MTLCullMode::Back);
+    encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
+    let mut idx = 0;
+
+    while idx < skin.batch.groups.len() {
+        let group = &skin.batch.groups[idx];
+        let key = group.key;
+        let vertex_ptr = group.vertices.as_ptr() as usize;
+        let stale = skin
+            .meshes
+            .get(&key)
+            .map(|mesh| mesh.vertex_ptr != vertex_ptr)
+            .unwrap_or(true);
+
+        if stale {
+            skin.meshes.insert(key, upload_skin_mesh(device, group));
+        }
+
+        let Some(mesh) = skin.meshes.get_mut(&key) else {
+            idx += 1;
+
+            continue;
+        };
+        let instances = match shared_buffer(device, float_bytes(group.instances.as_ref())) {
+            Some(buffer) => buffer,
+            None => {
+                idx += 1;
+
+                continue;
+            }
+        };
+        mesh.instances = instances;
+
+        if mesh.palette_size != (group.palette_w as u64, group.palette_h as u64) {
+            mesh.palette = float_texture(device, group.palette_w, group.palette_h.max(1));
+            mesh.palette_size = (group.palette_w as u64, group.palette_h as u64);
+        }
+
+        if group.palette_w > 0 && group.palette_h > 0 {
+            mesh.palette.replace_region(
+                MTLRegion::new_2d(0, 0, group.palette_w as u64, group.palette_h as u64),
+                0,
+                group.palette.as_ptr() as *const _,
+                (group.palette_w as u64) * 16,
+            );
+        }
+
+        let uniforms = skin_uniforms(matrix, group.bones);
+        encoder.set_vertex_buffer(0, Some(&mesh.vertices), 0);
+        encoder.set_vertex_buffer(1, Some(&mesh.instances), 0);
+        encoder.set_vertex_bytes(
+            2,
+            std::mem::size_of_val(&uniforms) as u64,
+            &uniforms as *const _ as *const _,
+        );
+        encoder.set_fragment_texture(0, Some(&mesh.albedo));
+        encoder.set_vertex_texture(1, Some(&mesh.palette));
+        encoder.draw_indexed_primitives_instanced(
+            MTLPrimitiveType::Triangle,
+            mesh.index_count,
+            MTLIndexType::UInt32,
+            &mesh.indices,
+            0,
+            group.palette_h as u64,
+        );
+        idx += 1;
+    }
+}
+
+fn upload_skin_mesh(device: &Device, group: &crate::ui::skin::SkinGroup) -> MetalSkinMesh {
+    let vertices = shared_buffer(device, float_bytes(group.vertices.as_ref()))
+        .unwrap_or_else(|| device.new_buffer(4, MTLResourceOptions::StorageModeShared));
+    let indices = device.new_buffer_with_data(
+        group.indices.as_ptr() as *const _,
+        (group.indices.len() * 4) as u64,
+        MTLResourceOptions::StorageModeShared,
+    );
+    let albedo = rgba_texture(device, group.albedo_w, group.albedo_h, group.albedo.as_ref());
+    let palette = float_texture(device, group.palette_w.max(1), group.palette_h.max(1));
+    let instances = device.new_buffer(4, MTLResourceOptions::StorageModeShared);
+
+    MetalSkinMesh {
+        vertices,
+        indices,
+        instances,
+        albedo,
+        palette,
+        index_count: group.indices.len() as u64,
+        vertex_ptr: group.vertices.as_ptr() as usize,
+        palette_size: (0, 0),
+    }
+}
+
+fn skin_uniforms(matrix: &[f32; 16], bones: u32) -> [u32; 20] {
+    let mut words = [0u32; 20];
+    let mut idx = 0;
+
+    while idx < 16 {
+        words[idx] = matrix[idx].to_bits();
+        idx += 1;
+    }
+
+    words[16] = bones;
+
+    words
+}
+
+fn rgba_texture(device: &Device, width: u32, height: u32, pixels: &[u8]) -> Texture {
+    let texture = color_texture(device, width.max(1), height.max(1), MTLPixelFormat::RGBA8Unorm);
+
+    if width > 0 && height > 0 && pixels.len() >= (width as usize) * (height as usize) * 4 {
+        texture.replace_region(
+            MTLRegion::new_2d(0, 0, width as u64, height as u64),
+            0,
+            pixels.as_ptr() as *const _,
+            (width as u64) * 4,
+        );
+    }
+
+    texture
+}
+
+fn float_texture(device: &Device, width: u32, height: u32) -> Texture {
+    color_texture(
+        device,
+        width.max(1),
+        height.max(1),
+        MTLPixelFormat::RGBA32Float,
+    )
+}
+
+fn color_texture(device: &Device, width: u32, height: u32, format: MTLPixelFormat) -> Texture {
+    let desc = TextureDescriptor::new();
+    desc.set_texture_type(MTLTextureType::D2);
+    desc.set_pixel_format(format);
+    desc.set_width(width as u64);
+    desc.set_height(height as u64);
+    desc.set_usage(MTLTextureUsage::ShaderRead);
+    desc.set_storage_mode(MTLStorageMode::Shared);
+
+    device.new_texture(&desc)
+}
+
+fn skin_vertex_desc() -> &'static VertexDescriptorRef {
+    let desc = VertexDescriptor::new();
+    set_skin_attr(desc, 0, MTLVertexFormat::Float3, 0, 0);
+    set_skin_attr(desc, 1, MTLVertexFormat::Float3, 12, 0);
+    set_skin_attr(desc, 2, MTLVertexFormat::Float2, 24, 0);
+    set_skin_attr(desc, 3, MTLVertexFormat::Float4, 32, 0);
+    set_skin_attr(desc, 4, MTLVertexFormat::Float4, 48, 0);
+    set_skin_layout(desc, 0, 64, MTLVertexStepFunction::PerVertex);
+    set_skin_attr(desc, 5, MTLVertexFormat::Float4, 0, 1);
+    set_skin_attr(desc, 6, MTLVertexFormat::Float4, 16, 1);
+    set_skin_attr(desc, 7, MTLVertexFormat::Float4, 32, 1);
+    set_skin_attr(desc, 8, MTLVertexFormat::Float4, 48, 1);
+    set_skin_layout(desc, 1, 64, MTLVertexStepFunction::PerInstance);
+
+    desc
+}
+
+fn set_skin_attr(
+    desc: &VertexDescriptorRef,
+    index: u64,
+    format: MTLVertexFormat,
+    offset: u64,
+    buffer: u64,
+) {
+    let attr = desc.attributes().object_at(index).unwrap();
+    attr.set_format(format);
+    attr.set_offset(offset);
+    attr.set_buffer_index(buffer);
+}
+
+fn set_skin_layout(desc: &VertexDescriptorRef, index: u64, stride: u64, step: MTLVertexStepFunction) {
+    let layout = desc.layouts().object_at(index).unwrap();
+    layout.set_stride(stride);
+    layout.set_step_function(step);
 }
 
 fn mesh_vertex_desc() -> &'static VertexDescriptorRef {

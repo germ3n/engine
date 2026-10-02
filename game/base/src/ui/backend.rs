@@ -1,6 +1,7 @@
 use crate::platform::Surface;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::opengl::OpenGLWindow;
+use crate::ui::skin::SkinBatch;
 use crate::ui::voxel::SceneView;
 #[cfg(not(target_os = "ios"))]
 use crate::ui::vulkan::VulkanWindow;
@@ -141,6 +142,10 @@ impl Window for GfxWindow {
     fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
         each_window!(self, |window| window
             .draw_colored_mesh(vertices, revision, view))
+    }
+
+    fn draw_skinned(&mut self, batch: &SkinBatch, view: &SceneView) {
+        each_window!(self, |window| window.draw_skinned(batch, view))
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {

@@ -2,7 +2,9 @@ use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player, ScriptedEntity};
 use crate::input::Action;
 use crate::movement::{self, NetPose, Prediction, UserCommand};
-use crate::network::events::{EntityNetworked, EntityOwnership, EntitySnapshot, NetVar};
+use crate::network::events::{
+    EntityModel, EntityNetworked, EntityOwnership, EntitySnapshot, NetVar,
+};
 use crate::network::packet::{
     bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT,
     KEEPALIVE_INTERVAL, STREAM_STATE,
@@ -117,6 +119,7 @@ struct BuiltSnapshot {
     entities: Vec<EntitySnapshot>,
     networked: Vec<EntityNetworked>,
     owners: Vec<EntityOwnership>,
+    models: Vec<EntityModel>,
 }
 
 struct SnapshotIngress {
@@ -124,7 +127,14 @@ struct SnapshotIngress {
     reset: bool,
     part_count: u16,
     filled: u16,
-    parts: Vec<Option<(Vec<EntitySnapshot>, Vec<EntityNetworked>, Vec<EntityOwnership>)>>,
+    parts: Vec<
+        Option<(
+            Vec<EntitySnapshot>,
+            Vec<EntityNetworked>,
+            Vec<EntityOwnership>,
+            Vec<EntityModel>,
+        )>,
+    >,
 }
 
 impl SnapshotIngress {
@@ -147,6 +157,7 @@ impl SnapshotIngress {
         entities: Vec<EntitySnapshot>,
         networked: Vec<EntityNetworked>,
         owners: Vec<EntityOwnership>,
+        models: Vec<EntityModel>,
     ) -> Option<BuiltSnapshot> {
         if part_count == 0 || part >= part_count || part_count > 1024 {
             return None;
@@ -168,7 +179,7 @@ impl SnapshotIngress {
         }
 
         if self.parts[part as usize].is_none() {
-            self.parts[part as usize] = Some((entities, networked, owners));
+            self.parts[part as usize] = Some((entities, networked, owners, models));
             self.filled = self.filled.saturating_add(1);
         }
 
@@ -179,11 +190,13 @@ impl SnapshotIngress {
         let mut built_entities = Vec::new();
         let mut built_networked = Vec::new();
         let mut built_owners = Vec::new();
+        let mut built_models = Vec::new();
         for slot in self.parts.drain(..) {
-            if let Some((batch, networked, owners)) = slot {
+            if let Some((batch, networked, owners, models)) = slot {
                 built_entities.extend(batch);
                 built_networked.extend(networked);
                 built_owners.extend(owners);
+                built_models.extend(models);
             }
         }
 
@@ -192,6 +205,7 @@ impl SnapshotIngress {
             entities: built_entities,
             networked: built_networked,
             owners: built_owners,
+            models: built_models,
         };
         self.filled = 0;
         self.part_count = 0;
@@ -317,11 +331,34 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     }
 
                     client_window.begin_frame(0.53, 0.71, 0.85);
-                    client_window.draw_colored_mesh(
-                        &scene_mesh,
-                        scene_revision,
-                        &camera.scene(aspect, game.voxel_world.scale() as f32),
+                    let scene = camera.scene(aspect, game.voxel_world.scale() as f32);
+                    client_window.draw_colored_mesh(&scene_mesh, scene_revision, &scene);
+                    let skin_alpha = if game.tick_interval > 0.0 {
+                        (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+                    let local_time = if game.tick_count == 0 {
+                        0.0
+                    } else {
+                        (game.tick_count - 1) as f64 + skin_alpha
+                    };
+                    let (forward, up) = (scene.forward, scene.up);
+                    let cull = crate::anim::cull_from(
+                        scene.eye,
+                        forward,
+                        up,
+                        scene.fov_y,
+                        scene.aspect,
+                        scene.far,
                     );
+                    let batch = game.skin_batch(
+                        prediction.local,
+                        prediction.view_origin(skin_alpha),
+                        local_time,
+                        cull,
+                    );
+                    client_window.draw_skinned(&batch, &scene);
 
                     let _: () = game.run_hook("MenuPaint", ());
 
@@ -459,18 +496,23 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 entities,
                                 networked,
                                 owners,
+                                models,
                             } = message
                             {
                                 log::info!(
-                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={})",
+                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={} models={})",
                                     entities.len(),
                                     networked.len(),
-                                    owners.len()
+                                    owners.len(),
+                                    models.len()
                                 );
 
                                 if generation == world_generation {
                                     if let Some(built) = snapshot_ingress
-                                        .push(generation, reset, part, parts, entities, networked, owners)
+                                        .push(
+                                            generation, reset, part, parts, entities, networked,
+                                            owners, models,
+                                        )
                                     {
                                         if built.reset {
                                             game.entities.clear();
@@ -516,6 +558,10 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                                 owner,
                                                 &vars,
                                             );
+                                        }
+
+                                        for model in built.models {
+                                            apply_anim_model(&mut game, model);
                                         }
 
                                         hold_events = false;
@@ -863,6 +909,14 @@ fn predict_tick(
     let from = position;
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
+    let root = game
+        .entities
+        .get(prediction.local)
+        .map(|entity| entity.base().anim)
+        .and_then(|playback| {
+            game.anims
+                .root_motion(&playback, angles.y, game.tick_count, dt)
+        });
     movement::step(
         &mut position,
         &mut velocity,
@@ -873,6 +927,7 @@ fn predict_tick(
         gravity,
         &game.brush_world,
         &game.voxel_world,
+        root,
     );
     prediction.note_step(from, position);
     prediction.push(cmd.clone());
@@ -913,6 +968,10 @@ fn reconcile_player(
         return;
     }
 
+    if let Some(entity) = game.entities.get_mut(snapshot.handle) {
+        entity.base_mut().anim.apply_remote(&snapshot.anim, snapshot.ack);
+    }
+
     let (predicted_pos, predicted_vel) = match game.entities.get(snapshot.handle) {
         Some(entity) => {
             let base = entity.base();
@@ -933,6 +992,11 @@ fn reconcile_player(
     game.begin_reconcile(predicted);
 
     for cmd in prediction.commands() {
+        let root = game
+            .entities
+            .get(handle)
+            .map(|entity| entity.base().anim)
+            .and_then(|playback| game.anims.root_motion(&playback, angles.y, cmd.tick, dt));
         movement::step(
             &mut position,
             &mut velocity,
@@ -943,6 +1007,7 @@ fn reconcile_player(
             gravity,
             &game.brush_world,
             &game.voxel_world,
+            root,
         );
         prev = cmd.buttons;
 
@@ -1055,28 +1120,59 @@ fn present_remotes(
         }
 
         if let Some(pose) = movement::blend_poses(samples, render_time, interval) {
-            visual.push((*handle, pose));
+            let clock = movement::sample_clock(samples, render_time).unwrap_or((pose.tick, 0.0));
+            visual.push((*handle, pose, clock.0, clock.1));
         }
 
         movement::forget_old_poses(samples, render_time);
     }
 
     game.present_networked(render_time);
-
+    let mut anim_events = Vec::new();
     let mut idx = 0;
 
     while idx < visual.len() {
-        let (handle, pose) = visual[idx];
+        let (handle, pose, tick, frac) = visual[idx];
+        let sample = tick as f64 + f64::from(frac);
+        let crossed = sample.floor() as u64;
+
+        let playback = game.entities.get(handle).map(|entity| entity.base().anim);
 
         if let Some(entity) = game.entities.get_mut(handle) {
             let base = entity.base_mut();
             base.position = pose.position;
             base.angles = pose.angles;
             base.velocity = pose.velocity;
+            base.anim.draw_tick = tick;
+            base.anim.draw_frac = frac;
+
+            if let Some(playback) = playback {
+                if playback.event_tick == 0 {
+                    base.anim.event_tick = crossed.max(1);
+                } else if crossed > playback.event_tick {
+                    base.anim.event_tick = crossed;
+                }
+            }
+        }
+
+        if let Some(playback) = playback {
+            if playback.event_tick > 0 && crossed > playback.event_tick {
+                let names = game
+                    .anims
+                    .events(&playback, playback.event_tick as f64, crossed as f64, interval);
+                let mut name_idx = 0;
+
+                while name_idx < names.len() {
+                    anim_events.push((handle, names[name_idx].clone()));
+                    name_idx += 1;
+                }
+            }
         }
 
         idx += 1;
     }
+
+    game.fire_anim_events(anim_events);
 }
 
 fn apply_server_event(
@@ -1249,10 +1345,23 @@ fn apply_server_event(
             tick: _,
             player,
             entities,
+            anims,
         } => {
             if player.handle == prediction.local {
+                for anim in &anims {
+                    if let Some(entity) = game.entities.get_mut(anim.handle) {
+                        entity.base_mut().anim.apply_remote(&anim.anim, player.ack);
+                    }
+                }
+
                 reconcile_player(game, prediction, &player, &entities);
             }
+        }
+        ServerToClient::AnimModel { handle, mesh, clips } => {
+            apply_anim_model(
+                game,
+                EntityModel { handle, mesh, clips },
+            );
         }
         ServerToClient::EntityOwner { handle, owner } => {
             let Some(entity) = game.entities.get_mut(handle) else {
@@ -1278,6 +1387,12 @@ fn apply_server_event(
                 for snapshot in entities {
                     if snapshot.handle == prediction.local {
                         continue;
+                    }
+
+                    if let Some(entity) = game.entities.get_mut(snapshot.handle) {
+                        entity.base_mut().anim.apply_remote(&snapshot.anim, tick);
+                        entity.base_mut().anim.draw_tick = tick;
+                        entity.base_mut().anim.draw_frac = 0.0;
                     }
 
                     note_remote(
@@ -2009,6 +2124,19 @@ fn apply_client_part(
     }
 }
 
+fn apply_anim_model(game: &mut GameState<FromServer, ClientToServer>, model: EntityModel) {
+    let mesh = game.anims.load_mesh(&model.mesh);
+    let clips = game.anims.load_clips(&model.clips);
+    let Some(entity) = game.entities.get_mut(model.handle) else {
+        return;
+    };
+
+    if let (Ok(mesh), Ok(clips)) = (mesh, clips) {
+        entity.base_mut().anim.mesh = mesh;
+        entity.base_mut().anim.clips = clips;
+    }
+}
+
 fn apply_spawn(
     game: &mut GameState<FromServer, ClientToServer>,
     remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
@@ -2048,6 +2176,10 @@ fn apply_spawn(
         vars,
     ) {
         return;
+    }
+
+    if let Some(spawned) = game.entities.get_mut(entity.handle) {
+        spawned.base_mut().anim.apply_remote(&entity.anim, 0);
     }
 
     note_remote(

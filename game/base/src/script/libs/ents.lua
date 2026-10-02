@@ -59,6 +59,10 @@ return function(native)
     local native_set_velocity = native.set_velocity;
     local native_set_owner = native.set_owner;
     local native_get_owner = native.get_owner;
+    local native_set_model = native.set_model;
+    local native_set_sequence = native.set_sequence;
+    local native_play_gesture = native.play_gesture;
+    local native_stop_gesture = native.stop_gesture;
     local attach_owned;
 
     local function report(ent, name, err)
@@ -1145,6 +1149,22 @@ return function(native)
         end
     end
 
+    function meta:set_model(mesh, clips)
+        native_set_model(self._handle, mesh, clips or "");
+    end
+
+    function meta:set_sequence(name, rate)
+        native_set_sequence(self._handle, name, rate or 1);
+    end
+
+    function meta:play_gesture(name, rate, weight)
+        native_play_gesture(self._handle, name, rate or 1, weight or 1);
+    end
+
+    function meta:stop_gesture()
+        native_stop_gesture(self._handle);
+    end
+
     function ents.create(class)
         if CLIENT then
             error("create is server only", 2);
@@ -1581,6 +1601,26 @@ return function(native)
 
     function exports.set_local(raw)
         local_raw = raw;
+    end
+
+    function exports.anim_event(raw, name)
+        local ent = wrap(raw);
+
+        if ent == nil or ent._removed then
+            return;
+        end
+
+        local callback = ent.on_anim_event;
+
+        if callback == nil then
+            return;
+        end
+
+        local ok, err = pcall(callback, ent, name);
+
+        if not ok then
+            report(ent, "on_anim_event", err);
+        end
     end
 
     return exports;

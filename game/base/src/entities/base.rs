@@ -1,3 +1,4 @@
+use crate::anim::AnimPlayback;
 use crate::entities::context::TickContext;
 use crate::entities::handle::EntityHandle;
 use crate::script::libs::angle3::Angle3;
@@ -14,6 +15,7 @@ pub struct BaseEntityData {
     pub position: Vector3,
     pub angles: Angle3,
     pub velocity: Vector3,
+    pub anim: AnimPlayback,
 }
 
 impl Default for BaseEntityData {
@@ -36,6 +38,7 @@ impl Default for BaseEntityData {
                 y: 0.0,
                 z: 0.0,
             },
+            anim: AnimPlayback::default(),
         }
     }
 }

@@ -224,6 +224,9 @@ fn write_base_pak() {
         ("shaders/mesh.wgsl", "src/ui/shaders/mesh.wgsl"),
         ("shaders/color.wgsl", "src/ui/shaders/color.wgsl"),
         ("shaders/text.wgsl", "src/ui/shaders/text.wgsl"),
+        ("shaders/skinned.wgsl", "src/ui/shaders/skinned.wgsl"),
+        ("models/test.mdl", "models/test.mdl"),
+        ("models/test.anm", "models/test.anm"),
     ];
     let lua = [
         ("lua/libs/hook.luac", "hook.luac"),

@@ -201,7 +201,7 @@ impl Prediction {
 
         for cmd in &self.cmds {
             step(
-                position, velocity, angles, cmd, prev, dt, gravity, brushes, voxels,
+                position, velocity, angles, cmd, prev, dt, gravity, brushes, voxels, None,
             );
             prev = cmd.buttons;
         }
@@ -258,6 +258,40 @@ pub fn forget_old_poses(samples: &mut VecDeque<NetPose>, time: f64) {
 
         samples.pop_front();
     }
+}
+
+pub fn sample_clock(samples: &VecDeque<NetPose>, time: f64) -> Option<(u64, f32)> {
+    let Some(first) = samples.front() else {
+        return None;
+    };
+
+    if samples.len() == 1 || time <= first.time {
+        return Some((first.tick, 0.0));
+    }
+
+    let last = samples[samples.len() - 1];
+
+    if time >= last.time {
+        return Some((last.tick, 0.0));
+    }
+
+    let mut idx = 0;
+
+    while idx + 1 < samples.len() && samples[idx + 1].time < time {
+        idx += 1;
+    }
+
+    let from = samples[idx];
+    let to = samples[idx + 1];
+    let span = to.time - from.time;
+    let alpha = if span > 1e-8 {
+        ((time - from.time) / span).clamp(0.0, 1.0) as f32
+    } else {
+        1.0
+    };
+    let steps = to.tick.saturating_sub(from.tick).max(1) as f32;
+
+    Some((from.tick, alpha * steps))
 }
 
 pub fn blend_poses(samples: &VecDeque<NetPose>, time: f64, extra_limit: f64) -> Option<NetPose> {
@@ -326,6 +360,13 @@ pub fn sanitize(cmd: &mut UserCommand) {
     cmd.view.p = cmd.view.p.clamp(-89.0, 89.0);
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RootStep {
+    pub dx: f64,
+    pub dy: f64,
+    pub dyaw: f64,
+}
+
 pub fn step(
     position: &mut Vector3,
     velocity: &mut Vector3,
@@ -336,6 +377,7 @@ pub fn step(
     gravity: f64,
     brushes: &BrushMap,
     voxels: &VoxelWorld,
+    root: Option<RootStep>,
 ) {
     if dt <= 0.0 {
         return;
@@ -343,18 +385,27 @@ pub fn step(
 
     let mut cmd = *cmd;
     sanitize(&mut cmd);
+    let root_yaw = root.map(|step| angles.y + step.dyaw as f32);
     *angles = cmd.view;
+
+    if let Some(yaw) = root_yaw {
+        angles.y = yaw;
+        *angles = angles.normalize();
+    }
+
     repair(velocity);
     *position = unstuck(*position, cmd.buttons, brushes, voxels);
 
     let (mins, maxs) = hull_for(cmd.buttons, *position, brushes, voxels);
     let mut on_ground = grounded(*position, *velocity, mins, maxs, brushes, voxels);
 
-    if on_ground {
+    if root.is_none() && on_ground {
         friction(velocity, dt);
     }
 
-    accelerate(velocity, &cmd, on_ground, dt);
+    if root.is_none() {
+        accelerate(velocity, &cmd, on_ground, dt);
+    }
 
     let jump = cmd.buttons.contains(InputButtons::IN_JUMP) && !prev.contains(InputButtons::IN_JUMP);
 
@@ -369,6 +420,11 @@ pub fn step(
 
     clamp_speed(velocity);
 
+    if let Some(step) = root {
+        velocity.x = step.dx / dt;
+        velocity.y = step.dy / dt;
+    }
+
     if on_ground {
         let start = *position;
         let start_vel = *velocity;
@@ -379,6 +435,47 @@ pub fn step(
     } else {
         slide(position, velocity, dt, mins, maxs, brushes, voxels);
     }
+
+    if on_ground || velocity.z <= 0.0 {
+        snap_ground(position, velocity, mins, maxs, brushes, voxels);
+    }
+
+    repair(position);
+    repair(velocity);
+}
+
+pub fn root_move(
+    position: &mut Vector3,
+    velocity: &mut Vector3,
+    angles: &mut Angle3,
+    step: RootStep,
+    dt: f64,
+    gravity: f64,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+) {
+    if dt <= 0.0 {
+        return;
+    }
+
+    angles.y += step.dyaw as f32;
+    *angles = angles.normalize();
+    repair(velocity);
+    *position = unstuck(*position, InputButtons::NONE, brushes, voxels);
+    let mins = STAND_MINS;
+    let maxs = STAND_MAXS;
+    let on_ground = grounded(*position, *velocity, mins, maxs, brushes, voxels);
+    velocity.x = step.dx / dt;
+    velocity.y = step.dy / dt;
+
+    if !on_ground {
+        velocity.z -= gravity * dt;
+    } else {
+        velocity.z = 0.0;
+    }
+
+    clamp_speed(velocity);
+    slide(position, velocity, dt, mins, maxs, brushes, voxels);
 
     if on_ground || velocity.z <= 0.0 {
         snap_ground(position, velocity, mins, maxs, brushes, voxels);
@@ -913,6 +1010,7 @@ mod tests {
                 24.0,
                 brushes,
                 voxels,
+                None,
             );
             prev = cmd.buttons;
         }
@@ -993,6 +1091,7 @@ mod tests {
                 24.0,
                 &brushes,
                 &voxels,
+                None,
             );
             prev = cmd.buttons;
 
@@ -1044,6 +1143,7 @@ mod tests {
                 24.0,
                 &brushes,
                 &voxels,
+                None,
             );
             predicted.push(cmds[idx]);
             idx += 1;

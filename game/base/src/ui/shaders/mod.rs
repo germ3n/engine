@@ -10,11 +10,16 @@ pub mod text {
     pub const SOURCE: &str = include_str!("text.wgsl");
 }
 
+pub mod skinned {
+    pub const SOURCE: &str = include_str!("skinned.wgsl");
+}
+
 #[derive(Clone, Copy)]
 pub enum Program {
     Mesh,
     Color,
     Text,
+    Skinned,
 }
 
 #[derive(Clone, Copy)]
@@ -59,6 +64,7 @@ impl Program {
             Program::Mesh => "shaders/mesh.wgsl",
             Program::Color => "shaders/color.wgsl",
             Program::Text => "shaders/text.wgsl",
+            Program::Skinned => "shaders/skinned.wgsl",
         }
     }
 
@@ -67,6 +73,7 @@ impl Program {
             Program::Mesh => mesh::SOURCE,
             Program::Color => color::SOURCE,
             Program::Text => text::SOURCE,
+            Program::Skinned => skinned::SOURCE,
         }
     }
 
@@ -297,4 +304,21 @@ pub fn msl_library(program: Program) -> Result<String, String> {
 
 pub fn hlsl(program: Program) -> Result<String, String> {
     source(program, Stage::Vertex, Target::Hlsl)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skinned_shader_compiles() {
+        compile(Program::Skinned, Stage::Vertex, Target::Spirv).unwrap();
+        compile(Program::Skinned, Stage::Fragment, Target::Spirv).unwrap();
+        compile(Program::Skinned, Stage::Vertex, Target::Glsl330).unwrap();
+        compile(Program::Skinned, Stage::Fragment, Target::Glsl330).unwrap();
+        compile(Program::Skinned, Stage::Fragment, Target::Glsl330).unwrap();
+        compile(Program::Skinned, Stage::Vertex, Target::Msl).unwrap();
+        compile(Program::Skinned, Stage::Fragment, Target::Msl).unwrap();
+        compile(Program::Skinned, Stage::Vertex, Target::Hlsl).unwrap();
+    }
 }
