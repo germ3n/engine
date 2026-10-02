@@ -1,3 +1,4 @@
+use crate::anchor::Anchor;
 use crate::platform::{
     DeviceEvent, ElementState, Event, HostKind, KeyCode, Modifiers, MouseButton, MouseScrollDelta,
     PlatformHost, WindowEvent,
@@ -123,6 +124,7 @@ pub fn run(map_name: &str) {
     let mut solid_brush = 0u64;
     let mut solid_voxel = 0u64;
     let mut solid_mark: Option<usize> = None;
+    let mut draw_anchor = Anchor::ZERO;
     let mut picture: Vec<f32> = Vec::new();
     let mut picture_key = String::new();
     let mut picture_revision = 0u64;
@@ -218,16 +220,27 @@ pub fn run(map_name: &str) {
                     let aim = editor.pointer_aim(width, height);
                     let marked = editor.marked(&aim);
 
+                    let camera_moved =
+                        draw_anchor.drifted(editor.camera.x, editor.camera.y, editor.camera.z);
+
+                    if camera_moved {
+                        draw_anchor = Anchor::new(editor.camera.x, editor.camera.y, editor.camera.z);
+                    }
+
                     if !solid_ready
                         || solid_brush != editor.brushes.revision()
                         || solid_voxel != editor.voxels.revision()
                         || solid_mark != marked
+                        || camera_moved
                     {
-                        solid = editor.voxels.mesh();
+                        let origin = draw_anchor.to_vec();
+                        solid = editor.voxels.mesh_at(origin);
 
                         match marked {
-                            Some(index) => solid.extend(editor.brushes.mesh_highlight(index)),
-                            None => solid.extend(editor.brushes.mesh()),
+                            Some(index) => {
+                                solid.extend(editor.brushes.mesh_highlight_at(index, origin))
+                            }
+                            None => solid.extend(editor.brushes.mesh_at(origin)),
                         }
 
                         solid_brush = editor.brushes.revision();
@@ -241,13 +254,15 @@ pub fn run(map_name: &str) {
 
                     if picture_key != key {
                         picture = solid.clone();
-                        push_overlay(&mut picture, &editor, &aim);
+                        push_overlay(&mut picture, &editor, &aim, draw_anchor);
                         picture_key = key;
                         picture_revision = picture_revision.wrapping_add(1);
                     }
 
                     let aspect = width as f32 / height.max(1) as f32;
-                    let view = editor.camera.scene(aspect, editor.voxels.scale() as f32);
+                    let view = editor
+                        .camera
+                        .scene_at(aspect, editor.voxels.scale() as f32, draw_anchor);
                     let title = editor.title();
 
                     if title != shown_title {
@@ -832,18 +847,18 @@ fn overlay_key(editor: &Editor, aim: &Aim) -> String {
     key
 }
 
-fn push_overlay(vertices: &mut Vec<f32>, editor: &Editor, aim: &Aim) {
-    push_grid(vertices, editor.grid as f32, 48.0);
-    push_axes(vertices);
+fn push_overlay(vertices: &mut Vec<f32>, editor: &Editor, aim: &Aim, draw: Anchor) {
+    push_grid(vertices, editor.grid as f32, 48.0, draw);
+    push_axes(vertices, draw);
 
     if editor.mode == Mode::Brush && editor.brush_tool == BrushTool::Box {
         if let Some(anchor) = editor.anchor {
             if aim.surface {
                 let end = editor.box_end(aim.point);
                 let (min, max) = box_from_corners(anchor, end, editor.grid);
-                push_box(vertices, min, max, [0.35, 0.9, 1.0]);
+                push_box(vertices, min, max, [0.35, 0.9, 1.0], draw);
             } else {
-                push_marker(vertices, anchor, editor.grid, [0.35, 0.9, 1.0]);
+                push_marker(vertices, anchor, editor.grid, [0.35, 0.9, 1.0], draw);
             }
         } else if aim.surface {
             push_marker(
@@ -851,6 +866,7 @@ fn push_overlay(vertices: &mut Vec<f32>, editor: &Editor, aim: &Aim) {
                 snap_point(aim.point, editor.grid),
                 editor.grid,
                 [0.35, 0.9, 1.0],
+                draw,
             );
         }
     }
@@ -867,7 +883,7 @@ fn push_overlay(vertices: &mut Vec<f32>, editor: &Editor, aim: &Aim) {
                 VoxelTool::Paint => [0.4, 0.95, 0.55],
                 VoxelTool::Erase => [1.0, 0.4, 0.35],
             };
-            push_box(vertices, min, max, color);
+            push_box(vertices, min, max, color, draw);
         }
     }
 }
@@ -1007,9 +1023,9 @@ fn frame_view(camera: &mut FlyCamera, mesh: &[f32]) {
     let dy = max[1] - min[1];
     let dz = max[2] - min[2];
     let radius = (dx * dx + dy * dy + dz * dz).sqrt().max(4.0);
-    camera.x = center[0];
-    camera.y = center[1] - radius * 0.9 - 6.0;
-    camera.z = center[2] + radius * 0.35 + 3.0;
+    camera.x = f64::from(center[0]);
+    camera.y = f64::from(center[1] - radius * 0.9 - 6.0);
+    camera.z = f64::from(center[2] + radius * 0.35 + 3.0);
     camera.yaw = std::f32::consts::FRAC_PI_2;
     camera.pitch = -0.4;
 }
@@ -1045,7 +1061,7 @@ fn cursor_ray(
     }
 
     (
-        Vector3::new(view.eye[0] as f64, view.eye[1] as f64, view.eye[2] as f64),
+        Vector3::new(camera.x, camera.y, camera.z),
         Vector3::new(dir[0] as f64, dir[1] as f64, dir[2] as f64),
     )
 }
@@ -1127,38 +1143,48 @@ fn block_bounds(world: &VoxelWorld, pos: BlockPos, pad: f64) -> (Vector3, Vector
     (min, max)
 }
 
-fn push_marker(vertices: &mut Vec<f32>, point: Vector3, grid: f64, color: [f32; 3]) {
+fn push_marker(
+    vertices: &mut Vec<f32>,
+    point: Vector3,
+    grid: f64,
+    color: [f32; 3],
+    draw: Anchor,
+) {
     let s = (grid * 0.12).max(0.04);
     push_box(
         vertices,
         Vector3::new(point.x - s, point.y - s, point.z - s),
         Vector3::new(point.x + s, point.y + s, point.z + s),
         color,
+        draw,
     );
 }
 
-fn push_axes(vertices: &mut Vec<f32>) {
+fn push_axes(vertices: &mut Vec<f32>, draw: Anchor) {
     push_box(
         vertices,
         Vector3::new(0.0, -0.04, -0.04),
         Vector3::new(4.0, 0.04, 0.04),
         [0.9, 0.25, 0.25],
+        draw,
     );
     push_box(
         vertices,
         Vector3::new(-0.04, 0.0, -0.04),
         Vector3::new(0.04, 4.0, 0.04),
         [0.25, 0.85, 0.35],
+        draw,
     );
     push_box(
         vertices,
         Vector3::new(-0.04, -0.04, 0.0),
         Vector3::new(0.04, 0.04, 4.0),
         [0.3, 0.55, 1.0],
+        draw,
     );
 }
 
-fn push_grid(vertices: &mut Vec<f32>, step: f32, extent: f32) {
+fn push_grid(vertices: &mut Vec<f32>, step: f32, extent: f32, draw: Anchor) {
     if step <= 0.0 {
         return;
     }
@@ -1173,6 +1199,7 @@ fn push_grid(vertices: &mut Vec<f32>, step: f32, extent: f32) {
             [extent, cursor, -0.03],
             0.02,
             color,
+            draw,
         );
         push_ribbon(
             vertices,
@@ -1180,6 +1207,7 @@ fn push_grid(vertices: &mut Vec<f32>, step: f32, extent: f32) {
             [cursor, extent, -0.03],
             0.02,
             color,
+            draw,
         );
         cursor += step;
     }
@@ -1191,6 +1219,7 @@ fn push_ribbon(
     b: [f32; 3],
     half_width: f32,
     color: [f32; 3],
+    draw: Anchor,
 ) {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
@@ -1202,15 +1231,23 @@ fn push_ribbon(
 
     let sx = -dy / len * half_width;
     let sy = dx / len * half_width;
-    let p0 = [a[0] - sx, a[1] - sy, a[2]];
-    let p1 = [b[0] - sx, b[1] - sy, b[2]];
-    let p2 = [b[0] + sx, b[1] + sy, b[2]];
-    let p3 = [a[0] + sx, a[1] + sy, a[2]];
+    let p0 = shift_point(draw, [a[0] - sx, a[1] - sy, a[2]]);
+    let p1 = shift_point(draw, [b[0] - sx, b[1] - sy, b[2]]);
+    let p2 = shift_point(draw, [b[0] + sx, b[1] + sy, b[2]]);
+    let p3 = shift_point(draw, [a[0] + sx, a[1] + sy, a[2]]);
     push_tri(vertices, p0, p1, p2, color);
     push_tri(vertices, p0, p2, p3, color);
 }
 
-fn push_box(vertices: &mut Vec<f32>, min: Vector3, max: Vector3, color: [f32; 3]) {
+fn shift_point(draw: Anchor, point: [f32; 3]) -> [f32; 3] {
+    draw.relative(
+        f64::from(point[0]),
+        f64::from(point[1]),
+        f64::from(point[2]),
+    )
+}
+
+fn push_box(vertices: &mut Vec<f32>, min: Vector3, max: Vector3, color: [f32; 3], draw: Anchor) {
     let span = [max.x - min.x, max.y - min.y, max.z - min.z];
 
     for face in 0..6 {
@@ -1220,11 +1257,11 @@ fn push_box(vertices: &mut Vec<f32>, min: Vector3, max: Vector3, color: [f32; 3]
         let mut corners = [[0.0f32; 3]; 4];
 
         for corner in 0..4 {
-            corners[corner] = [
-                (min.x + quad[corner].0 as f64 * span[0]) as f32,
-                (min.y + quad[corner].1 as f64 * span[1]) as f32,
-                (min.z + quad[corner].2 as f64 * span[2]) as f32,
-            ];
+            corners[corner] = draw.relative(
+                min.x + quad[corner].0 as f64 * span[0],
+                min.y + quad[corner].1 as f64 * span[1],
+                min.z + quad[corner].2 as f64 * span[2],
+            );
         }
 
         push_tri(vertices, corners[0], corners[1], corners[2], tint);

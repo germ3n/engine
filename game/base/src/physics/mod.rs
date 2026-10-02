@@ -1,3 +1,4 @@
+use crate::anchor::Anchor;
 use crate::anim::{angles_from_pose, pose_matrix};
 use crate::entities::{EntityHandle, EntityList};
 use crate::movement::{STAND_MAXS, STAND_MINS};
@@ -59,6 +60,8 @@ pub struct PhysicsWorld {
     ccd: CCDSolver,
     links: HashMap<EntityHandle, Link>,
     static_body: Option<RigidBodyHandle>,
+    origin: Vector3,
+    static_origin: Vector3,
     brush_revision: u64,
     voxel_revision: u64,
 }
@@ -78,6 +81,8 @@ impl PhysicsWorld {
             ccd: CCDSolver::new(),
             links: HashMap::new(),
             static_body: None,
+            origin: Vector3::new(0.0, 0.0, 0.0),
+            static_origin: Vector3::new(f64::MAX, f64::MAX, f64::MAX),
             brush_revision: u64::MAX,
             voxel_revision: u64::MAX,
         }
@@ -102,7 +107,7 @@ impl PhysicsWorld {
 
         let half = sanitize_half(half);
         let mass = box_mass(half);
-        let pose = Pose::from_parts(translation_of(position), rotation_of(angles));
+        let pose = Pose::from_parts(self.to_sim(position), rotation_of(angles));
         let body = self.bodies.insert(
             RigidBodyBuilder::dynamic()
                 .pose(pose)
@@ -187,20 +192,23 @@ impl PhysicsWorld {
         let Some(link) = self.links.get(&handle).copied() else {
             return;
         };
-
+        let translation = if link.kinematic {
+            self.player_sim(Vector3::new(x, y, z))
+        } else {
+            self.to_sim(Vector3::new(x, y, z))
+        };
         let Some(body) = self.bodies.get_mut(link.body) else {
             return;
         };
 
         if link.kinematic {
-            let translation = player_translation(Vector3::new(x, y, z));
             body.set_translation(translation, true);
             body.set_next_kinematic_translation(translation);
 
             return;
         }
 
-        body.set_translation(Vector::new(x as f32, y as f32, z as f32), true);
+        body.set_translation(translation, true);
     }
 
     pub fn teleport_angles(&mut self, handle: EntityHandle, angles: Angle3) {
@@ -257,6 +265,7 @@ impl PhysicsWorld {
         }
 
         self.forget_invalid(entities);
+        self.recenter(entities, players);
         self.refresh_static(brushes, voxels);
         self.sync_players(entities, players);
         self.integrate(dt as f32, gravity as f32);
@@ -280,6 +289,62 @@ impl PhysicsWorld {
         }
     }
 
+    fn recenter(&mut self, entities: &EntityList, players: &[EntityHandle]) {
+        let mut focus = None;
+        let mut idx = 0;
+
+        while idx < players.len() {
+            if let Some(entity) = entities.get(players[idx]) {
+                focus = Some(entity.base().position);
+
+                break;
+            }
+
+            idx += 1;
+        }
+
+        let Some(focus) = focus else {
+            return;
+        };
+
+        if !Anchor::from_vec(self.origin).drifted(focus.x, focus.y, focus.z) {
+            return;
+        }
+
+        self.origin = focus;
+        let handles: Vec<EntityHandle> = self.links.keys().copied().collect();
+        idx = 0;
+
+        while idx < handles.len() {
+            let handle = handles[idx];
+            idx += 1;
+            let Some(link) = self.links.get(&handle).copied() else {
+                continue;
+            };
+            let Some(entity) = entities.get(handle) else {
+                continue;
+            };
+            let position = entity.base().position;
+            let translation = if link.kinematic {
+                self.player_sim(position)
+            } else {
+                self.to_sim(position)
+            };
+            let Some(body) = self.bodies.get_mut(link.body) else {
+                continue;
+            };
+
+            if link.kinematic {
+                let pose = Pose::from_translation(translation);
+                body.set_position(pose, true);
+                body.set_next_kinematic_position(pose);
+            } else {
+                body.set_translation(translation, true);
+                body.set_rotation(rotation_of(entity.base().angles), true);
+            }
+        }
+    }
+
     fn refresh_static(&mut self, brushes: &BrushMap, voxels: &VoxelWorld) {
         let brush_rev = brushes.revision();
         let voxel_rev = voxels.revision();
@@ -287,12 +352,14 @@ impl PhysicsWorld {
         if self.static_body.is_some()
             && self.brush_revision == brush_rev
             && self.voxel_revision == voxel_rev
+            && self.static_origin == self.origin
         {
             return;
         }
 
         self.brush_revision = brush_rev;
         self.voxel_revision = voxel_rev;
+        self.static_origin = self.origin;
 
         if let Some(handle) = self.static_body.take() {
             self.remove_body(handle);
@@ -308,7 +375,8 @@ impl PhysicsWorld {
             idx += 1;
         }
 
-        self.add_voxels(body, &voxels.mesh());
+        let voxel_mesh = voxels.mesh_at(self.origin);
+        self.add_voxels(body, &voxel_mesh);
     }
 
     fn add_hull(&mut self, body: RigidBodyHandle, points: &[Vector3]) {
@@ -323,7 +391,7 @@ impl PhysicsWorld {
             let point = points[idx];
 
             if point.x.is_finite() && point.y.is_finite() && point.z.is_finite() {
-                cloud.push(Vector::new(point.x as f32, point.y as f32, point.z as f32));
+                cloud.push(self.to_sim(point));
             }
 
             idx += 1;
@@ -386,7 +454,7 @@ impl PhysicsWorld {
     }
 
     fn sync_player(&mut self, handle: EntityHandle, position: Vector3) {
-        let pose = Pose::from_translation(player_translation(position));
+        let pose = Pose::from_translation(self.player_sim(position));
 
         if let Some(link) = self.links.get(&handle).copied() {
             if !link.kinematic {
@@ -457,15 +525,38 @@ impl PhysicsWorld {
             let Some(entity) = entities.get_mut(*handle) else {
                 continue;
             };
+            let position = self.from_sim(translation);
             let base = entity.base_mut();
-            base.position = Vector3::new(
-                translation.x as f64,
-                translation.y as f64,
-                translation.z as f64,
-            );
+            base.position = position;
             base.angles = angles;
             base.velocity = Vector3::new(vel.x as f64, vel.y as f64, vel.z as f64);
         }
+    }
+
+    fn to_sim(&self, position: Vector3) -> Vector {
+        if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
+            return Vector::ZERO;
+        }
+
+        Vector::new(
+            (position.x - self.origin.x) as f32,
+            (position.y - self.origin.y) as f32,
+            (position.z - self.origin.z) as f32,
+        )
+    }
+
+    fn from_sim(&self, translation: Vector) -> Vector3 {
+        Vector3::new(
+            f64::from(translation.x) + self.origin.x,
+            f64::from(translation.y) + self.origin.y,
+            f64::from(translation.z) + self.origin.z,
+        )
+    }
+
+    fn player_sim(&self, position: Vector3) -> Vector {
+        let offset_z = (STAND_MINS.z + STAND_MAXS.z) * 0.5;
+
+        self.to_sim(Vector3::new(position.x, position.y, position.z + offset_z))
     }
 
     fn attach(&mut self, body: RigidBodyHandle, builder: ColliderBuilder) -> ColliderHandle {
@@ -536,14 +627,6 @@ fn box_mass(half: [f32; 3]) -> f32 {
     (volume * DENSITY).max(0.1)
 }
 
-fn translation_of(position: Vector3) -> Vector {
-    if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
-        return Vector::ZERO;
-    }
-
-    Vector::new(position.x as f32, position.y as f32, position.z as f32)
-}
-
 fn linear_velocity(velocity: Vector3) -> Vector {
     if !velocity.x.is_finite() || !velocity.y.is_finite() || !velocity.z.is_finite() {
         return Vector::ZERO;
@@ -557,16 +640,6 @@ fn player_half() -> (f32, f32, f32) {
         ((STAND_MAXS.x - STAND_MINS.x) * 0.5) as f32,
         ((STAND_MAXS.y - STAND_MINS.y) * 0.5) as f32,
         ((STAND_MAXS.z - STAND_MINS.z) * 0.5) as f32,
-    )
-}
-
-fn player_translation(position: Vector3) -> Vector {
-    let offset_z = (STAND_MINS.z + STAND_MAXS.z) * 0.5;
-
-    Vector::new(
-        position.x as f32,
-        position.y as f32,
-        (position.z + offset_z) as f32,
     )
 }
 
@@ -702,7 +775,7 @@ fn voxel_trimesh(floats: &[f32]) -> Option<(Vec<Vector>, Vec<[u32; 3]>)> {
 mod tests {
     use super::*;
     use crate::anim::pose_matrix;
-    use crate::entities::{EntityList, ScriptedEntity};
+    use crate::entities::{EntityList, Player, ScriptedEntity};
 
     #[test]
     fn yaw_pose_matches_the_yaw_matrix() {
@@ -785,5 +858,57 @@ mod tests {
 
         assert!(pos.z > -0.05 && pos.z < 0.2, "z {}", pos.z);
         assert!(vel.z.abs() < 0.5, "vz {}", vel.z);
+    }
+
+    #[test]
+    fn box_rests_far_from_the_origin() {
+        let mut world = PhysicsWorld::new();
+        let mut brushes = BrushMap::new();
+        let far = 50_000.0;
+
+        assert!(brushes.add_box(
+            Vector3::new(far - 2.0, -2.0, -0.5),
+            Vector3::new(far + 2.0, 2.0, 0.0),
+            0,
+        ));
+
+        let voxels = VoxelWorld::new();
+        let mut entities = EntityList::new();
+        let player = entities
+            .spawn(Box::new(Player::new()))
+            .expect("player");
+        {
+            let entity = entities.get_mut(player).expect("player entity");
+            entity.base_mut().position = Vector3::new(far, 0.0, 0.0);
+        }
+        let handle = entities
+            .spawn(Box::new(ScriptedEntity::new(1)))
+            .expect("crate");
+        {
+            let entity = entities.get_mut(handle).expect("crate entity");
+            entity.base_mut().position = Vector3::new(far, 1.5, 2.0);
+        }
+        world.enable_box(
+            handle,
+            Vector3::new(far, 1.5, 2.0),
+            Angle3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.25],
+            [0.25, 0.25, 0.25],
+        );
+        let dt = 1.0 / 60.0;
+        let mut idx = 0;
+
+        while idx < 120 {
+            world.step(&mut entities, &[player], dt, 24.0, &brushes, &voxels);
+            idx += 1;
+        }
+
+        let pos = entities.get(handle).expect("entity").base().position;
+
+        assert!((pos.x - far).abs() < 0.05, "x {}", pos.x);
+        assert!((pos.y - 1.5).abs() < 0.05, "y {}", pos.y);
+        assert!(pos.z > -0.05 && pos.z < 0.2, "z {}", pos.z);
+        assert!((world.origin.x - far).abs() < 1.0, "origin {}", world.origin.x);
     }
 }

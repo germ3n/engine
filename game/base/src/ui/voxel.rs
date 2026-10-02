@@ -12,9 +12,9 @@ pub struct SceneView {
 }
 
 pub struct FlyCamera {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
     pub yaw: f32,
     pub pitch: f32,
 }
@@ -46,17 +46,26 @@ impl FlyCamera {
     pub fn fly(&mut self, wish_forward: f32, wish_right: f32, wish_up: f32, dt: f32, speed: f32) {
         let (fx, fy, fz) = self.forward();
         let (rx, ry, rz) = self.right();
-        let step = speed * dt;
-        self.x += (fx * wish_forward + rx * wish_right) * step;
-        self.y += (fy * wish_forward + ry * wish_right) * step;
-        self.z += (fz * wish_forward + rz * wish_right + wish_up) * step;
+        let step = f64::from(speed * dt);
+        self.x += f64::from(fx * wish_forward + rx * wish_right) * step;
+        self.y += f64::from(fy * wish_forward + ry * wish_right) * step;
+        self.z += f64::from(fz * wish_forward + rz * wish_right + wish_up) * step;
     }
 
     pub fn scene(&self, aspect: f32, scale: f32) -> SceneView {
+        self.scene_at(aspect, scale, crate::anchor::Anchor::ZERO)
+    }
+
+    pub fn scene_at(
+        &self,
+        aspect: f32,
+        scale: f32,
+        anchor: crate::anchor::Anchor,
+    ) -> SceneView {
         let (fx, fy, fz) = self.forward();
 
         SceneView {
-            eye: [self.x, self.y, self.z],
+            eye: anchor.relative(self.x, self.y, self.z),
             forward: [fx, fy, fz],
             up: [0.0, 0.0, 1.0],
             fov_y: 70.0_f32.to_radians(),
@@ -81,10 +90,10 @@ impl FlyCamera {
         let fy = yaw.sin();
         let rx = fy;
         let ry = -fx;
-        let step = speed * dt;
-        self.x += (fx * wish_forward + rx * wish_right) * step;
-        self.y += (fy * wish_forward + ry * wish_right) * step;
-        self.z += wish_up * step;
+        let step = f64::from(speed * dt);
+        self.x += f64::from(fx * wish_forward + rx * wish_right) * step;
+        self.y += f64::from(fy * wish_forward + ry * wish_right) * step;
+        self.z += f64::from(wish_up) * step;
     }
 
     fn forward(&self) -> (f32, f32, f32) {

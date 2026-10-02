@@ -385,8 +385,12 @@ impl VoxelWorld {
     }
 
     pub fn mesh(&self) -> Vec<f32> {
+        self.mesh_at(Vector3::new(0.0, 0.0, 0.0))
+    }
+
+    pub fn mesh_at(&self, origin: Vector3) -> Vec<f32> {
         let mut vertices = Vec::new();
-        let scale = self.scale as f32;
+        let scale = self.scale;
 
         for (chunk_pos, chunk) in &self.chunks {
             for idx in 0..chunk.blocks.len() {
@@ -405,7 +409,7 @@ impl VoxelWorld {
                     chunk_pos.y * CHUNK_EDGE + local_y,
                     chunk_pos.z * CHUNK_EDGE + local_z,
                 );
-                push_block(&mut vertices, self, pos, id, scale);
+                push_block(&mut vertices, self, pos, id, scale, origin);
             }
         }
 
@@ -837,10 +841,17 @@ const QUADS: [[(i32, i32, i32); 4]; 6] = [
 
 const SHADES: [f32; 6] = [0.72, 0.62, 0.58, 0.5, 1.0, 0.4];
 
-fn push_block(vertices: &mut Vec<f32>, world: &VoxelWorld, pos: BlockPos, id: u16, scale: f32) {
-    let x0 = pos.x as f32 * scale;
-    let y0 = pos.y as f32 * scale;
-    let z0 = pos.z as f32 * scale;
+fn push_block(
+    vertices: &mut Vec<f32>,
+    world: &VoxelWorld,
+    pos: BlockPos,
+    id: u16,
+    scale: f64,
+    origin: Vector3,
+) {
+    let x0 = pos.x as f64 * scale - origin.x;
+    let y0 = pos.y as f64 * scale - origin.y;
+    let z0 = pos.z as f64 * scale - origin.z;
     let [red, green, blue] = block_rgb(id);
 
     for face in 0..6 {
@@ -859,9 +870,9 @@ fn push_block(vertices: &mut Vec<f32>, world: &VoxelWorld, pos: BlockPos, id: u1
 
         for corner in 0..4 {
             corners[corner] = [
-                x0 + quad[corner].0 as f32 * scale,
-                y0 + quad[corner].1 as f32 * scale,
-                z0 + quad[corner].2 as f32 * scale,
+                (x0 + quad[corner].0 as f64 * scale) as f32,
+                (y0 + quad[corner].1 as f64 * scale) as f32,
+                (z0 + quad[corner].2 as f64 * scale) as f32,
             ];
         }
 

@@ -270,7 +270,7 @@ impl<In, Out> GameState<In, Out> {
         self.sound.set_command_tick(0);
     }
 
-    pub fn update_sound(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32, dt: f32) {
+    pub fn update_sound(&mut self, x: f64, y: f64, z: f64, yaw: f32, pitch: f32, dt: f32) {
         let buses = Buses {
             master: crate::console::float_cvar(&self.cvars, "snd_volume", 1.0).clamp(0.0, 4.0)
                 as f32,
@@ -286,7 +286,7 @@ impl<In, Out> GameState<In, Out> {
             crate::console::float_cvar(&self.cvars, "snd_maxdistance", 48.0).max(0.5) as f32;
         self.sound.update(
             dt,
-            Vector3::new(x as f64, y as f64, z as f64),
+            Vector3::new(x, y, z),
             yaw,
             pitch,
             buses,
@@ -435,6 +435,7 @@ impl<In, Out> GameState<In, Out> {
         local_pos: Option<crate::script::libs::vector3::Vector3>,
         local_time: f64,
         cull: crate::anim::Cull,
+        anchor: crate::anchor::Anchor,
     ) -> crate::ui::skin::SkinBatch {
         let dt = self.tick_interval;
         let mut inputs = Vec::new();
@@ -469,7 +470,7 @@ impl<In, Out> GameState<In, Out> {
                 mesh: base.anim.mesh,
                 clips: base.anim.clips,
                 playback: base.anim,
-                position: [position.x as f32, position.y as f32, position.z as f32],
+                position: anchor.relative(position.x, position.y, position.z),
                 pitch,
                 yaw: base.angles.y,
                 roll,

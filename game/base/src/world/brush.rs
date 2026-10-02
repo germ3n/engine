@@ -417,18 +417,26 @@ impl BrushMap {
     }
 
     pub fn mesh(&self) -> Vec<f32> {
+        self.mesh_at(Vector3::new(0.0, 0.0, 0.0))
+    }
+
+    pub fn mesh_at(&self, origin: Vector3) -> Vec<f32> {
         if let Some(cache) = &self.mesh_cache {
-            return cache.clone();
+            return shift_cached(cache, origin);
         }
 
-        self.build_mesh(None)
+        self.build_mesh(None, origin)
     }
 
     pub fn mesh_highlight(&self, selected: usize) -> Vec<f32> {
-        self.build_mesh(Some(selected))
+        self.mesh_highlight_at(selected, Vector3::new(0.0, 0.0, 0.0))
     }
 
-    fn build_mesh(&self, selected: Option<usize>) -> Vec<f32> {
+    pub fn mesh_highlight_at(&self, selected: usize, origin: Vector3) -> Vec<f32> {
+        self.build_mesh(Some(selected), origin)
+    }
+
+    fn build_mesh(&self, selected: Option<usize>, origin: Vector3) -> Vec<f32> {
         let mut vertices = Vec::new();
 
         for (idx, brush) in self.brushes.iter().enumerate() {
@@ -438,9 +446,9 @@ impl BrushMap {
                 }
 
                 if selected == Some(idx) {
-                    push_poly_color(&mut vertices, &poly, [1.0, 0.86, 0.28]);
+                    push_poly_color(&mut vertices, &poly, [1.0, 0.86, 0.28], origin);
                 } else {
-                    push_poly(&mut vertices, &poly);
+                    push_poly(&mut vertices, &poly, origin);
                 }
             }
         }
@@ -935,7 +943,16 @@ fn brush_map_from_bsp(bytes: &[u8]) -> Result<BrushMap, String> {
                     continue;
                 }
 
-                push_tri(&mut mesh, a, b, c, shaded[0], shaded[1], shaded[2]);
+                push_tri(
+                    &mut mesh,
+                    a,
+                    b,
+                    c,
+                    shaded[0],
+                    shaded[1],
+                    shaded[2],
+                    Vector3::new(0.0, 0.0, 0.0),
+                );
             }
         }
     }
@@ -1812,18 +1829,32 @@ fn buried(points: &[Vector3], owner: usize, brushes: &[Brush]) -> bool {
     false
 }
 
-fn push_poly(vertices: &mut Vec<f32>, poly: &Poly) {
+fn push_poly(vertices: &mut Vec<f32>, poly: &Poly, origin: Vector3) {
     let [red, green, blue] = material_rgb(poly.material);
     let shade = 0.42 + 0.58 * ((poly.normal.z as f32 + 1.0) * 0.5);
 
-    push_fan(vertices, poly, red * shade, green * shade, blue * shade);
+    push_fan(
+        vertices,
+        poly,
+        red * shade,
+        green * shade,
+        blue * shade,
+        origin,
+    );
 }
 
-fn push_poly_color(vertices: &mut Vec<f32>, poly: &Poly, color: [f32; 3]) {
-    push_fan(vertices, poly, color[0], color[1], color[2]);
+fn push_poly_color(vertices: &mut Vec<f32>, poly: &Poly, color: [f32; 3], origin: Vector3) {
+    push_fan(vertices, poly, color[0], color[1], color[2], origin);
 }
 
-fn push_fan(vertices: &mut Vec<f32>, poly: &Poly, red: f32, green: f32, blue: f32) {
+fn push_fan(
+    vertices: &mut Vec<f32>,
+    poly: &Poly,
+    red: f32,
+    green: f32,
+    blue: f32,
+    origin: Vector3,
+) {
     let mut idx = 1;
 
     while idx + 1 < poly.points.len() {
@@ -1832,7 +1863,7 @@ fn push_fan(vertices: &mut Vec<f32>, poly: &Poly, red: f32, green: f32, blue: f3
         let c = poly.points[idx + 1];
 
         if tri_area(a, b, c) > AREA_EPS {
-            push_tri(vertices, a, b, c, red, green, blue);
+            push_tri(vertices, a, b, c, red, green, blue, origin);
         }
 
         idx += 1;
@@ -1854,19 +1885,45 @@ fn push_tri(
     red: f32,
     green: f32,
     blue: f32,
+    origin: Vector3,
 ) {
-    push_vert(vertices, a, red, green, blue);
-    push_vert(vertices, b, red, green, blue);
-    push_vert(vertices, c, red, green, blue);
+    push_vert(vertices, a, red, green, blue, origin);
+    push_vert(vertices, b, red, green, blue, origin);
+    push_vert(vertices, c, red, green, blue, origin);
 }
 
-fn push_vert(vertices: &mut Vec<f32>, position: Vector3, red: f32, green: f32, blue: f32) {
-    vertices.push(position.x as f32);
-    vertices.push(position.y as f32);
-    vertices.push(position.z as f32);
+fn push_vert(
+    vertices: &mut Vec<f32>,
+    position: Vector3,
+    red: f32,
+    green: f32,
+    blue: f32,
+    origin: Vector3,
+) {
+    vertices.push((position.x - origin.x) as f32);
+    vertices.push((position.y - origin.y) as f32);
+    vertices.push((position.z - origin.z) as f32);
     vertices.push(red);
     vertices.push(green);
     vertices.push(blue);
+}
+
+fn shift_cached(cache: &[f32], origin: Vector3) -> Vec<f32> {
+    if origin.x == 0.0 && origin.y == 0.0 && origin.z == 0.0 {
+        return cache.to_vec();
+    }
+
+    let mut out = cache.to_vec();
+    let mut idx = 0;
+
+    while idx + 5 < out.len() {
+        out[idx] = (f64::from(out[idx]) - origin.x) as f32;
+        out[idx + 1] = (f64::from(out[idx + 1]) - origin.y) as f32;
+        out[idx + 2] = (f64::from(out[idx + 2]) - origin.z) as f32;
+        idx += 6;
+    }
+
+    out
 }
 
 fn material_rgb(id: u16) -> [f32; 3] {
@@ -2080,6 +2137,19 @@ mod tests {
 
         assert_eq!(mesh.len(), 216);
         assert!(faces_point_outward(&mesh, [0.5, 0.5, 0.5]));
+    }
+
+    #[test]
+    fn mesh_at_keeps_coordinates_near_the_anchor() {
+        let map = box_map();
+        let mesh = map.mesh_at(Vector3::new(100_000.0, 0.0, 0.0));
+        let mut idx = 0;
+
+        while idx < mesh.len() {
+            assert!(mesh[idx] < -99_998.0, "{}", mesh[idx]);
+            assert!(mesh[idx] > -100_001.0, "{}", mesh[idx]);
+            idx += 6;
+        }
     }
 
     #[test]

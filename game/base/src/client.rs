@@ -26,6 +26,7 @@ use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
 use crate::ui::backend;
+use crate::anchor::Anchor;
 use crate::ui::voxel::FlyCamera;
 use crate::ui::window::Window;
 use crate::ui::Color;
@@ -234,6 +235,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut scene_world = u64::MAX;
     let mut scene_brushes = u64::MAX;
     let mut scene_revision = 0u64;
+    let mut scene_anchor = Anchor::ZERO;
     let mut camera = FlyCamera::new();
     let mut prediction = Prediction::new();
     let mut remotes: HashMap<EntityHandle, VecDeque<NetPose>> = HashMap::new();
@@ -322,16 +324,24 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     let world_revision = game.voxel_world.revision();
                     let brush_revision = game.brush_world.revision();
 
-                    if scene_world != world_revision || scene_brushes != brush_revision {
-                        scene_mesh = game.voxel_world.mesh();
-                        scene_mesh.extend(game.brush_world.mesh());
+                    let camera_moved = scene_anchor.drifted(camera.x, camera.y, camera.z);
+
+                    if camera_moved {
+                        scene_anchor = Anchor::new(camera.x, camera.y, camera.z);
+                    }
+
+                    if scene_world != world_revision || scene_brushes != brush_revision || camera_moved
+                    {
+                        let origin = scene_anchor.to_vec();
+                        scene_mesh = game.voxel_world.mesh_at(origin);
+                        scene_mesh.extend(game.brush_world.mesh_at(origin));
                         scene_world = world_revision;
                         scene_brushes = brush_revision;
                         scene_revision = scene_revision.wrapping_add(1);
                     }
 
                     client_window.begin_frame(0.53, 0.71, 0.85);
-                    let scene = camera.scene(aspect, game.voxel_world.scale() as f32);
+                    let scene = camera.scene_at(aspect, game.voxel_world.scale() as f32, scene_anchor);
                     client_window.draw_colored_mesh(&scene_mesh, scene_revision, &scene);
                     let skin_alpha = if game.tick_interval > 0.0 {
                         (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
@@ -357,6 +367,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         prediction.view_origin(skin_alpha),
                         local_time,
                         cull,
+                        scene_anchor,
                     );
                     client_window.draw_skinned(&batch, &scene);
 
@@ -879,9 +890,9 @@ fn body_origin(
 }
 
 fn place_camera(camera: &mut FlyCamera, origin: Vector3, look: Angle3, eye: f64) {
-    camera.x = origin.x as f32;
-    camera.y = origin.y as f32;
-    camera.z = (origin.z + eye) as f32;
+    camera.x = origin.x;
+    camera.y = origin.y;
+    camera.z = origin.z + eye;
     camera.yaw = look.y.to_radians();
     camera.pitch = look.p.to_radians();
 }
