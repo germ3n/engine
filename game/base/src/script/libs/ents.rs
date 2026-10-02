@@ -59,7 +59,10 @@ pub struct AnimScope<'a> {
 }
 
 impl<'a> AnimScope<'a> {
-    pub fn new(access: &'a AtomicPtr<crate::anim::AnimAssets>, anims: *mut crate::anim::AnimAssets) -> Self {
+    pub fn new(
+        access: &'a AtomicPtr<crate::anim::AnimAssets>,
+        anims: *mut crate::anim::AnimAssets,
+    ) -> Self {
         let previous = access.swap(anims, Ordering::Relaxed);
 
         Self { access, previous }
@@ -75,7 +78,8 @@ impl Drop for AnimScope<'_> {
 fn anims(access: &AtomicPtr<crate::anim::AnimAssets>) -> Result<&mut crate::anim::AnimAssets> {
     let ptr = access.load(Ordering::Relaxed);
 
-    unsafe { ptr.as_mut() }.ok_or_else(|| Error::RuntimeError("animation is not available".to_string()))
+    unsafe { ptr.as_mut() }
+        .ok_or_else(|| Error::RuntimeError("animation is not available".to_string()))
 }
 
 fn clock(lua: &Lua) -> u64 {
@@ -115,7 +119,9 @@ where
 }
 
 fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> Table {
-    let native = lua.create_table().expect("Failed to create ents native table");
+    let native = lua
+        .create_table()
+        .expect("Failed to create ents native table");
 
     let shared = access.clone();
     add_native(lua, &native, "create", move |_, class_hash: u32| {
@@ -139,7 +145,9 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     add_native(lua, &native, "class_hash", move |_, raw: u32| {
         let list = entities(&shared)?;
 
-        Ok(list.get(EntityHandle(raw)).map(|entity| entity.class_hash()))
+        Ok(list
+            .get(EntityHandle(raw))
+            .map(|entity| entity.class_hash()))
     });
 
     let shared = access.clone();
@@ -160,7 +168,9 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
-    add_native(lua, &native, "count", move |_, ()| Ok(entities(&shared)?.len()));
+    add_native(lua, &native, "count", move |_, ()| {
+        Ok(entities(&shared)?.len())
+    });
 
     let shared = access.clone();
     add_native(lua, &native, "revision", move |_, ()| {
@@ -184,11 +194,16 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     add_native(lua, &native, "handle", |_, raw: u32| Ok(EntityHandle(raw)));
 
     let shared = access.clone();
-    add_native(lua, &native, "set_owner", move |_, (raw, owner): (u32, Option<u32>)| {
-        let owner = EntityHandle(owner.unwrap_or(0));
+    add_native(
+        lua,
+        &native,
+        "set_owner",
+        move |_, (raw, owner): (u32, Option<u32>)| {
+            let owner = EntityHandle(owner.unwrap_or(0));
 
-        Ok(entities(&shared)?.set_owner(EntityHandle(raw), owner))
-    });
+            Ok(entities(&shared)?.set_owner(EntityHandle(raw), owner))
+        },
+    );
 
     let shared = access.clone();
     add_native(lua, &native, "get_owner", move |_, raw: u32| {
@@ -215,13 +230,20 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
-    add_native(lua, &native, "set_pos", move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
-        let list = entities(&shared)?;
-        let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
-        entity.base_mut().position = Vector3::new(x, y, z);
+    add_native(
+        lua,
+        &native,
+        "set_pos",
+        move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
+            let list = entities(&shared)?;
+            let entity = list
+                .get_mut(EntityHandle(raw))
+                .ok_or_else(|| invalid(raw))?;
+            entity.base_mut().position = Vector3::new(x, y, z);
 
-        Ok(())
-    });
+            Ok(())
+        },
+    );
 
     let shared = access.clone();
     add_native(lua, &native, "get_angles", move |_, raw: u32| {
@@ -233,13 +255,20 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
-    add_native(lua, &native, "set_angles", move |_, (raw, p, y, r): (u32, f32, f32, f32)| {
-        let list = entities(&shared)?;
-        let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
-        entity.base_mut().angles = Angle3::new(p, y, r);
+    add_native(
+        lua,
+        &native,
+        "set_angles",
+        move |_, (raw, p, y, r): (u32, f32, f32, f32)| {
+            let list = entities(&shared)?;
+            let entity = list
+                .get_mut(EntityHandle(raw))
+                .ok_or_else(|| invalid(raw))?;
+            entity.base_mut().angles = Angle3::new(p, y, r);
 
-        Ok(())
-    });
+            Ok(())
+        },
+    );
 
     let shared = access.clone();
     add_native(lua, &native, "get_velocity", move |_, raw: u32| {
@@ -251,13 +280,20 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
-    add_native(lua, &native, "set_velocity", move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
-        let list = entities(&shared)?;
-        let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
-        entity.base_mut().velocity = Vector3::new(x, y, z);
+    add_native(
+        lua,
+        &native,
+        "set_velocity",
+        move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
+            let list = entities(&shared)?;
+            let entity = list
+                .get_mut(EntityHandle(raw))
+                .ok_or_else(|| invalid(raw))?;
+            entity.base_mut().velocity = Vector3::new(x, y, z);
 
-        Ok(())
-    });
+            Ok(())
+        },
+    );
 
     let ents_access = access.clone();
     let anims_access = anim_access.clone();
@@ -268,7 +304,9 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
         move |lua, (raw, mesh, clips): (u32, String, String)| {
             let list = entities(&ents_access)?;
             let bank = anims(&anims_access)?;
-            let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let entity = list
+                .get_mut(EntityHandle(raw))
+                .ok_or_else(|| invalid(raw))?;
             bank.assign(raw, &mut entity.base_mut().anim, &mesh, &clips)
                 .map_err(Error::RuntimeError)?;
             let _ = lua;
@@ -286,7 +324,9 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
         move |lua, (raw, name, rate): (u32, String, f64)| {
             let list = entities(&ents_access)?;
             let bank = anims(&anims_access)?;
-            let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let entity = list
+                .get_mut(EntityHandle(raw))
+                .ok_or_else(|| invalid(raw))?;
             let clips = entity.base().anim.clips;
             let id = bank
                 .sequence_id(clips, &name)
@@ -309,7 +349,9 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
         move |lua, (raw, name, rate, weight): (u32, String, f64, f64)| {
             let list = entities(&ents_access)?;
             let bank = anims(&anims_access)?;
-            let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let entity = list
+                .get_mut(EntityHandle(raw))
+                .ok_or_else(|| invalid(raw))?;
             let clips = entity.base().anim.clips;
             let id = bank
                 .sequence_id(clips, &name)
@@ -326,13 +368,17 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     let ents_access = access.clone();
     add_native(lua, &native, "stop_gesture", move |_, raw: u32| {
         let list = entities(&ents_access)?;
-        let entity = list.get_mut(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        let entity = list
+            .get_mut(EntityHandle(raw))
+            .ok_or_else(|| invalid(raw))?;
         entity.base_mut().anim.clear_gesture();
 
         Ok(())
     });
 
-    let classes = lua.create_table().expect("Failed to create ents classes table");
+    let classes = lua
+        .create_table()
+        .expect("Failed to create ents classes table");
     classes
         .raw_set(Player::CLASS_HASH, "Player")
         .expect("[ents] Failed setting Player class");
@@ -619,7 +665,12 @@ pub fn removed(lua: &Lua, handles: &[(EntityHandle, bool)]) -> Result<()> {
     function.call((list, handles.len()))
 }
 
-pub fn net_spawn(lua: &Lua, handle: EntityHandle, vars: &[NetVar], time: Option<f64>) -> Result<bool> {
+pub fn net_spawn(
+    lua: &Lua,
+    handle: EntityHandle,
+    vars: &[NetVar],
+    time: Option<f64>,
+) -> Result<bool> {
     let function: Function = lua.named_registry_value(ENTS_NET_SPAWN)?;
     let blob = lua_blob(lua, encode_var_list(vars)?)?;
 
@@ -658,7 +709,12 @@ pub fn present_interpolated(lua: &Lua, time: f64) -> Result<()> {
     function.call(time)
 }
 
-pub fn predicted(lua: &Lua, handle: EntityHandle, cmd: &UserCommand, first_time: bool) -> Result<()> {
+pub fn predicted(
+    lua: &Lua,
+    handle: EntityHandle,
+    cmd: &UserCommand,
+    first_time: bool,
+) -> Result<()> {
     let function: Function = lua.named_registry_value(ENTS_PREDICTED)?;
 
     function.call((
@@ -841,11 +897,23 @@ mod tests {
         assert_eq!(value(vars, "neg"), &NetValue::Int(-3));
         assert_eq!(value(vars, "on"), &NetValue::Bool(false));
         assert_eq!(value(vars, "rate"), &NetValue::Float(0.25));
-        assert_eq!(value(vars, "name"), &NetValue::String("blaster".to_string()));
+        assert_eq!(
+            value(vars, "name"),
+            &NetValue::String("blaster".to_string())
+        );
         assert_eq!(value(vars, "note"), &NetValue::String(String::new()));
-        assert_eq!(value(vars, "pos"), &NetValue::Vector3(Vector3::new(1.0, 2.0, 3.0)));
-        assert_eq!(value(vars, "ang"), &NetValue::Angle3(Angle3::new(10.0, 20.0, 30.0)));
-        assert_eq!(value(vars, "buddy"), &NetValue::Entity(EntityHandle(buddy as u32)));
+        assert_eq!(
+            value(vars, "pos"),
+            &NetValue::Vector3(Vector3::new(1.0, 2.0, 3.0))
+        );
+        assert_eq!(
+            value(vars, "ang"),
+            &NetValue::Angle3(Angle3::new(10.0, 20.0, 30.0))
+        );
+        assert_eq!(
+            value(vars, "buddy"),
+            &NetValue::Entity(EntityHandle(buddy as u32))
+        );
         assert_eq!(value(vars, "gone"), &NetValue::Nil);
 
         let copy_raw: f64 = engine
@@ -1035,15 +1103,7 @@ mod tests {
         let handle = EntityHandle(raw as u32);
 
         let apply = |vars: Vec<NetVar>, time: f64| {
-            apply_networked(
-                &engine.lua,
-                &[EntityNetworked {
-                    handle,
-                    vars,
-                }],
-                Some(time),
-            )
-            .unwrap();
+            apply_networked(&engine.lua, &[EntityNetworked { handle, vars }], Some(time)).unwrap();
         };
 
         apply(

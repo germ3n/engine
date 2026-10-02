@@ -98,7 +98,11 @@ impl AnimPlayback {
 
     pub fn set_gesture(&mut self, gesture: u16, tick: u64, rate: f32, weight: f32) {
         let rate = sanitize_rate(rate);
-        let weight = if weight.is_finite() { weight.clamp(0.0, 1.0) } else { 1.0 };
+        let weight = if weight.is_finite() {
+            weight.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
 
         if self.gesture == gesture
             && (self.gesture_rate - rate).abs() < 1e-4
@@ -191,7 +195,14 @@ pub struct Cull {
     pub far: f32,
 }
 
-pub fn cull_from(eye: [f32; 3], forward: [f32; 3], up: [f32; 3], fov_y: f32, aspect: f32, far: f32) -> Cull {
+pub fn cull_from(
+    eye: [f32; 3],
+    forward: [f32; 3],
+    up: [f32; 3],
+    fov_y: f32,
+    aspect: f32,
+    far: f32,
+) -> Cull {
     let right = normalize3(cross(forward, up));
     let up = normalize3(cross(right, forward));
 
@@ -358,7 +369,13 @@ impl AnimAssets {
         None
     }
 
-    pub fn assign(&mut self, raw: u32, playback: &mut AnimPlayback, mesh: &str, clips: &str) -> Result<(), String> {
+    pub fn assign(
+        &mut self,
+        raw: u32,
+        playback: &mut AnimPlayback,
+        mesh: &str,
+        clips: &str,
+    ) -> Result<(), String> {
         let mesh_id = self.load_mesh(mesh)?;
         let clip_id = self.load_clips(clips)?;
         playback.mesh = mesh_id;
@@ -375,7 +392,13 @@ impl AnimAssets {
         Ok(())
     }
 
-    pub fn root_motion(&self, playback: &AnimPlayback, yaw: f32, tick: u64, dt: f64) -> Option<RootStep> {
+    pub fn root_motion(
+        &self,
+        playback: &AnimPlayback,
+        yaw: f32,
+        tick: u64,
+        dt: f64,
+    ) -> Option<RootStep> {
         if tick == 0 {
             return None;
         }
@@ -387,8 +410,18 @@ impl AnimAssets {
         }
 
         let track = sequence.tracks.first()?;
-        let from = elapsed((tick - 1) as f64, playback.sequence_tick, playback.sequence_rate, dt);
-        let to = elapsed(tick as f64, playback.sequence_tick, playback.sequence_rate, dt);
+        let from = elapsed(
+            (tick - 1) as f64,
+            playback.sequence_tick,
+            playback.sequence_rate,
+            dt,
+        );
+        let to = elapsed(
+            tick as f64,
+            playback.sequence_tick,
+            playback.sequence_rate,
+            dt,
+        );
         let from_s = wrap_time(from, sequence.duration, sequence.loops());
         let to_s = wrap_time(to, sequence.duration, sequence.loops());
         let (dx, dy, dyaw) = if sequence.loops() && to_s + 1e-4 < from_s {
@@ -406,7 +439,13 @@ impl AnimAssets {
         Some(RootStep { dx, dy, dyaw })
     }
 
-    pub fn events(&self, playback: &AnimPlayback, from_tick: f64, to_tick: f64, dt: f64) -> Vec<String> {
+    pub fn events(
+        &self,
+        playback: &AnimPlayback,
+        from_tick: f64,
+        to_tick: f64,
+        dt: f64,
+    ) -> Vec<String> {
         let mut names = Vec::new();
         self.collect_events(playback, from_tick, to_tick, dt, &mut names);
 
@@ -498,9 +537,21 @@ impl AnimAssets {
         batch
     }
 
-    fn collect_events(&self, playback: &AnimPlayback, from_tick: f64, to_tick: f64, dt: f64, out: &mut Vec<String>) {
+    fn collect_events(
+        &self,
+        playback: &AnimPlayback,
+        from_tick: f64,
+        to_tick: f64,
+        dt: f64,
+        out: &mut Vec<String>,
+    ) {
         if let Some(sequence) = self.sequence(playback.clips, playback.sequence) {
-            let from = elapsed(from_tick, playback.sequence_tick, playback.sequence_rate, dt);
+            let from = elapsed(
+                from_tick,
+                playback.sequence_tick,
+                playback.sequence_rate,
+                dt,
+            );
             let to = elapsed(to_tick, playback.sequence_tick, playback.sequence_rate, dt);
             events_between(sequence, from, to, out);
         }
@@ -552,7 +603,14 @@ impl AnimAssets {
         self.bone_maps.get(&(mesh, clips)).map(Vec::as_slice)
     }
 
-    fn sample_palette(&mut self, mesh: u32, clips: u32, playback: &AnimPlayback, time: f64, dt: f64) -> bool {
+    fn sample_palette(
+        &mut self,
+        mesh: u32,
+        clips: u32,
+        playback: &AnimPlayback,
+        time: f64,
+        dt: f64,
+    ) -> bool {
         let bone_count = match self.meshes.get(mesh as usize) {
             Some(stored) => stored.parents.len(),
             None => return false,
@@ -773,7 +831,10 @@ mod tests {
 
         assert!(turned[0].abs() < 1e-4);
         assert!((turned[1] - 1.0).abs() < 1e-4);
-        assert!((yaw_of(quat_z(std::f32::consts::FRAC_PI_2)) - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+        assert!(
+            (yaw_of(quat_z(std::f32::consts::FRAC_PI_2)) - std::f32::consts::FRAC_PI_2).abs()
+                < 1e-4
+        );
     }
 
     #[test]

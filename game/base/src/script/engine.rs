@@ -376,7 +376,11 @@ impl ScriptEngine {
         match crate::script::libs::ents::end_reconcile(&self.lua) {
             Ok(changed) => {
                 if changed > 0 {
-                    log::debug!("[{} netvar] reconcile mispredicted keys={}", self.tag(), changed);
+                    log::debug!(
+                        "[{} netvar] reconcile mispredicted keys={}",
+                        self.tag(),
+                        changed
+                    );
                 }
             }
             Err(err) => {

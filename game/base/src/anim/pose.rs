@@ -238,11 +238,7 @@ pub fn locals_from_tracks(
     }
 }
 
-pub fn strip_root(
-    pos: &mut [f32; 3],
-    rot: &mut [f32; 4],
-    bind_pos: [f32; 3],
-) {
+pub fn strip_root(pos: &mut [f32; 3], rot: &mut [f32; 4], bind_pos: [f32; 3]) {
     pos[0] = bind_pos[0];
     pos[1] = bind_pos[1];
     *rot = remove_yaw(*rot);
@@ -434,8 +430,22 @@ pub fn yaw_matrix(position: [f32; 3], yaw_deg: f32) -> [f32; 16] {
     let (sin, cos) = yaw_deg.to_radians().sin_cos();
 
     [
-        cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, position[0], position[1],
-        position[2], 1.0,
+        cos,
+        sin,
+        0.0,
+        0.0,
+        -sin,
+        cos,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        position[0],
+        position[1],
+        position[2],
+        1.0,
     ]
 }
 
@@ -444,7 +454,8 @@ pub const IDENTITY: [f32; 16] = [
 ];
 
 fn norm_quat(quat: [f32; 4]) -> [f32; 4] {
-    let len = (quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3]).sqrt();
+    let len =
+        (quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3]).sqrt();
 
     if len <= 1e-8 {
         return [0.0, 0.0, 0.0, 1.0];
@@ -462,7 +473,17 @@ fn wrap_pi(radians: f64) -> f64 {
     wrapped - std::f64::consts::PI
 }
 
-pub fn sees(eye: [f32; 3], forward: [f32; 3], right: [f32; 3], up: [f32; 3], tan_y: f32, aspect: f32, far: f32, point: [f32; 3], radius: f32) -> bool {
+pub fn sees(
+    eye: [f32; 3],
+    forward: [f32; 3],
+    right: [f32; 3],
+    up: [f32; 3],
+    tan_y: f32,
+    aspect: f32,
+    far: f32,
+    point: [f32; 3],
+    radius: f32,
+) -> bool {
     let delta = [point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]];
     let depth = delta[0] * forward[0] + delta[1] * forward[1] + delta[2] * forward[2];
 

@@ -36,7 +36,10 @@ impl<'a> Cursor<'a> {
     }
 
     fn take(&mut self, count: usize) -> Result<&'a [u8], String> {
-        let end = self.at.checked_add(count).ok_or_else(|| "truncated".to_string())?;
+        let end = self
+            .at
+            .checked_add(count)
+            .ok_or_else(|| "truncated".to_string())?;
 
         if end > self.bytes.len() {
             return Err("truncated".to_string());
@@ -326,7 +329,8 @@ pub fn write_clips(clips: &ClipSet) -> Result<Vec<u8>, String> {
         }
 
         for track in &sequence.tracks {
-            if track.pos_times.len() != track.pos.len() || track.rot_times.len() != track.rot.len() {
+            if track.pos_times.len() != track.pos.len() || track.rot_times.len() != track.rot.len()
+            {
                 return Err("key count".to_string());
             }
 

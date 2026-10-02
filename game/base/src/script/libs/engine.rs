@@ -65,7 +65,7 @@ pub fn publish_clock(lua: &Lua, cur_time: f64, frame_time: f64, tick_count: u64)
     kind = "library",
     name = "engine",
     realm = "shared",
-    summary = "Simulation clock. curtime and tick_count advance with the server. frametime is the last frame delta. tick_interval is fixed for the session.",
+    summary = "Simulation clock. curtime and tick_count advance with the server. frametime is the last frame delta. tick_interval is fixed for the session."
 )]
 pub fn register_engine_lib(lua: &Lua, tick_interval: f64) {
     let engine_table = lua.create_table().expect("Failed to create engine table");

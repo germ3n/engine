@@ -977,7 +977,10 @@ fn reconcile_player(
     }
 
     if let Some(entity) = game.entities.get_mut(snapshot.handle) {
-        entity.base_mut().anim.apply_remote(&snapshot.anim, snapshot.ack);
+        entity
+            .base_mut()
+            .anim
+            .apply_remote(&snapshot.anim, snapshot.ack);
     }
 
     let (predicted_pos, predicted_vel) = match game.entities.get(snapshot.handle) {
@@ -1165,9 +1168,12 @@ fn present_remotes(
 
         if let Some(playback) = playback {
             if playback.event_tick > 0 && crossed > playback.event_tick {
-                let names = game
-                    .anims
-                    .events(&playback, playback.event_tick as f64, crossed as f64, interval);
+                let names = game.anims.events(
+                    &playback,
+                    playback.event_tick as f64,
+                    crossed as f64,
+                    interval,
+                );
                 let mut name_idx = 0;
 
                 while name_idx < names.len() {
@@ -1366,10 +1372,18 @@ fn apply_server_event(
                 reconcile_player(game, prediction, &player, &entities);
             }
         }
-        ServerToClient::AnimModel { handle, mesh, clips } => {
+        ServerToClient::AnimModel {
+            handle,
+            mesh,
+            clips,
+        } => {
             apply_anim_model(
                 game,
-                EntityModel { handle, mesh, clips },
+                EntityModel {
+                    handle,
+                    mesh,
+                    clips,
+                },
             );
         }
         ServerToClient::EntityOwner { handle, owner } => {
@@ -1462,8 +1476,7 @@ fn apply_server_event(
         ServerToClient::SoundBaseline { sounds } => {
             let mut idx = 0;
 
-            while idx < sounds.len()
-            {
+            while idx < sounds.len() {
                 let sound = &sounds[idx];
                 game.sound.hear_play(
                     sound.sound_hash,

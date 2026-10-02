@@ -1,13 +1,11 @@
 use glyph_brush::ab_glyph::FontArc;
 use glyph_brush::{BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text};
 
-pub fn bytes_of(values: &[f32]) -> &[u8]
-{
+pub fn bytes_of(values: &[f32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
 }
 
-pub fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4])
-{
+pub fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     let corners = [
         [x, y],
         [x + w, y],
@@ -17,8 +15,7 @@ pub fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f
         [x + w, y + h],
     ];
 
-    for corner in corners
-    {
+    for corner in corners {
         verts.push(corner[0]);
         verts.push(corner[1]);
         verts.extend_from_slice(&color);
@@ -33,8 +30,7 @@ pub fn push_outline(
     h: f32,
     thickness: f32,
     color: [f32; 4],
-)
-{
+) {
     push_rect(verts, x, y, w, thickness, color);
     push_rect(verts, x, y + h - thickness, w, thickness, color);
     push_rect(
@@ -55,24 +51,20 @@ pub fn push_outline(
     );
 }
 
-pub fn grow(current: u32, needed: u32) -> u32
-{
+pub fn grow(current: u32, needed: u32) -> u32 {
     let mut size = current.max(256);
 
-    while size < needed
-    {
+    while size < needed {
         size = size.saturating_mul(2);
     }
 
     size
 }
 
-pub fn grow64(current: u64, needed: u64) -> u64
-{
+pub fn grow64(current: u64, needed: u64) -> u64 {
     let mut size = current.max(256);
 
-    while size < needed
-    {
+    while size < needed {
         size = size.saturating_mul(2);
     }
 
@@ -80,13 +72,11 @@ pub fn grow64(current: u64, needed: u64) -> u64
 }
 
 #[derive(Clone, Copy)]
-struct GlyphQuad
-{
+struct GlyphQuad {
     verts: [[f32; 8]; 6],
 }
 
-pub struct TextFrame
-{
+pub struct TextFrame {
     glyphs: GlyphBrush<GlyphQuad>,
     pub verts: Vec<f32>,
     pub pixels: Vec<u8>,
@@ -94,10 +84,8 @@ pub struct TextFrame
     pub dirty: bool,
 }
 
-impl TextFrame
-{
-    pub fn new() -> Result<Self, String>
-    {
+impl TextFrame {
+    pub fn new() -> Result<Self, String> {
         let font = FontArc::try_from_slice(include_bytes!("font_default.ttf"))
             .map_err(|err| err.to_string())?;
         let glyphs = GlyphBrushBuilder::using_font(font)
@@ -113,8 +101,7 @@ impl TextFrame
         })
     }
 
-    pub fn queue(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4])
-    {
+    pub fn queue(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {
         self.glyphs.queue(
             Section::default()
                 .add_text(Text::new(text).with_scale(scale).with_color(color))
@@ -122,24 +109,20 @@ impl TextFrame
         );
     }
 
-    pub fn build(&mut self)
-    {
-        for _attempt in 0..4
-        {
+    pub fn build(&mut self) {
+        for _attempt in 0..4 {
             let result = self.glyphs.process_queued(
                 |rect, data| {
                     let width = (rect.max[0] - rect.min[0]) as usize;
                     let height = (rect.max[1] - rect.min[1]) as usize;
 
-                    if width == 0 || height == 0
-                    {
+                    if width == 0 || height == 0 {
                         return;
                     }
 
                     let mut row = 0;
 
-                    while row < height
-                    {
+                    while row < height {
                         let dst = (rect.min[1] as usize + row) * self.size.0 as usize
                             + rect.min[0] as usize;
                         let src = row * width;
@@ -152,28 +135,22 @@ impl TextFrame
                 glyph_quad,
             );
 
-            match result
-            {
-                Ok(BrushAction::Draw(quads)) =>
-                {
+            match result {
+                Ok(BrushAction::Draw(quads)) => {
                     self.verts.clear();
 
-                    for quad in quads
-                    {
-                        for idx in 0..6
-                        {
+                    for quad in quads {
+                        for idx in 0..6 {
                             self.verts.extend_from_slice(&quad.verts[idx]);
                         }
                     }
 
                     return;
                 }
-                Ok(BrushAction::ReDraw) =>
-                {
+                Ok(BrushAction::ReDraw) => {
                     return;
                 }
-                Err(BrushError::TextureTooSmall { suggested }) =>
-                {
+                Err(BrushError::TextureTooSmall { suggested }) => {
                     self.glyphs.resize_texture(suggested.0, suggested.1);
                     self.pixels = vec![0; suggested.0 as usize * suggested.1 as usize];
                     self.size = suggested;
@@ -184,8 +161,7 @@ impl TextFrame
     }
 }
 
-fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad
-{
+fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     let color = vertex.extra.color;
     let positions = [
         [
@@ -227,8 +203,7 @@ fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad
     ];
     let mut verts = [[0.0; 8]; 6];
 
-    for idx in 0..6
-    {
+    for idx in 0..6 {
         verts[idx] = [
             positions[idx][0],
             positions[idx][1],

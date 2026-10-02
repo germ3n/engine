@@ -240,7 +240,11 @@ pub fn msl(source: &str) -> Result<String, String> {
 
     for entry in &module.entry_points {
         let mut resources = back::msl::EntryPointResources::default();
-        resources.immediates_buffer = Some(if source.contains("SkinUniforms") { 2 } else { 1 });
+        resources.immediates_buffer = Some(if source.contains("SkinUniforms") {
+            2
+        } else {
+            1
+        });
         resources.resources.insert(
             naga::ResourceBinding {
                 group: 0,

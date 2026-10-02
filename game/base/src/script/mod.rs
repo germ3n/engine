@@ -43,7 +43,10 @@ pub fn pick_scripts(fs: &crate::fs::Fs, paths: &[String]) -> Vec<String> {
         }
     }
 
-    picked.into_values().map(|(path, _, _)| path.clone()).collect()
+    picked
+        .into_values()
+        .map(|(path, _, _)| path.clone())
+        .collect()
 }
 
 pub fn exec(lua: &mlua::Lua, name: &str, path: &str) {
@@ -151,13 +154,10 @@ mod tests {
         let _: () = engine.run_hook("Ping", 0.0, 0.0, 1, ());
         engine
             .lua
-            .load(
-                "hook.add('Skip', 'id', function() return true, 'nope', 3 end)",
-            )
+            .load("hook.add('Skip', 'id', function() return true, 'nope', 3 end)")
             .exec()
             .unwrap();
-        let (skip, reason, n): (bool, String, i32) =
-            engine.run_hook("Skip", 0.0, 0.0, 1, ());
+        let (skip, reason, n): (bool, String, i32) = engine.run_hook("Skip", 0.0, 0.0, 1, ());
         assert!(skip);
         assert_eq!(reason, "nope");
         assert_eq!(n, 3);

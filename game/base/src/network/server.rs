@@ -282,8 +282,7 @@ impl NetworkServer {
     }
 
     pub fn send_to(&self, addr: SocketAddr, message: &[u8]) -> Result<(), String> {
-        let Some((addr, message)) =
-            crate::network::sim::enqueue_server(addr, message.to_vec())
+        let Some((addr, message)) = crate::network::sim::enqueue_server(addr, message.to_vec())
         else {
             return Ok(());
         };

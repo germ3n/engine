@@ -3,15 +3,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-mod parse;
 mod html;
+mod parse;
 
 pub use parse::{parse_document, parse_lua_source, parse_rust_source};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Kind
-{
+pub enum Kind {
     Library,
     Class,
     Function,
@@ -22,8 +21,7 @@ pub enum Kind
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Realm
-{
+pub enum Realm {
     Client,
     Server,
     Shared,
@@ -32,23 +30,20 @@ pub enum Realm
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Lang
-{
+pub enum Lang {
     Rust,
     Lua,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Access
-{
+pub enum Access {
     Public,
     Internal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Param
-{
+pub struct Param {
     pub name: String,
     pub ty: String,
     pub desc: String,
@@ -56,15 +51,13 @@ pub struct Param
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Ret
-{
+pub struct Ret {
     pub ty: String,
     pub desc: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Page
-{
+pub struct Page {
     pub id: String,
     pub parent: String,
     pub name: String,
@@ -91,8 +84,7 @@ pub struct Page
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct RawDoc
-{
+pub struct RawDoc {
     pub parent: Option<String>,
     pub name: Option<String>,
     pub kind: Option<Kind>,
@@ -112,51 +104,37 @@ pub struct RawDoc
     pub access: Option<Access>,
 }
 
-pub fn interpret(raw: RawDoc, fallback_name: Option<&str>) -> Result<Page, String>
-{
-    let summary = match raw.summary
-    {
+pub fn interpret(raw: RawDoc, fallback_name: Option<&str>) -> Result<Page, String> {
+    let summary = match raw.summary {
         Some(summary) if !summary.is_empty() => summary,
-        _ =>
-        {
+        _ => {
             return Err("missing summary".to_string());
         }
     };
-    let name = match raw.name
-    {
+    let name = match raw.name {
         Some(name) if !name.is_empty() => name,
-        _ => match fallback_name
-        {
+        _ => match fallback_name {
             Some(name) if !name.is_empty() => name.to_string(),
-            _ =>
-            {
+            _ => {
                 return Err("missing name".to_string());
             }
         },
     };
     let mut parent = raw.parent.unwrap_or_default();
-    let kind = match raw.kind
-    {
+    let kind = match raw.kind {
         Some(kind) => kind,
-        None =>
-        {
-            if parent.chars().next().is_some_and(|ch| ch.is_uppercase())
-            {
+        None => {
+            if parent.chars().next().is_some_and(|ch| ch.is_uppercase()) {
                 Kind::Method
-            }
-            else
-            {
+            } else {
                 Kind::Function
             }
         }
     };
 
-    if matches!(kind, Kind::Library | Kind::Class)
-    {
+    if matches!(kind, Kind::Library | Kind::Class) {
         parent.clear();
-    }
-    else if parent.is_empty() && !matches!(kind, Kind::Function)
-    {
+    } else if parent.is_empty() && !matches!(kind, Kind::Function) {
         return Err("missing parent".to_string());
     }
 
@@ -169,8 +147,7 @@ pub fn interpret(raw: RawDoc, fallback_name: Option<&str>) -> Result<Page, Strin
     let since = nonempty(raw.since);
     let deprecated = nonempty(raw.deprecated);
     let deprecated_since = nonempty(raw.deprecated_since);
-    let unimplemented = match raw.unimplemented
-    {
+    let unimplemented = match raw.unimplemented {
         None => None,
         Some(None) => Some("Not implemented.".to_string()),
         Some(Some(text)) if text.is_empty() => Some("Not implemented.".to_string()),
@@ -204,25 +181,19 @@ pub fn interpret(raw: RawDoc, fallback_name: Option<&str>) -> Result<Page, Strin
     })
 }
 
-fn nonempty(value: Option<String>) -> Option<String>
-{
-    match value
-    {
+fn nonempty(value: Option<String>) -> Option<String> {
+    match value {
         Some(text) if !text.is_empty() => Some(text),
         _ => None,
     }
 }
 
-fn page_id(kind: Kind, parent: &str, name: &str) -> String
-{
-    match kind
-    {
+fn page_id(kind: Kind, parent: &str, name: &str) -> String {
+    match kind {
         Kind::Library | Kind::Class => name.to_string(),
         Kind::Method | Kind::Hook => format!("{parent}:{name}"),
-        Kind::Function | Kind::Field =>
-        {
-            if parent.is_empty()
-            {
+        Kind::Function | Kind::Field => {
+            if parent.is_empty() {
                 return name.to_string();
             }
 
@@ -231,52 +202,39 @@ fn page_id(kind: Kind, parent: &str, name: &str) -> String
     }
 }
 
-fn syntax(kind: Kind, parent: &str, name: &str, params: &[Param], returns: &[Ret]) -> String
-{
-    match kind
-    {
-        Kind::Field =>
-        {
+fn syntax(kind: Kind, parent: &str, name: &str, params: &[Param], returns: &[Ret]) -> String {
+    match kind {
+        Kind::Field => {
             let ty = returns
                 .first()
                 .map(|item| item.ty.as_str())
                 .filter(|ty| !ty.is_empty())
                 .unwrap_or("");
-            let head = if parent.is_empty()
-            {
+            let head = if parent.is_empty() {
                 name.to_string()
-            }
-            else
-            {
+            } else {
                 format!("{parent}.{name}")
             };
 
-            if ty.is_empty()
-            {
+            if ty.is_empty() {
                 return head;
             }
 
             format!("{ty} {head}")
         }
         Kind::Library => name.to_string(),
-        Kind::Class =>
-        {
-            if params.is_empty()
-            {
+        Kind::Class => {
+            if params.is_empty() {
                 return name.to_string();
             }
 
             format!("{name}({})", arg_list(params))
         }
         Kind::Method | Kind::Hook => format!("{parent}:{name}({})", arg_list(params)),
-        Kind::Function =>
-        {
-            let head = if parent.is_empty()
-            {
+        Kind::Function => {
+            let head = if parent.is_empty() {
                 name.to_string()
-            }
-            else
-            {
+            } else {
                 format!("{parent}.{name}")
             };
 
@@ -285,24 +243,20 @@ fn syntax(kind: Kind, parent: &str, name: &str, params: &[Param], returns: &[Ret
     }
 }
 
-fn arg_list(params: &[Param]) -> String
-{
+fn arg_list(params: &[Param]) -> String {
     let mut parts = Vec::new();
 
-    for param in params
-    {
+    for param in params {
         let mut piece = String::new();
 
-        if !param.ty.is_empty()
-        {
+        if !param.ty.is_empty() {
             piece.push_str(&param.ty);
             piece.push(' ');
         }
 
         piece.push_str(&param.name);
 
-        if param.optional
-        {
+        if param.optional {
             piece.push_str(" = nil");
         }
 
@@ -312,15 +266,12 @@ fn arg_list(params: &[Param]) -> String
     parts.join(", ")
 }
 
-pub fn assemble(mut pages: Vec<Page>) -> Result<Vec<Page>, String>
-{
+pub fn assemble(mut pages: Vec<Page>) -> Result<Vec<Page>, String> {
     let mut seen: HashMap<String, String> = HashMap::new();
     let mut errors = Vec::new();
 
-    for page in &pages
-    {
-        if let Some(previous) = seen.insert(page.id.clone(), page.origin.clone())
-        {
+    for page in &pages {
+        if let Some(previous) = seen.insert(page.id.clone(), page.origin.clone()) {
             errors.push(format!(
                 "duplicate {}\n  {previous}\n  {}",
                 page.id, page.origin
@@ -328,23 +279,19 @@ pub fn assemble(mut pages: Vec<Page>) -> Result<Vec<Page>, String>
         }
     }
 
-    if !errors.is_empty()
-    {
+    if !errors.is_empty() {
         return Err(errors.join("\n"));
     }
 
     let mut extra = Vec::new();
     let mut considered = HashSet::new();
 
-    for page in &pages
-    {
-        if page.parent.is_empty() || !considered.insert(page.parent.clone())
-        {
+    for page in &pages {
+        if page.parent.is_empty() || !considered.insert(page.parent.clone()) {
             continue;
         }
 
-        if seen.contains_key(&page.parent)
-        {
+        if seen.contains_key(&page.parent) {
             continue;
         }
 
@@ -357,22 +304,19 @@ pub fn assemble(mut pages: Vec<Page>) -> Result<Vec<Page>, String>
     Ok(pages)
 }
 
-fn parent_kind(pages: &[Page], parent: &str) -> Kind
-{
+fn parent_kind(pages: &[Page], parent: &str) -> Kind {
     let class = pages.iter().any(|page| {
         page.parent == parent && matches!(page.kind, Kind::Method | Kind::Hook | Kind::Field)
     });
 
-    if class
-    {
+    if class {
         return Kind::Class;
     }
 
     Kind::Library
 }
 
-fn synthetic(name: &str, kind: Kind) -> Page
-{
+fn synthetic(name: &str, kind: Kind) -> Page {
     Page {
         id: name.to_string(),
         parent: String::new(),
@@ -398,71 +342,65 @@ fn synthetic(name: &str, kind: Kind) -> Page
     }
 }
 
-fn lang_of(origin: &str) -> Option<Lang>
-{
-    let path = match origin.rsplit_once(':')
-    {
-        Some((path, line)) if !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()) => path,
+fn lang_of(origin: &str) -> Option<Lang> {
+    let path = match origin.rsplit_once(':') {
+        Some((path, line))
+            if !line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            path
+        }
         _ => origin,
     };
 
-    if path.ends_with(".rs")
-    {
+    if path.ends_with(".rs") {
         return Some(Lang::Rust);
     }
 
-    if path.ends_with(".lua")
-    {
+    if path.ends_with(".lua") {
         return Some(Lang::Lua);
     }
 
     None
 }
 
-pub fn scan(root: &Path) -> Result<Vec<Page>, String>
-{
+pub fn scan(root: &Path) -> Result<Vec<Page>, String> {
     let mut pages = Vec::new();
     walk(root, &mut pages)?;
 
     assemble(pages)
 }
 
-fn walk(dir: &Path, pages: &mut Vec<Page>) -> Result<(), String>
-{
-    let listing = fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-    let mut entries: Vec<_> = listing.collect::<Result<Vec<_>, _>>().map_err(|err| err.to_string())?;
+fn walk(dir: &Path, pages: &mut Vec<Page>) -> Result<(), String> {
+    let listing =
+        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+    let mut entries: Vec<_> = listing
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
     entries.sort_by_key(|entry| entry.path());
 
-    for entry in entries
-    {
+    for entry in entries {
         let path = entry.path();
 
-        if path.is_dir()
-        {
+        if path.is_dir() {
             walk(&path, pages)?;
 
             continue;
         }
 
-        let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else
-        {
+        let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
             continue;
         };
 
-        if ext != "rs" && ext != "lua"
-        {
+        if ext != "rs" && ext != "lua" {
             continue;
         }
 
         let source = fs::read_to_string(&path)
             .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
         let label = path.display().to_string();
-        let found = if ext == "rs"
-        {
+        let found = if ext == "rs" {
             parse_rust_source(&label, &source)?
-        }
-        else
-        {
+        } else {
             parse_lua_source(&label, &source)?
         };
         pages.extend(found);
@@ -471,19 +409,17 @@ fn walk(dir: &Path, pages: &mut Vec<Page>) -> Result<(), String>
     Ok(())
 }
 
-pub fn render(pages: &[Page]) -> String
-{
+pub fn render(pages: &[Page]) -> String {
     html::render(pages)
 }
 
-pub fn generate(src: &Path, dest: &Path) -> Result<(), String>
-{
+pub fn generate(src: &Path, dest: &Path) -> Result<(), String> {
     let pages = scan(src)?;
     let html = render(&pages);
 
-    if let Some(parent) = dest.parent()
-    {
-        fs::create_dir_all(parent).map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
 
     fs::write(dest, html).map_err(|err| format!("failed to write {}: {err}", dest.display()))?;
@@ -492,8 +428,7 @@ pub fn generate(src: &Path, dest: &Path) -> Result<(), String>
 }
 
 #[cfg(test)]
-mod tests
-{
+mod tests {
     use super::*;
 
     const CREATE: &str = r#"
@@ -511,8 +446,7 @@ example = "local ent = ents.create(\"sent_blaster\")",
 "#;
 
     #[test]
-    fn parses_rust_attribute()
-    {
+    fn parses_rust_attribute() {
         let source = r#"
 #[document(
     parent = "ents",
@@ -541,22 +475,23 @@ fn ents_create() {}
     }
 
     #[test]
-    fn parses_lua_block()
-    {
+    fn parses_lua_block() {
         let pages = parse_lua_source("ents.lua", CREATE).unwrap();
 
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].id, "ents.create");
         assert_eq!(pages[0].kind, Kind::Function);
-        assert_eq!(pages[0].example.as_deref(), Some("local ent = ents.create(\"sent_blaster\")"));
+        assert_eq!(
+            pages[0].example.as_deref(),
+            Some("local ent = ents.create(\"sent_blaster\")")
+        );
         assert!(pages[0].origin.contains("ents.lua:"));
         assert_eq!(pages[0].lang, Some(Lang::Lua));
         assert_eq!(pages[0].access, Access::Public);
     }
 
     #[test]
-    fn rejects_missing_summary()
-    {
+    fn rejects_missing_summary() {
         let source = "--[=[document\nparent = \"ents\",\nname = \"create\",\n]=]\n";
         let err = parse_lua_source("a.lua", source).unwrap_err();
 
@@ -565,8 +500,7 @@ fn ents_create() {}
     }
 
     #[test]
-    fn parses_internal_flag()
-    {
+    fn parses_internal_flag() {
         let source = r#"
 #[document(
     parent = "net",
@@ -582,8 +516,7 @@ fn net_call() {}
     }
 
     #[test]
-    fn rejects_duplicate_id()
-    {
+    fn rejects_duplicate_id() {
         let first = parse_lua_source("a.lua", CREATE).unwrap();
         let second = parse_lua_source("b.lua", CREATE).unwrap();
         let mut pages = first;
@@ -595,8 +528,7 @@ fn net_call() {}
     }
 
     #[test]
-    fn render_contains_signature_realm_and_example()
-    {
+    fn render_contains_signature_realm_and_example() {
         let pages = assemble(parse_lua_source("sample.lua", CREATE).unwrap()).unwrap();
         let html = render(&pages);
 
@@ -608,8 +540,7 @@ fn net_call() {}
     }
 
     #[test]
-    fn scan_base_src_has_slice()
-    {
+    fn scan_base_src_has_slice() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../base/src");
         let pages = scan(&root).unwrap();
         let ids: HashSet<&str> = pages.iter().map(|page| page.id.as_str()).collect();
@@ -699,8 +630,7 @@ fn net_call() {}
             "engine.first_time_predicted",
         ];
 
-        for id in expected
-        {
+        for id in expected {
             assert!(ids.contains(id), "missing {id}");
         }
 

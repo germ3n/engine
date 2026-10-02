@@ -58,10 +58,7 @@ impl ConVar {
     where
         F: Fn(&ConVarValue) + Send + Sync + 'static,
     {
-        self.rust_callbacks
-            .lock()
-            .unwrap()
-            .push(Arc::new(callback));
+        self.rust_callbacks.lock().unwrap().push(Arc::new(callback));
     }
 
     pub fn reset(&self) {

@@ -986,8 +986,7 @@ const TAIL: &str = r####"</script>
 </html>
 "####;
 
-pub fn render(pages: &[Page]) -> String
-{
+pub fn render(pages: &[Page]) -> String {
     let mut json = serde_json::to_string(pages).expect("wiki json");
     json = json.replace('<', "\\u003c");
     let mut html = String::with_capacity(HEAD.len() + json.len() + TAIL.len());

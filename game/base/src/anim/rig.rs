@@ -1,5 +1,7 @@
 use crate::anim::format::{write_clips, write_mesh, Bone, Mesh};
-use crate::anim::pose::{quat_mul, quat_z, ClipEvent, ClipSet, Sequence, Track, FLAG_LOOP, FLAG_ROOT};
+use crate::anim::pose::{
+    quat_mul, quat_z, ClipEvent, ClipSet, Sequence, Track, FLAG_LOOP, FLAG_ROOT,
+};
 
 const BONES: [&str; 12] = [
     "pelvis", "spine", "chest", "head", "arm_l", "fore_l", "arm_r", "fore_r", "thigh_l", "shin_l",
@@ -41,20 +43,137 @@ pub fn test_mesh() -> Mesh {
     let pants = [0.22, 0.72];
     let shoe = [0.78, 0.78];
 
-    segment(&mut vertices, &mut indices, worlds[0], worlds[1], 0.12, 0.11, 0, pants);
-    segment(&mut vertices, &mut indices, worlds[1], worlds[2], 0.11, 0.13, 1, shirt);
-    segment(&mut vertices, &mut indices, worlds[2], add(worlds[2], [0.0, 0.0, 0.18]), 0.15, 0.13, 2, shirt);
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[0],
+        worlds[1],
+        0.12,
+        0.11,
+        0,
+        pants,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[1],
+        worlds[2],
+        0.11,
+        0.13,
+        1,
+        shirt,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[2],
+        add(worlds[2], [0.0, 0.0, 0.18]),
+        0.15,
+        0.13,
+        2,
+        shirt,
+    );
     push_head(&mut vertices, &mut indices, worlds[3]);
-    segment(&mut vertices, &mut indices, worlds[4], worlds[5], 0.045, 0.04, 4, shirt);
-    segment(&mut vertices, &mut indices, worlds[5], add(worlds[5], [0.0, 0.0, -0.24]), 0.038, 0.032, 5, skin);
-    segment(&mut vertices, &mut indices, worlds[6], worlds[7], 0.045, 0.04, 6, shirt);
-    segment(&mut vertices, &mut indices, worlds[7], add(worlds[7], [0.0, 0.0, -0.24]), 0.038, 0.032, 7, skin);
-    segment(&mut vertices, &mut indices, worlds[8], worlds[9], 0.055, 0.048, 8, pants);
-    segment(&mut vertices, &mut indices, worlds[9], add(worlds[9], [0.0, 0.0, -0.36]), 0.042, 0.036, 9, pants);
-    segment(&mut vertices, &mut indices, add(worlds[9], [0.02, 0.0, -0.36]), add(worlds[9], [0.16, 0.0, -0.34]), 0.04, 0.03, 9, shoe);
-    segment(&mut vertices, &mut indices, worlds[10], worlds[11], 0.055, 0.048, 10, pants);
-    segment(&mut vertices, &mut indices, worlds[11], add(worlds[11], [0.0, 0.0, -0.36]), 0.042, 0.036, 11, pants);
-    segment(&mut vertices, &mut indices, add(worlds[11], [0.02, 0.0, -0.36]), add(worlds[11], [0.16, 0.0, -0.34]), 0.04, 0.03, 11, shoe);
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[4],
+        worlds[5],
+        0.045,
+        0.04,
+        4,
+        shirt,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[5],
+        add(worlds[5], [0.0, 0.0, -0.24]),
+        0.038,
+        0.032,
+        5,
+        skin,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[6],
+        worlds[7],
+        0.045,
+        0.04,
+        6,
+        shirt,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[7],
+        add(worlds[7], [0.0, 0.0, -0.24]),
+        0.038,
+        0.032,
+        7,
+        skin,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[8],
+        worlds[9],
+        0.055,
+        0.048,
+        8,
+        pants,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[9],
+        add(worlds[9], [0.0, 0.0, -0.36]),
+        0.042,
+        0.036,
+        9,
+        pants,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        add(worlds[9], [0.02, 0.0, -0.36]),
+        add(worlds[9], [0.16, 0.0, -0.34]),
+        0.04,
+        0.03,
+        9,
+        shoe,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[10],
+        worlds[11],
+        0.055,
+        0.048,
+        10,
+        pants,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        worlds[11],
+        add(worlds[11], [0.0, 0.0, -0.36]),
+        0.042,
+        0.036,
+        11,
+        pants,
+    );
+    segment(
+        &mut vertices,
+        &mut indices,
+        add(worlds[11], [0.02, 0.0, -0.36]),
+        add(worlds[11], [0.16, 0.0, -0.34]),
+        0.04,
+        0.03,
+        11,
+        shoe,
+    );
 
     Mesh {
         bones,
@@ -114,18 +233,66 @@ pub fn clip_bytes() -> Vec<u8> {
 
 fn joints() -> [Joint; 12] {
     [
-        Joint { name: "pelvis", parent: -1, local: [0.0, 0.0, 0.92] },
-        Joint { name: "spine", parent: 0, local: [0.0, 0.0, 0.16] },
-        Joint { name: "chest", parent: 1, local: [0.0, 0.0, 0.18] },
-        Joint { name: "head", parent: 2, local: [0.0, 0.0, 0.32] },
-        Joint { name: "arm_l", parent: 2, local: [0.0, 0.2, 0.12] },
-        Joint { name: "fore_l", parent: 4, local: [0.0, 0.02, -0.26] },
-        Joint { name: "arm_r", parent: 2, local: [0.0, -0.2, 0.12] },
-        Joint { name: "fore_r", parent: 6, local: [0.0, -0.02, -0.26] },
-        Joint { name: "thigh_l", parent: 0, local: [0.0, 0.08, -0.08] },
-        Joint { name: "shin_l", parent: 8, local: [0.0, 0.0, -0.4] },
-        Joint { name: "thigh_r", parent: 0, local: [0.0, -0.08, -0.08] },
-        Joint { name: "shin_r", parent: 10, local: [0.0, 0.0, -0.4] },
+        Joint {
+            name: "pelvis",
+            parent: -1,
+            local: [0.0, 0.0, 0.92],
+        },
+        Joint {
+            name: "spine",
+            parent: 0,
+            local: [0.0, 0.0, 0.16],
+        },
+        Joint {
+            name: "chest",
+            parent: 1,
+            local: [0.0, 0.0, 0.18],
+        },
+        Joint {
+            name: "head",
+            parent: 2,
+            local: [0.0, 0.0, 0.32],
+        },
+        Joint {
+            name: "arm_l",
+            parent: 2,
+            local: [0.0, 0.2, 0.12],
+        },
+        Joint {
+            name: "fore_l",
+            parent: 4,
+            local: [0.0, 0.02, -0.26],
+        },
+        Joint {
+            name: "arm_r",
+            parent: 2,
+            local: [0.0, -0.2, 0.12],
+        },
+        Joint {
+            name: "fore_r",
+            parent: 6,
+            local: [0.0, -0.02, -0.26],
+        },
+        Joint {
+            name: "thigh_l",
+            parent: 0,
+            local: [0.0, 0.08, -0.08],
+        },
+        Joint {
+            name: "shin_l",
+            parent: 8,
+            local: [0.0, 0.0, -0.4],
+        },
+        Joint {
+            name: "thigh_r",
+            parent: 0,
+            local: [0.0, -0.08, -0.08],
+        },
+        Joint {
+            name: "shin_r",
+            parent: 10,
+            local: [0.0, 0.0, -0.4],
+        },
     ]
 }
 
@@ -154,11 +321,7 @@ fn idle_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
         &[0.0, 1.2, 2.4],
         &[ident(), quat_x(-0.05), ident()],
     );
-    tracks[3] = keyed(
-        rest[3],
-        &[0.0, 1.2, 2.4],
-        &[ident(), quat_x(0.06), ident()],
-    );
+    tracks[3] = keyed(rest[3], &[0.0, 1.2, 2.4], &[ident(), quat_x(0.06), ident()]);
     tracks[0] = Track {
         pos_times: vec![0.0, 1.2, 2.4],
         pos: vec![rest[0], add(rest[0], [0.0, 0.0, 0.015]), rest[0]],
@@ -182,13 +345,7 @@ fn walk_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
             rest[0],
         ],
         rot_times: times.to_vec(),
-        rot: vec![
-            quat_z(-0.06),
-            ident(),
-            quat_z(0.06),
-            ident(),
-            quat_z(-0.06),
-        ],
+        rot: vec![quat_z(-0.06), ident(), quat_z(0.06), ident(), quat_z(-0.06)],
     };
     tracks[1] = keyed(
         rest[1],
@@ -198,13 +355,7 @@ fn walk_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
     tracks[4] = keyed(
         rest[4],
         &times,
-        &[
-            quat_y(0.5),
-            ident(),
-            quat_y(-0.5),
-            ident(),
-            quat_y(0.5),
-        ],
+        &[quat_y(0.5), ident(), quat_y(-0.5), ident(), quat_y(0.5)],
     );
     tracks[5] = keyed(
         rest[5],
@@ -220,13 +371,7 @@ fn walk_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
     tracks[6] = keyed(
         rest[6],
         &times,
-        &[
-            quat_y(-0.5),
-            ident(),
-            quat_y(0.5),
-            ident(),
-            quat_y(-0.5),
-        ],
+        &[quat_y(-0.5), ident(), quat_y(0.5), ident(), quat_y(-0.5)],
     );
     tracks[7] = keyed(
         rest[7],
@@ -242,13 +387,7 @@ fn walk_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
     tracks[8] = keyed(
         rest[8],
         &times,
-        &[
-            quat_y(-0.6),
-            ident(),
-            quat_y(0.6),
-            ident(),
-            quat_y(-0.6),
-        ],
+        &[quat_y(-0.6), ident(), quat_y(0.6), ident(), quat_y(-0.6)],
     );
     tracks[9] = keyed(
         rest[9],
@@ -264,13 +403,7 @@ fn walk_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
     tracks[10] = keyed(
         rest[10],
         &times,
-        &[
-            quat_y(0.6),
-            ident(),
-            quat_y(-0.6),
-            ident(),
-            quat_y(0.6),
-        ],
+        &[quat_y(0.6), ident(), quat_y(-0.6), ident(), quat_y(0.6)],
     );
     tracks[11] = keyed(
         rest[11],
@@ -292,9 +425,17 @@ fn lunge_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
     let times = [0.0, 0.3, 0.6];
     tracks[0] = Track {
         pos_times: times.to_vec(),
-        pos: vec![rest[0], add(rest[0], [0.7, 0.0, 0.0]), add(rest[0], [1.2, 0.0, 0.0])],
+        pos: vec![
+            rest[0],
+            add(rest[0], [0.7, 0.0, 0.0]),
+            add(rest[0], [1.2, 0.0, 0.0]),
+        ],
         rot_times: times.to_vec(),
-        rot: vec![ident(), quat_z(12.0_f32.to_radians()), quat_z(30.0_f32.to_radians())],
+        rot: vec![
+            ident(),
+            quat_z(12.0_f32.to_radians()),
+            quat_z(30.0_f32.to_radians()),
+        ],
     };
     tracks[2] = keyed(rest[2], &times, &[ident(), quat_y(0.45), quat_y(0.2)]);
     tracks[4] = keyed(rest[4], &times, &[ident(), quat_y(0.9), quat_y(0.3)]);
@@ -332,7 +473,13 @@ fn wave_tracks(rest: &[[f32; 3]; 12]) -> Vec<Track> {
     tracks
 }
 
-fn sequence(name: &str, flags: u16, duration: f32, events: &[ClipEvent], tracks: &[Track]) -> Sequence {
+fn sequence(
+    name: &str,
+    flags: u16,
+    duration: f32,
+    events: &[ClipEvent],
+    tracks: &[Track],
+) -> Sequence {
     Sequence {
         name: name.to_string(),
         flags,
@@ -382,19 +529,58 @@ fn segment(
     bone: u8,
     uv: [f32; 2],
 ) {
-    push_prism(vertices, indices, from, to, radius_from, radius_to, bone, uv);
+    push_prism(
+        vertices,
+        indices,
+        from,
+        to,
+        radius_from,
+        radius_to,
+        bone,
+        uv,
+    );
 }
 
 fn push_head(vertices: &mut Vec<f32>, indices: &mut Vec<u32>, origin: [f32; 3]) {
     let half = [0.09, 0.08, 0.1];
     let center = add(origin, [0.0, 0.0, 0.02]);
     let faces: [([f32; 3], [f32; 3], [f32; 3], [f32; 4]); 6] = [
-        ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.06, 0.08, 0.42, 0.42]),
-        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [0.08, 0.08, 0.2, 0.2]),
-        ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.25, 0.25, 0.16, 0.16]),
-        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.25, 0.25, 0.16, 0.16]),
-        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.08, 0.02, 0.28, 0.12]),
-        ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.25, 0.25, 0.16, 0.16]),
+        (
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.06, 0.08, 0.42, 0.42],
+        ),
+        (
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [0.08, 0.08, 0.2, 0.2],
+        ),
+        (
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.25, 0.25, 0.16, 0.16],
+        ),
+        (
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.25, 0.25, 0.16, 0.16],
+        ),
+        (
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.08, 0.02, 0.28, 0.12],
+        ),
+        (
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.25, 0.25, 0.16, 0.16],
+        ),
     ];
     let mut face_idx = 0;
 
@@ -405,8 +591,10 @@ fn push_head(vertices: &mut Vec<f32>, indices: &mut Vec<u32>, origin: [f32; 3]) 
             center[1] + normal[1] * half[1],
             center[2] + normal[2] * half[2],
         ];
-        let span_u = axis_u[0].abs() * half[0] + axis_u[1].abs() * half[1] + axis_u[2].abs() * half[2];
-        let span_v = axis_v[0].abs() * half[0] + axis_v[1].abs() * half[1] + axis_v[2].abs() * half[2];
+        let span_u =
+            axis_u[0].abs() * half[0] + axis_u[1].abs() * half[1] + axis_u[2].abs() * half[2];
+        let span_v =
+            axis_v[0].abs() * half[0] + axis_v[1].abs() * half[1] + axis_v[2].abs() * half[2];
         let corners = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
         let mut positions = Vec::new();
         let mut corner_idx = 0;
@@ -419,7 +607,10 @@ fn push_head(vertices: &mut Vec<f32>, indices: &mut Vec<u32>, origin: [f32; 3]) 
                 face_origin[1] + axis_u[1] * span_u * u + axis_v[1] * span_v * v,
                 face_origin[2] + axis_u[2] * span_u * u + axis_v[2] * span_v * v,
             ];
-            let tex = [uv[0] + (u * 0.5 + 0.5) * uv[2], uv[1] + (v * 0.5 + 0.5) * uv[3]];
+            let tex = [
+                uv[0] + (u * 0.5 + 0.5) * uv[2],
+                uv[1] + (v * 0.5 + 0.5) * uv[3],
+            ];
             positions.push(position);
             push_vertex(vertices, position, normal, tex, 3);
             corner_idx += 1;
@@ -484,7 +675,15 @@ fn push_prism(
     let mut idx = 1;
 
     while idx + 1 < sides {
-        push_tri(indices, base, 0, idx as u32 + 1, idx as u32, &positions, scale(axis, -1.0));
+        push_tri(
+            indices,
+            base,
+            0,
+            idx as u32 + 1,
+            idx as u32,
+            &positions,
+            scale(axis, -1.0),
+        );
         push_tri(
             indices,
             base,
@@ -579,7 +778,13 @@ fn fill(pixels: &mut [u8], x0: usize, y0: usize, w: usize, h: usize, color: [u8;
     }
 }
 
-fn push_vertex(vertices: &mut Vec<f32>, position: [f32; 3], normal: [f32; 3], uv: [f32; 2], bone: u8) {
+fn push_vertex(
+    vertices: &mut Vec<f32>,
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    bone: u8,
+) {
     vertices.extend_from_slice(&[
         position[0],
         position[1],

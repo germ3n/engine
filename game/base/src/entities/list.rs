@@ -263,8 +263,10 @@ impl EntityList {
     pub fn clear(&mut self) {
         for (idx, slot) in self.slots.iter().enumerate() {
             if let Some(entity) = slot_entity(slot) {
-                self.removed
-                    .push((EntityHandle::new(idx as u32, slot.generation), entity.is_spawned()));
+                self.removed.push((
+                    EntityHandle::new(idx as u32, slot.generation),
+                    entity.is_spawned(),
+                ));
             }
         }
 

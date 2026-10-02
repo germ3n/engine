@@ -10,7 +10,9 @@ use crate::network::server::NetworkServer;
 use crate::network::server::ReliableSendError;
 use crate::network::usermessage::UserMsgReader;
 use crate::network::wait_socket;
-use crate::network::{ClientToServer, FromClient, NetSend, PacketType, ReliableBody, ServerToClient, RECV_BUDGET};
+use crate::network::{
+    ClientToServer, FromClient, NetSend, PacketType, ReliableBody, ServerToClient, RECV_BUDGET,
+};
 use crate::r#enum::InputButtons;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
@@ -152,8 +154,13 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                                     let (origin, angles) = game
                                         .entities
                                         .get(handle)
-                                        .map(|entity| (entity.base().position, entity.base().angles))
-                                        .unwrap_or((Vector3::new(0.0, 28.0, 2.0), Angle3::default()));
+                                        .map(|entity| {
+                                            (entity.base().position, entity.base().angles)
+                                        })
+                                        .unwrap_or((
+                                            Vector3::new(0.0, 28.0, 2.0),
+                                            Angle3::default(),
+                                        ));
                                     game.send_reliable_to(
                                         players[idx].addr,
                                         ServerToClient::EntitySpawned {
@@ -207,35 +214,35 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     }
 
                     match event {
-                    ClientToServer::UserMessage { hash, data } => {
-                        game.run_usermessage(hash, UserMsgReader::new(data));
-                    }
-                    ClientToServer::PlayerInput {
-                        tick,
-                        buttons,
-                        movement,
-                        viewangles,
-                    } => {
-                        let mut idx = 0;
-
-                        while idx < players.len() {
-                            if players[idx].addr == addr {
-                                players[idx].push_cmd(UserCommand {
-                                    tick,
-                                    buttons,
-                                    wish: movement,
-                                    view: viewangles,
-                                });
-
-                                break;
-                            }
-
-                            idx += 1;
+                        ClientToServer::UserMessage { hash, data } => {
+                            game.run_usermessage(hash, UserMsgReader::new(data));
                         }
+                        ClientToServer::PlayerInput {
+                            tick,
+                            buttons,
+                            movement,
+                            viewangles,
+                        } => {
+                            let mut idx = 0;
+
+                            while idx < players.len() {
+                                if players[idx].addr == addr {
+                                    players[idx].push_cmd(UserCommand {
+                                        tick,
+                                        buttons,
+                                        wish: movement,
+                                        view: viewangles,
+                                    });
+
+                                    break;
+                                }
+
+                                idx += 1;
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                    }
-                },
+                }
             }
         }
 
@@ -938,7 +945,11 @@ fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[S
 }
 
 #[cfg(feature = "server")]
-fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketAddr, generation: u32) {
+fn emit_snapshot(
+    game: &mut GameState<FromClient, ServerToClient>,
+    addr: SocketAddr,
+    generation: u32,
+) {
     let mut states: HashMap<EntityHandle, EntityNetworked> = game
         .networked_state(None)
         .into_iter()
@@ -959,11 +970,14 @@ fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketA
                 owner: base.owner,
             })
         };
-        let model = game.anims.model_paths(&base.anim).map(|(mesh, clips)| EntityModel {
-            handle,
-            mesh,
-            clips,
-        });
+        let model = game
+            .anims
+            .model_paths(&base.anim)
+            .map(|(mesh, clips)| EntityModel {
+                handle,
+                mesh,
+                clips,
+            });
         pending.push((
             EntitySnapshot {
                 handle,
@@ -1083,7 +1097,10 @@ fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketA
 }
 
 #[cfg(feature = "server")]
-fn emit_predicted_state(game: &mut GameState<FromClient, ServerToClient>, players: &[RemotePlayer]) {
+fn emit_predicted_state(
+    game: &mut GameState<FromClient, ServerToClient>,
+    players: &[RemotePlayer],
+) {
     let tick = game.tick_count;
     let mut idx = 0;
 
@@ -1116,7 +1133,12 @@ fn emit_predicted_state(game: &mut GameState<FromClient, ServerToClient>, player
         };
         let size = wincode::serialized_size(&event).unwrap() as usize;
 
-        log::trace!("[sv netvar] send predicted {:?} ack={} bytes={}", handle, players[idx].ack, size);
+        log::trace!(
+            "[sv netvar] send predicted {:?} ack={} bytes={}",
+            handle,
+            players[idx].ack,
+            size
+        );
 
         if size > unreliable_message_limit() {
             log::warn!("[sv] predicted state too large for {:?}", handle);
@@ -1228,7 +1250,11 @@ fn send_networked(game: &mut GameState<FromClient, ServerToClient>, updates: Vec
         }
 
         if encoded_packet_count(size + entity_size).is_none() {
-            log::debug!("[sv netvar] send update ents={} bytes={}", batch.len(), size);
+            log::debug!(
+                "[sv netvar] send update ents={} bytes={}",
+                batch.len(),
+                size
+            );
             game.send_reliable(ServerToClient::NetworkedUpdate {
                 entities: std::mem::take(&mut batch),
             });
@@ -1240,7 +1266,11 @@ fn send_networked(game: &mut GameState<FromClient, ServerToClient>, updates: Vec
     }
 
     if !batch.is_empty() {
-        log::debug!("[sv netvar] send update ents={} bytes={}", batch.len(), size);
+        log::debug!(
+            "[sv netvar] send update ents={} bytes={}",
+            batch.len(),
+            size
+        );
         game.send_reliable(ServerToClient::NetworkedUpdate { entities: batch });
     }
 }
@@ -1271,11 +1301,7 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
         return;
     }
 
-    log::debug!(
-        "[sv] tick {} state for {} entities",
-        tick,
-        pending.len()
-    );
+    log::debug!("[sv] tick {} state for {} entities", tick, pending.len());
 
     if tick_fits(tick, 0, 1, &pending) {
         game.send_unreliable(ServerToClient::TickState {

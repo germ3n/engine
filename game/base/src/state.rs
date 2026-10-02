@@ -246,13 +246,18 @@ impl<In, Out> GameState<In, Out> {
 
     pub fn update_sound(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32, dt: f32) {
         let buses = Buses {
-            master: crate::console::float_cvar(&self.cvars, "snd_volume", 1.0).clamp(0.0, 4.0) as f32,
-            sfx: crate::console::float_cvar(&self.cvars, "snd_sfxvolume", 1.0).clamp(0.0, 4.0) as f32,
-            music: crate::console::float_cvar(&self.cvars, "snd_musicvolume", 1.0).clamp(0.0, 4.0) as f32,
+            master: crate::console::float_cvar(&self.cvars, "snd_volume", 1.0).clamp(0.0, 4.0)
+                as f32,
+            sfx: crate::console::float_cvar(&self.cvars, "snd_sfxvolume", 1.0).clamp(0.0, 4.0)
+                as f32,
+            music: crate::console::float_cvar(&self.cvars, "snd_musicvolume", 1.0).clamp(0.0, 4.0)
+                as f32,
             ui: crate::console::float_cvar(&self.cvars, "snd_uivolume", 1.0).clamp(0.0, 4.0) as f32,
-            voice: crate::console::float_cvar(&self.cvars, "snd_voicevolume", 1.0).clamp(0.0, 4.0) as f32,
+            voice: crate::console::float_cvar(&self.cvars, "snd_voicevolume", 1.0).clamp(0.0, 4.0)
+                as f32,
         };
-        let max_distance = crate::console::float_cvar(&self.cvars, "snd_maxdistance", 48.0).max(0.5) as f32;
+        let max_distance =
+            crate::console::float_cvar(&self.cvars, "snd_maxdistance", 48.0).max(0.5) as f32;
         self.sound.update(
             dt,
             Vector3::new(x as f64, y as f64, z as f64),
@@ -266,7 +271,11 @@ impl<In, Out> GameState<In, Out> {
         );
     }
 
-    fn advance_predicted_anim(&mut self, owner: EntityHandle, tick: u64) -> Vec<(EntityHandle, String)> {
+    fn advance_predicted_anim(
+        &mut self,
+        owner: EntityHandle,
+        tick: u64,
+    ) -> Vec<(EntityHandle, String)> {
         let dt = self.tick_interval;
         let mut handles = Vec::new();
 
@@ -295,7 +304,9 @@ impl<In, Out> GameState<In, Out> {
 
             if tick > 0 {
                 if let Some(entity) = self.entities.get(handle) {
-                    let names = self.anims.events(&entity.base().anim, (tick - 1) as f64, tick as f64, dt);
+                    let names =
+                        self.anims
+                            .events(&entity.base().anim, (tick - 1) as f64, tick as f64, dt);
                     let mut name_idx = 0;
 
                     while name_idx < names.len() {
@@ -346,7 +357,10 @@ impl<In, Out> GameState<In, Out> {
         for (handle, entity) in self.entities.iter() {
             let base = entity.base();
 
-            if players.iter().any(|player| *player == handle || base.owner == *player) {
+            if players
+                .iter()
+                .any(|player| *player == handle || base.owner == *player)
+            {
                 continue;
             }
 
@@ -371,9 +385,9 @@ impl<In, Out> GameState<In, Out> {
 
             if tick > 0 {
                 if let Some(entity) = self.entities.get(handle) {
-                    let names = self
-                        .anims
-                        .events(&entity.base().anim, (tick - 1) as f64, tick as f64, dt);
+                    let names =
+                        self.anims
+                            .events(&entity.base().anim, (tick - 1) as f64, tick as f64, dt);
                     let mut name_idx = 0;
 
                     while name_idx < names.len() {
@@ -491,7 +505,11 @@ impl<In, Out> GameState<In, Out> {
 
             if let Some(entity) = self.entities.get(handle) {
                 if let Some((mesh, clips)) = self.anims.model_paths(&entity.base().anim) {
-                    models.push(crate::network::events::EntityModel { handle, mesh, clips });
+                    models.push(crate::network::events::EntityModel {
+                        handle,
+                        mesh,
+                        clips,
+                    });
                 }
             }
 
@@ -545,7 +563,11 @@ fn register_sound_cvars(cvars: &mut HashMap<String, Arc<ConVar>>) {
         ("snd_musicvolume", 1.0, "Music and soundscape volume"),
         ("snd_uivolume", 1.0, "Interface volume"),
         ("snd_voicevolume", 1.0, "Voice volume"),
-        ("snd_maxdistance", 48.0, "Distance where a level 75 sound falls silent"),
+        (
+            "snd_maxdistance",
+            48.0,
+            "Distance where a level 75 sound falls silent",
+        ),
     ];
 
     for (name, default, description) in entries {

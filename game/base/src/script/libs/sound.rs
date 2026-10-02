@@ -3,20 +3,20 @@ use crate::script::libs::vector3::Vector3;
 use crate::sound::{world, SoundAccess};
 use mlua::{Lua, Table};
 
-fn first_time(lua: &Lua) -> bool
-{
-    let Ok(engine) = lua.globals().get::<Table>("engine") else
-    {
+fn first_time(lua: &Lua) -> bool {
+    let Ok(engine) = lua.globals().get::<Table>("engine") else {
         return true;
     };
 
     return engine.get::<bool>("first_time_predicted").unwrap_or(true);
 }
 
-pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
-{
+pub fn register_sound_lib(lua: &Lua, access: SoundAccess) {
     crate::script::exec(lua, "sound.lua", "lua/libs/sound.luac");
-    let sound: Table = lua.globals().get("sound").expect("[sound] Couldn't get sound table");
+    let sound: Table = lua
+        .globals()
+        .get("sound")
+        .expect("[sound] Couldn't get sound table");
 
     let shared = access.clone();
     sound
@@ -24,7 +24,19 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
             "_add",
             lua.create_function(
                 move |_,
-                      (name, channel, level, vol_min, vol_max, pitch_min, pitch_max, waves, bus, looping, stream): (
+                      (
+                    name,
+                    channel,
+                    level,
+                    vol_min,
+                    vol_max,
+                    pitch_min,
+                    pitch_max,
+                    waves,
+                    bus,
+                    looping,
+                    stream,
+                ): (
                     String,
                     String,
                     f32,
@@ -37,22 +49,12 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
                     bool,
                     bool,
                 )| {
-                    let Some(sound) = world(&shared) else
-                    {
+                    let Some(sound) = world(&shared) else {
                         return Ok(());
                     };
                     sound.add_def(
-                        &name,
-                        &channel,
-                        level,
-                        vol_min,
-                        vol_max,
-                        pitch_min,
-                        pitch_max,
-                        &waves,
-                        &bus,
-                        looping,
-                        stream,
+                        &name, &channel, level, vol_min, vol_max, pitch_min, pitch_max, &waves,
+                        &bus, looping, stream,
                     );
 
                     return Ok(());
@@ -79,18 +81,27 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
                     u32,
                     String,
                 )| {
-                    let Some(sound) = world(&shared) else
-                    {
+                    let Some(sound) = world(&shared) else {
                         return Ok(());
                     };
 
-                    if !sound.allows_local(first_time(lua))
-                    {
+                    if !sound.allows_local(first_time(lua)) {
                         return Ok(());
                     }
 
-                    let position = if has_pos { Some(Vector3::new(x, y, z)) } else { None };
-                    sound.play(&name, position, volume, pitch, EntityHandle(entity), &channel);
+                    let position = if has_pos {
+                        Some(Vector3::new(x, y, z))
+                    } else {
+                        None
+                    };
+                    sound.play(
+                        &name,
+                        position,
+                        volume,
+                        pitch,
+                        EntityHandle(entity),
+                        &channel,
+                    );
 
                     return Ok(());
                 },
@@ -104,13 +115,11 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
         .set(
             "_halt",
             lua.create_function(move |lua, (entity, name): (u32, Option<String>)| {
-                let Some(sound) = world(&shared) else
-                {
+                let Some(sound) = world(&shared) else {
                     return Ok(());
                 };
 
-                if !sound.allows_local(first_time(lua))
-                {
+                if !sound.allows_local(first_time(lua)) {
                     return Ok(());
                 }
 
@@ -126,15 +135,16 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
     sound
         .set(
             "_scape_add",
-            lua.create_function(move |_, (name, room, sounds): (String, String, Vec<String>)| {
-                let Some(sound) = world(&shared) else
-                {
-                    return Ok(());
-                };
-                sound.add_scape(&name, &room, &sounds);
+            lua.create_function(
+                move |_, (name, room, sounds): (String, String, Vec<String>)| {
+                    let Some(sound) = world(&shared) else {
+                        return Ok(());
+                    };
+                    sound.add_scape(&name, &room, &sounds);
 
-                return Ok(());
-            })
+                    return Ok(());
+                },
+            )
             .expect("[sound] Failed to create _scape_add"),
         )
         .expect("[sound] Failed setting _scape_add");
@@ -144,9 +154,17 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
         .set(
             "_scape_box",
             lua.create_function(
-                move |_, (name, minx, miny, minz, maxx, maxy, maxz): (String, f64, f64, f64, f64, f64, f64)| {
-                    let Some(sound) = world(&shared) else
-                    {
+                move |_,
+                      (name, minx, miny, minz, maxx, maxy, maxz): (
+                    String,
+                    f64,
+                    f64,
+                    f64,
+                    f64,
+                    f64,
+                    f64,
+                )| {
+                    let Some(sound) = world(&shared) else {
                         return Ok(());
                     };
                     sound.add_box(
@@ -167,8 +185,7 @@ pub fn register_sound_lib(lua: &Lua, access: SoundAccess)
         .set(
             "_set_room",
             lua.create_function(move |_, name: String| {
-                let Some(sound) = world(&shared) else
-                {
+                let Some(sound) = world(&shared) else {
                     return Ok(());
                 };
                 sound.set_room(&name);

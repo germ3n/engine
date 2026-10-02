@@ -809,7 +809,12 @@ fn upload_skin_mesh(device: &Device, group: &crate::ui::skin::SkinGroup) -> Meta
         (group.indices.len() * 4) as u64,
         MTLResourceOptions::StorageModeShared,
     );
-    let albedo = rgba_texture(device, group.albedo_w, group.albedo_h, group.albedo.as_ref());
+    let albedo = rgba_texture(
+        device,
+        group.albedo_w,
+        group.albedo_h,
+        group.albedo.as_ref(),
+    );
     let palette = float_texture(device, group.palette_w.max(1), group.palette_h.max(1));
     let instances = device.new_buffer(4, MTLResourceOptions::StorageModeShared);
 
@@ -840,7 +845,12 @@ fn skin_uniforms(matrix: &[f32; 16], bones: u32) -> [u32; 20] {
 }
 
 fn rgba_texture(device: &Device, width: u32, height: u32, pixels: &[u8]) -> Texture {
-    let texture = color_texture(device, width.max(1), height.max(1), MTLPixelFormat::RGBA8Unorm);
+    let texture = color_texture(
+        device,
+        width.max(1),
+        height.max(1),
+        MTLPixelFormat::RGBA8Unorm,
+    );
 
     if width > 0 && height > 0 && pixels.len() >= (width as usize) * (height as usize) * 4 {
         texture.replace_region(
@@ -905,7 +915,12 @@ fn set_skin_attr(
     attr.set_buffer_index(buffer);
 }
 
-fn set_skin_layout(desc: &VertexDescriptorRef, index: u64, stride: u64, step: MTLVertexStepFunction) {
+fn set_skin_layout(
+    desc: &VertexDescriptorRef,
+    index: u64,
+    stride: u64,
+    step: MTLVertexStepFunction,
+) {
     let layout = desc.layouts().object_at(index).unwrap();
     layout.set_stride(stride);
     layout.set_step_function(step);

@@ -36,16 +36,24 @@ fn load_class(lua: &Lua, class: &str, files: &[String], realm: Realm) -> Result<
     }
 
     let ent: Value = globals.get("ENT").map_err(|err| err.to_string())?;
-    globals.set("ENT", Value::Nil).map_err(|err| err.to_string())?;
+    globals
+        .set("ENT", Value::Nil)
+        .map_err(|err| err.to_string())?;
 
     let Value::Table(ent) = ent else {
         return Err("ENT is not a table".to_string());
     };
 
-    let scripted_ents: Table = globals.get("scripted_ents").map_err(|err| err.to_string())?;
-    let register: Function = scripted_ents.get("register").map_err(|err| err.to_string())?;
+    let scripted_ents: Table = globals
+        .get("scripted_ents")
+        .map_err(|err| err.to_string())?;
+    let register: Function = scripted_ents
+        .get("register")
+        .map_err(|err| err.to_string())?;
 
-    register.call::<()>((ent, class)).map_err(|err| err.to_string())
+    register
+        .call::<()>((ent, class))
+        .map_err(|err| err.to_string())
 }
 
 pub fn load_entities(lua: &Lua, realm: Realm) {
@@ -65,7 +73,10 @@ pub fn load_entities(lua: &Lua, realm: Realm) {
             continue;
         };
 
-        classes.entry(class.to_string()).or_default().push(path.clone());
+        classes
+            .entry(class.to_string())
+            .or_default()
+            .push(path.clone());
     }
 
     let scripted_ents: Table = lua
