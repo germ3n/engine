@@ -66,6 +66,9 @@ pub struct ScriptEngine {
     pub anim_access: AnimAccess,
     pub sound_access: SoundAccess,
     pub physics_access: PhysicsAccess,
+    pub brush_access: crate::script::libs::engine::BrushAccess,
+    pub voxel_access: crate::script::libs::engine::VoxelAccess,
+    pub motion_access: crate::script::libs::engine::MotionAccess,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -93,7 +96,6 @@ impl ScriptEngine {
         {
             crate::script::exec(&lua, "hook.lua", "lua/libs/hook.luac");
 
-            register_engine_lib(&lua, tick_interval);
             if !matches!(realm, Realm::Menu) {
                 crate::script::exec(&lua, "net.lua", "lua/libs/net.luac");
 
@@ -118,6 +120,19 @@ impl ScriptEngine {
         let anim_access: AnimAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let sound_access: SoundAccess = Arc::new(AtomicPtr::new(sound));
         let physics_access: PhysicsAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let brush_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let voxel_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let motion_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        register_engine_lib(
+            &lua,
+            tick_interval,
+            realm,
+            brush_access.clone(),
+            voxel_access.clone(),
+            entity_access.clone(),
+            physics_access.clone(),
+            motion_access.clone(),
+        );
         if !matches!(realm, Realm::Menu) {
             register_sound_lib(&lua, sound_access.clone());
             register_ents_lib(
@@ -151,6 +166,9 @@ impl ScriptEngine {
             anim_access,
             sound_access,
             physics_access,
+            brush_access,
+            voxel_access,
+            motion_access,
             usermsg_receiver,
         }
     }

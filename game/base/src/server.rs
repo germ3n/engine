@@ -82,8 +82,10 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
     let mut peers = Vec::new();
+    let mut joined = Vec::new();
     let mut players: Vec<RemotePlayer> = Vec::new();
     let _: () = game.run_hook("Initialize", ());
+    let _ = game.take_motion();
 
     loop {
         let now = Instant::now();
@@ -92,6 +94,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         accumulated_time += dt;
 
+        joined.clear();
         let mut ticked = false;
         while accumulated_time >= game.tick_interval {
             accumulated_time -= game.tick_interval;
@@ -134,6 +137,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     if !peers.contains(&addr) {
                         peers.push(addr);
                     }
+
+                    joined.push(addr);
 
                     if !players.iter().any(|player| player.addr == addr) {
                         let handle = spawn_player(&mut game, players.len());
@@ -189,6 +194,12 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                             map_name: game.map_name.clone(),
                         },
                     );
+                    game.send_state_to(
+                        addr,
+                        ServerToClient::BrushScale {
+                            scale: game.brush_world.scale(),
+                        },
+                    );
 
                     if let Some(player) = players.iter().find(|player| player.addr == addr) {
                         game.send_state_to(
@@ -217,6 +228,9 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     match event {
                         ClientToServer::UserMessage { hash, data } => {
                             game.run_usermessage(hash, UserMsgReader::new(data));
+                        }
+                        ClientToServer::ScaleMaps { ratio } => {
+                            let _ = game.scale_maps(ratio);
                         }
                         ClientToServer::PlayerInput {
                             tick,
@@ -254,6 +268,9 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         emit_entity_changes(&mut game);
         emit_anim_models(&mut game);
         flush_sounds(&mut game);
+
+        emit_scale_dirty(&mut game, &peers);
+        emit_motion(&mut game, &peers, &joined);
 
         if ticked {
             emit_tick_state(&game, &players);
@@ -929,13 +946,41 @@ fn flush_sounds(game: &mut GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
-fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
+fn emit_scale_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
     if let Some(scale) = game.voxel_world.take_scale() {
         for addr in peers {
             game.send_state_to(*addr, ServerToClient::VoxelScale { scale });
         }
     }
 
+    if let Some(scale) = game.brush_world.take_scale() {
+        for addr in peers {
+            game.send_state_to(*addr, ServerToClient::BrushScale { scale });
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_motion(
+    game: &mut GameState<FromClient, ServerToClient>,
+    peers: &[SocketAddr],
+    skip: &[SocketAddr],
+) {
+    let Some(ratio) = game.take_motion() else {
+        return;
+    };
+
+    for addr in peers {
+        if skip.contains(addr) {
+            continue;
+        }
+
+        game.send_state_to(*addr, ServerToClient::WorldMotion { ratio });
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
     let updates = game.voxel_world.take_dirty();
 
     for update in updates {

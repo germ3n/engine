@@ -1,3 +1,4 @@
+use crate::anchor::Anchor;
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player, ScriptedEntity};
 use crate::input::Action;
@@ -26,7 +27,6 @@ use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
 use crate::ui::backend;
-use crate::anchor::Anchor;
 use crate::ui::voxel::FlyCamera;
 use crate::ui::window::Window;
 use crate::ui::Color;
@@ -240,6 +240,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut scene_anchor = Anchor::ZERO;
     let mut camera = FlyCamera::new();
     let mut prediction = Prediction::new();
+    let mut brush_scale: Option<f64> = None;
     let mut remotes: HashMap<EntityHandle, VecDeque<NetPose>> = HashMap::new();
     let session_start = Instant::now();
     let mut captured = false;
@@ -285,9 +286,11 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 WindowEvent::KeyboardInput(input) => {
                     if let Some(code) = input.key_code {
                         if code == KeyCode::BracketLeft && input.state == ElementState::Pressed {
-                            scale_brush_view(&mut game, &mut camera, &mut prediction, 0.5);
-                        } else if code == KeyCode::BracketRight && input.state == ElementState::Pressed {
-                            scale_brush_view(&mut game, &mut camera, &mut prediction, 2.0);
+                            game.send_reliable(ClientToServer::ScaleMaps { ratio: 0.5 });
+                        } else if code == KeyCode::BracketRight
+                            && input.state == ElementState::Pressed
+                        {
+                            game.send_reliable(ClientToServer::ScaleMaps { ratio: 2.0 });
                         } else if code == KeyCode::Escape && input.state == ElementState::Pressed {
                             captured = false;
                             mouse.clear();
@@ -624,6 +627,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                                 &mut tick_ingress,
                                                 &mut prediction,
                                                 &mut remotes,
+                                                &mut camera,
+                                                &mut brush_scale,
                                                 session_start.elapsed().as_secs_f64(),
                                                 waiting,
                                             );
@@ -647,6 +652,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 &mut tick_ingress,
                                 &mut prediction,
                                 &mut remotes,
+                                &mut camera,
+                                &mut brush_scale,
                                 session_start.elapsed().as_secs_f64(),
                                 message,
                             );
@@ -931,36 +938,37 @@ fn body_origin(
         .map(|entity| entity.base().position)
 }
 
-fn scale_brush_view(
+fn scale_view(
     game: &mut GameState<FromServer, ClientToServer>,
     camera: &mut FlyCamera,
     prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
     ratio: f64,
 ) {
-    let next = game.brush_world.scale() * ratio;
-
-    if !game.brush_world.set_scale(next) {
+    if !ratio.is_finite() || (ratio - 1.0).abs() <= 1e-12 {
         return;
     }
 
+    crate::scale::shift_entities(&mut game.entities, None, ratio);
     camera.x *= ratio;
     camera.y *= ratio;
     camera.z *= ratio;
     prediction.scale_span(ratio);
 
-    if !prediction.local.is_null() {
-        if let Some(entity) = game.entities.get_mut(prediction.local) {
-            let base = entity.base_mut();
-            base.position.x *= ratio;
-            base.position.y *= ratio;
-            base.position.z *= ratio;
-            base.velocity.x *= ratio;
-            base.velocity.y *= ratio;
-            base.velocity.z *= ratio;
+    for samples in remotes.values_mut() {
+        let mut idx = 0;
+
+        while idx < samples.len() {
+            let pose = &mut samples[idx];
+            pose.position.x *= ratio;
+            pose.position.y *= ratio;
+            pose.position.z *= ratio;
+            pose.velocity.x *= ratio;
+            pose.velocity.y *= ratio;
+            pose.velocity.z *= ratio;
+            idx += 1;
         }
     }
-
-    log::info!("[map] scale {}", game.brush_world.scale());
 }
 
 fn place_camera(camera: &mut FlyCamera, origin: Vector3, look: Angle3, eye: f64) {
@@ -1279,6 +1287,8 @@ fn apply_server_event(
     tick_ingress: &mut TickIngress,
     prediction: &mut Prediction,
     remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
     now: f64,
     message: ServerToClient,
 ) {
@@ -1372,6 +1382,16 @@ fn apply_server_event(
                 log::warn!("[cl] bad voxel scale {scale}");
             }
         }
+        ServerToClient::BrushScale { scale } => {
+            *brush_scale = Some(scale);
+
+            if !game.brush_world.set_scale(scale) {
+                log::warn!("[cl] bad brush scale {scale}");
+            }
+        }
+        ServerToClient::WorldMotion { ratio } => {
+            scale_view(game, camera, prediction, remotes, ratio);
+        }
         ServerToClient::VoxelChunk(update) => {
             if !game.voxel_world.apply(&update) {
                 log::warn!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
@@ -1380,6 +1400,12 @@ fn apply_server_event(
         ServerToClient::MapChange { map_name } => {
             if let Err(err) = game.brush_world.load_file(&map_name) {
                 log::warn!("[map] {err}");
+            }
+
+            if let Some(scale) = *brush_scale {
+                if !game.brush_world.set_scale(scale) {
+                    log::warn!("[cl] bad brush scale {scale}");
+                }
             }
         }
         ServerToClient::EntitySpawned {

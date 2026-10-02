@@ -590,7 +590,9 @@ impl ColoredMesh {
             let sky_vao = gl.create_vertex_array().unwrap();
             let sky_vbo = gl.create_buffer().unwrap();
             let ubo = gl.create_buffer().unwrap();
-            let align = gl.get_parameter_i32(glow::UNIFORM_BUFFER_OFFSET_ALIGNMENT).max(1);
+            let align = gl
+                .get_parameter_i32(glow::UNIFORM_BUFFER_OFFSET_ALIGNMENT)
+                .max(1);
             let gpu_stride = gpu_stride(align);
             let packed = pack_gpus(
                 &[
@@ -639,7 +641,10 @@ impl ColoredMesh {
             }
             let white = gl_color(gl, &crate::world::surface::CpuImage::white(), true);
             let flat = gl_color(gl, &crate::world::surface::CpuImage::flat_normal(), true);
-            let cube = gl_cube(gl, &crate::world::surface::CubeImage::solid(crate::world::surface::CpuImage::white()));
+            let cube = gl_cube(
+                gl,
+                &crate::world::surface::CubeImage::solid(crate::world::surface::CpuImage::white()),
+            );
             let scene = gl.create_texture().unwrap();
             let batch_vao = gl.create_vertex_array().unwrap();
             let batch_vbo = gl.create_buffer().unwrap();
@@ -909,7 +914,14 @@ impl ColoredMesh {
         self.detail_array = [detail0, detail1];
         self.base2_array = [base20, base21];
         self.env_array = upload_env(gl, &graphics.cubemaps);
-        self.params_tex = params_texture(gl, graphics, &base_picks, &bump_picks, &detail_picks, &base2_picks);
+        self.params_tex = params_texture(
+            gl,
+            graphics,
+            &base_picks,
+            &bump_picks,
+            &detail_picks,
+            &base2_picks,
+        );
     }
 
     fn rebuild_batch(&mut self, gl: &glow::Context) {
@@ -970,7 +982,7 @@ impl ColoredMesh {
 
         self.opaque_chunks = opaque_chunks;
         all.extend_from_slice(&opaque);
-        self.batch_first[1] = (all.len() / crate::world::STRIDE) as i32;    
+        self.batch_first[1] = (all.len() / crate::world::STRIDE) as i32;
         self.batch_count[1] = (alpha.len() / crate::world::STRIDE) as i32;
         all.extend_from_slice(&alpha);
         self.batch_first[2] = (all.len() / crate::world::STRIDE) as i32;
@@ -1128,7 +1140,11 @@ impl ColoredMesh {
         }
 
         unsafe {
-            gl.draw_arrays(glow::TRIANGLES, self.batch_first[slot], self.batch_count[slot]);
+            gl.draw_arrays(
+                glow::TRIANGLES,
+                self.batch_first[slot],
+                self.batch_count[slot],
+            );
         }
     }
 
@@ -1161,7 +1177,11 @@ impl ColoredMesh {
         }
         self.bound = [None; 13];
         self.bind_view(gl, matrix, view, width, height, 0.0);
-        self.apply_pass(gl, crate::world::surface::PASS_OPAQUE, crate::world::surface::MODE_LIGHT);
+        self.apply_pass(
+            gl,
+            crate::world::surface::PASS_OPAQUE,
+            crate::world::surface::MODE_LIGHT,
+        );
         draw_visible(gl, &self.fast_chunks, planes);
     }
 
@@ -1442,7 +1462,6 @@ impl ColoredMesh {
 
     fn bind_material(&mut self, gl: &glow::Context, slot: i32) {
         if self.gpu_slot == slot {
-
             return;
         }
 
@@ -1476,10 +1495,22 @@ impl ColoredMesh {
         };
         unsafe {
             gl.uniform_matrix_4_f32_slice(vs[0].as_ref(), false, matrix);
-            gl.uniform_4_f32(vs[1].as_ref(), view.eye[0], view.eye[1], view.eye[2], view.time);
+            gl.uniform_4_f32(
+                vs[1].as_ref(),
+                view.eye[0],
+                view.eye[1],
+                view.eye[2],
+                view.time,
+            );
             gl.uniform_4_f32(vs[2].as_ref(), width as f32, height as f32, sky, 0.0);
             gl.uniform_matrix_4_f32_slice(fs[0].as_ref(), false, matrix);
-            gl.uniform_4_f32(fs[1].as_ref(), view.eye[0], view.eye[1], view.eye[2], view.time);
+            gl.uniform_4_f32(
+                fs[1].as_ref(),
+                view.eye[0],
+                view.eye[1],
+                view.eye[2],
+                view.time,
+            );
             gl.uniform_4_f32(fs[2].as_ref(), width as f32, height as f32, sky, 0.0);
         }
     }
@@ -1504,10 +1535,26 @@ impl ColoredMesh {
                     glow::UNSIGNED_BYTE,
                     None,
                 );
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::LINEAR as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_MAG_FILTER,
+                    glow::LINEAR as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_WRAP_S,
+                    glow::CLAMP_TO_EDGE as i32,
+                );
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D,
+                    glow::TEXTURE_WRAP_T,
+                    glow::CLAMP_TO_EDGE as i32,
+                );
                 self.scene_size = (width, height);
             }
 
@@ -1570,7 +1617,11 @@ fn sky_moved(from: [f32; 3], to: [f32; 3]) -> bool {
     dx * dx + dy * dy + dz * dz > 64.0
 }
 
-fn view_locations(gl: &glow::Context, program: glow::Program, stage: &str) -> [Option<glow::UniformLocation>; 3] {
+fn view_locations(
+    gl: &glow::Context,
+    program: glow::Program,
+    stage: &str,
+) -> [Option<glow::UniformLocation>; 3] {
     unsafe {
         [
             gl.get_uniform_location(program, &format!("_immediates_binding_{stage}.view_proj")),
@@ -1582,10 +1633,18 @@ fn view_locations(gl: &glow::Context, program: glow::Program, stage: &str) -> [O
 
 fn graphics_key(graphics: &crate::world::MapGraphics) -> u64 {
     let mut key = graphics.materials.len() as u64;
-    key = key.wrapping_mul(131).wrapping_add(graphics.lightmaps[0].width as u64);
-    key = key.wrapping_mul(131).wrapping_add(graphics.lightmaps[0].bytes.len() as u64);
-    key = key.wrapping_mul(131).wrapping_add(graphics.cubemaps.len() as u64);
-    key = key.wrapping_mul(131).wrapping_add(u64::from(graphics.sky.is_some()));
+    key = key
+        .wrapping_mul(131)
+        .wrapping_add(graphics.lightmaps[0].width as u64);
+    key = key
+        .wrapping_mul(131)
+        .wrapping_add(graphics.lightmaps[0].bytes.len() as u64);
+    key = key
+        .wrapping_mul(131)
+        .wrapping_add(graphics.cubemaps.len() as u64);
+    key = key
+        .wrapping_mul(131)
+        .wrapping_add(u64::from(graphics.sky.is_some()));
     let sample = graphics.lightmaps[0].bytes.len().min(64);
     let mut idx = 0;
 
@@ -1632,8 +1691,16 @@ fn solid_array(gl: &glow::Context, rgba: &[u8; 4]) -> glow::Texture {
             glow::UNSIGNED_BYTE,
             Some(rgba),
         );
-        gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D_ARRAY,
+            glow::TEXTURE_MIN_FILTER,
+            glow::NEAREST as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D_ARRAY,
+            glow::TEXTURE_MAG_FILTER,
+            glow::NEAREST as i32,
+        );
         gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAX_LEVEL, 0);
         texture
     }
@@ -1664,11 +1731,31 @@ fn solid_cube_array(gl: &glow::Context) -> glow::Texture {
             glow::UNSIGNED_BYTE,
             Some(&bytes),
         );
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_WRAP_R, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_WRAP_R,
+            glow::CLAMP_TO_EDGE as i32,
+        );
         gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_MAX_LEVEL, 0);
         texture
     }
@@ -1717,7 +1804,11 @@ fn upload_env(gl: &glow::Context, cubes: &[crate::world::surface::CubeImage]) ->
         );
 
         if cubes.is_empty() {
-            gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(
+                glow::TEXTURE_CUBE_MAP_ARRAY,
+                glow::TEXTURE_MIN_FILTER,
+                glow::LINEAR as i32,
+            );
             gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_MAX_LEVEL, 0);
         } else {
             gl.generate_mipmap(glow::TEXTURE_CUBE_MAP_ARRAY);
@@ -1728,10 +1819,26 @@ fn upload_env(gl: &glow::Context, cubes: &[crate::world::surface::CubeImage]) ->
             );
         }
 
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_CUBE_MAP_ARRAY, glow::TEXTURE_WRAP_R, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_CUBE_MAP_ARRAY,
+            glow::TEXTURE_WRAP_R,
+            glow::CLAMP_TO_EDGE as i32,
+        );
         texture
     }
 }
@@ -1768,7 +1875,10 @@ fn pack_role(
             let mut slot = 0;
 
             while slot < tally.len() {
-                if tally[slot].0 == image.format && tally[slot].1 == image.width && tally[slot].2 == image.height {
+                if tally[slot].0 == image.format
+                    && tally[slot].1 == image.width
+                    && tally[slot].2 == image.height
+                {
                     tally[slot].3 += 1;
                     found = true;
 
@@ -1798,7 +1908,11 @@ fn pack_role(
     }
 
     let native = !tally.is_empty();
-    let native_format = if native { tally[best].0 } else { fallback.format };
+    let native_format = if native {
+        tally[best].0
+    } else {
+        fallback.format
+    };
     let native_w = if native { tally[best].1 } else { 1 };
     let native_h = if native { tally[best].2 } else { 1 };
     let scale_w = if native { native_w.min(512) } else { 256 };
@@ -1881,8 +1995,18 @@ fn params_texture(
             gpu.env,
             gpu.extra,
             gpu.fog,
-            [base[0] as f32, base[1] as f32, bump[0] as f32, bump[1] as f32],
-            [detail[0] as f32, detail[1] as f32, base2[0] as f32, base2[1] as f32],
+            [
+                base[0] as f32,
+                base[1] as f32,
+                bump[0] as f32,
+                bump[1] as f32,
+            ],
+            [
+                detail[0] as f32,
+                detail[1] as f32,
+                base2[0] as f32,
+                base2[1] as f32,
+            ],
         ];
         let mut column = 0;
 
@@ -1913,22 +2037,50 @@ fn params_texture(
             glow::FLOAT,
             Some(bytes),
         );
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::NEAREST as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::NEAREST as i32,
+        );
         gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAX_LEVEL, 0);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
         texture
     }
 }
 
-fn scaled_image(image: &crate::world::surface::CpuImage, width: u32, height: u32) -> crate::world::surface::CpuImage {
+fn scaled_image(
+    image: &crate::world::surface::CpuImage,
+    width: u32,
+    height: u32,
+) -> crate::world::surface::CpuImage {
     let rgba = crate::world::image_rgba(image);
-    let bytes = if image.width == width && image.height == height && matches!(image.format, crate::world::surface::PixelFormat::Rgba8)
+    let bytes = if image.width == width
+        && image.height == height
+        && matches!(image.format, crate::world::surface::PixelFormat::Rgba8)
     {
         rgba
     } else {
-        scale_rgba(&rgba, image.width.max(1), image.height.max(1), width, height)
+        scale_rgba(
+            &rgba,
+            image.width.max(1),
+            image.height.max(1),
+            width,
+            height,
+        )
     };
 
     crate::world::surface::CpuImage {
@@ -2032,7 +2184,11 @@ fn upload_array(gl: &glow::Context, layers: &[crate::world::surface::CpuImage]) 
                     glow::LINEAR_MIPMAP_LINEAR as i32,
                 );
             } else {
-                gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D_ARRAY,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::LINEAR as i32,
+                );
                 gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAX_LEVEL, 0);
             }
         } else {
@@ -2096,14 +2252,30 @@ fn upload_array(gl: &glow::Context, layers: &[crate::world::surface::CpuImage]) 
                 );
                 gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAX_LEVEL, level - 1);
             } else {
-                gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(
+                    glow::TEXTURE_2D_ARRAY,
+                    glow::TEXTURE_MIN_FILTER,
+                    glow::LINEAR as i32,
+                );
                 gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAX_LEVEL, 0);
             }
         }
 
-        gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_WRAP_S, glow::REPEAT as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D_ARRAY, glow::TEXTURE_WRAP_T, glow::REPEAT as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D_ARRAY,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D_ARRAY,
+            glow::TEXTURE_WRAP_S,
+            glow::REPEAT as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D_ARRAY,
+            glow::TEXTURE_WRAP_T,
+            glow::REPEAT as i32,
+        );
         texture
     }
 }
@@ -2115,14 +2287,20 @@ fn compressed_format(format: crate::world::surface::PixelFormat) -> u32 {
         crate::world::surface::PixelFormat::Bc3 => 0x83F3,
         crate::world::surface::PixelFormat::Bc5 => 0x8DBD,
         crate::world::surface::PixelFormat::Bc7 => 0x8E8C,
-        crate::world::surface::PixelFormat::Rgba8 | crate::world::surface::PixelFormat::Rgba16f => 0,
+        crate::world::surface::PixelFormat::Rgba8 | crate::world::surface::PixelFormat::Rgba16f => {
+            0
+        }
     }
 }
 
 fn compressed_len(format: u32, width: u32, height: u32) -> usize {
     let blocks_x = ((width + 3) / 4) as usize;
     let blocks_y = ((height + 3) / 4) as usize;
-    let block = if format == 0x83F1 || format == 0x8DBD { 8 } else { 16 };
+    let block = if format == 0x83F1 || format == 0x8DBD {
+        8
+    } else {
+        16
+    };
 
     blocks_x * blocks_y * block
 }
@@ -2154,7 +2332,9 @@ fn pack_gpus(gpus: &[crate::world::surface::MaterialGpu], stride: usize) -> Vec<
 
 fn gpu_bytes(gpu: &crate::world::surface::MaterialGpu) -> [u8; 96] {
     let mut bytes = [0u8; 96];
-    let fields = [gpu.tint, gpu.params, gpu.detail, gpu.env, gpu.extra, gpu.fog];
+    let fields = [
+        gpu.tint, gpu.params, gpu.detail, gpu.env, gpu.extra, gpu.fog,
+    ];
     let mut idx = 0;
 
     while idx < fields.len() {
@@ -2173,12 +2353,22 @@ fn gpu_bytes(gpu: &crate::world::surface::MaterialGpu) -> [u8; 96] {
     bytes
 }
 
-fn gl_color(gl: &glow::Context, image: &crate::world::surface::CpuImage, repeat: bool) -> glow::Texture {
+fn gl_color(
+    gl: &glow::Context,
+    image: &crate::world::surface::CpuImage,
+    repeat: bool,
+) -> glow::Texture {
     unsafe {
         let texture = gl.create_texture().unwrap();
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
         upload_2d(gl, glow::TEXTURE_2D, image);
-        texture_sampling(gl, glow::TEXTURE_2D, repeat, 1 + image.mips.len() as i32, false);
+        texture_sampling(
+            gl,
+            glow::TEXTURE_2D,
+            repeat,
+            1 + image.mips.len() as i32,
+            false,
+        );
 
         texture
     }
@@ -2202,7 +2392,11 @@ fn gl_cube(gl: &glow::Context, image: &crate::world::surface::CubeImage) -> glow
         idx = 0;
 
         while idx < 6 {
-            upload_2d(gl, glow::TEXTURE_CUBE_MAP_POSITIVE_X + idx as u32, &image.faces[idx]);
+            upload_2d(
+                gl,
+                glow::TEXTURE_CUBE_MAP_POSITIVE_X + idx as u32,
+                &image.faces[idx],
+            );
             idx += 1;
         }
 
@@ -2213,7 +2407,11 @@ fn gl_cube(gl: &glow::Context, image: &crate::world::surface::CubeImage) -> glow
 }
 
 fn texture_sampling(gl: &glow::Context, target: u32, repeat: bool, levels: i32, cube: bool) {
-    let wrap = if repeat { glow::REPEAT } else { glow::CLAMP_TO_EDGE } as i32;
+    let wrap = if repeat {
+        glow::REPEAT
+    } else {
+        glow::CLAMP_TO_EDGE
+    } as i32;
     unsafe {
         gl.tex_parameter_i32(target, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
         gl.tex_parameter_i32(target, glow::TEXTURE_WRAP_S, wrap);
@@ -2240,14 +2438,30 @@ fn texture_sampling(gl: &glow::Context, target: u32, repeat: bool, levels: i32, 
 }
 
 fn upload_2d(gl: &glow::Context, target: u32, image: &crate::world::surface::CpuImage) {
-    upload_level(gl, target, 0, image.width, image.height, image.format, &image.bytes);
+    upload_level(
+        gl,
+        target,
+        0,
+        image.width,
+        image.height,
+        image.format,
+        &image.bytes,
+    );
     let mut idx = 0;
 
     while idx < image.mips.len() {
         let level = (idx + 1) as u32;
         let width = (image.width >> level).max(1);
         let height = (image.height >> level).max(1);
-        upload_level(gl, target, level as i32, width, height, image.format, &image.mips[idx]);
+        upload_level(
+            gl,
+            target,
+            level as i32,
+            width,
+            height,
+            image.format,
+            &image.mips[idx],
+        );
         idx += 1;
     }
 }
@@ -2267,7 +2481,9 @@ fn upload_level(
         crate::world::surface::PixelFormat::Bc3 => 0x83F3,
         crate::world::surface::PixelFormat::Bc5 => 0x8DBD,
         crate::world::surface::PixelFormat::Bc7 => 0x8E8C,
-        crate::world::surface::PixelFormat::Rgba8 | crate::world::surface::PixelFormat::Rgba16f => 0,
+        crate::world::surface::PixelFormat::Rgba8 | crate::world::surface::PixelFormat::Rgba16f => {
+            0
+        }
     };
     unsafe {
         if compressed == 0 {
@@ -2613,7 +2829,11 @@ fn link_skinned_program(gl: &glow::Context, cache: &shader::Registry) -> glow::P
 fn grid_cell(x: f32, y: f32, z: f32) -> (i32, i32, i32) {
     const CELL: f32 = 2048.0;
 
-    ((x / CELL).floor() as i32, (y / CELL).floor() as i32, (z / CELL).floor() as i32)
+    (
+        (x / CELL).floor() as i32,
+        (y / CELL).floor() as i32,
+        (z / CELL).floor() as i32,
+    )
 }
 
 fn grid_mesh(src: &[f32]) -> (Vec<f32>, Vec<MeshChunk>) {
@@ -2632,8 +2852,15 @@ fn grid_mesh(src: &[f32]) -> (Vec<f32>, Vec<MeshChunk>) {
         let cx = src[idx + stride * 2];
         let cy = src[idx + stride * 2 + 1];
         let cz = src[idx + stride * 2 + 2];
-        let key = grid_cell((ax + bx + cx) / 3.0, (ay + by + cy) / 3.0, (az + bz + cz) / 3.0);
-        buckets.entry(key).or_default().extend_from_slice(&src[idx..idx + tri]);
+        let key = grid_cell(
+            (ax + bx + cx) / 3.0,
+            (ay + by + cy) / 3.0,
+            (az + bz + cz) / 3.0,
+        );
+        buckets
+            .entry(key)
+            .or_default()
+            .extend_from_slice(&src[idx..idx + tri]);
         idx += tri;
     }
 
@@ -2658,7 +2885,12 @@ fn grid_mesh(src: &[f32]) -> (Vec<f32>, Vec<MeshChunk>) {
         }
 
         verts.extend_from_slice(&bucket);
-        chunks.push(MeshChunk { first, count, min, max });
+        chunks.push(MeshChunk {
+            first,
+            count,
+            min,
+            max,
+        });
     }
 
     (verts, chunks)
@@ -2893,7 +3125,11 @@ mod tests {
         let planes = frustum_planes(&gl_view_proj(&view));
 
         assert!(chunk_visible([0.0, 40.0, 8.0], [32.0, 80.0, 24.0], &planes));
-        assert!(!chunk_visible([0.0, -4000.0, 8.0], [32.0, -2000.0, 24.0], &planes));
+        assert!(!chunk_visible(
+            [0.0, -4000.0, 8.0],
+            [32.0, -2000.0, 24.0],
+            &planes
+        ));
     }
 
     #[test]

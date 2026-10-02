@@ -9,7 +9,7 @@ use crate::network::NetSend;
 use crate::network::NetWake;
 use crate::physics::{PhysicsScope, PhysicsWorld};
 use crate::platform::PadCache;
-use crate::script::libs::engine::publish_clock;
+use crate::script::libs::engine::{publish_clock, WorldScope};
 use crate::script::libs::ents::{AnimScope, EntityScope};
 use crate::script::libs::vector3::Vector3;
 use crate::script::{Realm, ScriptEngine};
@@ -42,6 +42,7 @@ pub struct GameState<In, Out> {
     physics: PhysicsWorld,
     despawned: Vec<EntityHandle>,
     wake: NetWake,
+    motion_ratio: f64,
 }
 
 impl<In, Out> GameState<In, Out> {
@@ -141,6 +142,7 @@ impl<In, Out> GameState<In, Out> {
             physics: PhysicsWorld::new(),
             despawned: Vec::new(),
             wake,
+            motion_ratio: 1.0,
         }
     }
 
@@ -155,10 +157,21 @@ impl<In, Out> GameState<In, Out> {
         } else {
             std::ptr::null_mut()
         };
+        let brush: *mut crate::world::BrushMap = &mut self.brush_world;
+        let voxels: *mut crate::world::VoxelWorld = &mut self.voxel_world;
+        let motion: *mut f64 = &mut self.motion_ratio;
         let _scope = EntityScope::new(&self.script_engine.entity_access, entities);
         let _anim_scope = AnimScope::new(&self.script_engine.anim_access, anims);
         let _sound_scope = SoundScope::new(&self.script_engine.sound_access, sound);
         let _physics_scope = PhysicsScope::new(&self.script_engine.physics_access, physics);
+        let _world_scope = WorldScope::new(
+            &self.script_engine.brush_access,
+            brush,
+            &self.script_engine.voxel_access,
+            voxels,
+            &self.script_engine.motion_access,
+            motion,
+        );
 
         if !removed.is_empty() {
             if matches!(self.realm, Realm::Server) {
@@ -195,6 +208,34 @@ impl<In, Out> GameState<In, Out> {
         });
     }
 
+    pub fn take_motion(&mut self) -> Option<f64> {
+        if (self.motion_ratio - 1.0).abs() <= 1e-12 {
+            self.motion_ratio = 1.0;
+
+            return None;
+        }
+
+        let ratio = self.motion_ratio;
+        self.motion_ratio = 1.0;
+
+        Some(ratio)
+    }
+
+    pub fn scale_maps(&mut self, ratio: f64) -> bool {
+        if !matches!(self.realm, Realm::Server) {
+            return false;
+        }
+
+        crate::scale::scale_both(
+            &mut self.brush_world,
+            &mut self.voxel_world,
+            &mut self.entities,
+            Some(&mut self.physics),
+            &mut self.motion_ratio,
+            ratio,
+        )
+    }
+
     pub fn step_physics(&mut self, players: &[EntityHandle]) {
         if !matches!(self.realm, Realm::Server) {
             return;
@@ -208,7 +249,7 @@ impl<In, Out> GameState<In, Out> {
             dt,
             gravity,
             &self.brush_world,
-            &self.voxel_world,
+            &mut self.voxel_world,
         );
     }
 

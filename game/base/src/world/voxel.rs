@@ -109,12 +109,14 @@ pub struct ChunkUpdate {
 
 struct Chunk {
     blocks: Box<[u16]>,
+    mesh: Option<Vec<f32>>,
 }
 
 impl Chunk {
     fn empty() -> Self {
         Self {
             blocks: vec![0; VOLUME].into_boxed_slice(),
+            mesh: None,
         }
     }
 
@@ -162,6 +164,7 @@ pub struct VoxelWorld {
     scale: f64,
     scale_dirty: bool,
     revision: u64,
+    mesh_builds: u64,
 }
 
 impl VoxelWorld {
@@ -176,6 +179,7 @@ impl VoxelWorld {
             scale: finite_scale(scale).unwrap_or(1.0),
             scale_dirty: false,
             revision: 0,
+            mesh_builds: 0,
         }
     }
 
@@ -192,6 +196,14 @@ impl VoxelWorld {
     }
 
     pub fn set_scale(&mut self, scale: f64) -> bool {
+        self.commit_scale(scale, true)
+    }
+
+    pub fn apply_scale(&mut self, scale: f64) -> bool {
+        self.commit_scale(scale, false)
+    }
+
+    fn commit_scale(&mut self, scale: f64, dirty: bool) -> bool {
         let Some(scale) = finite_scale(scale) else {
             return false;
         };
@@ -200,27 +212,31 @@ impl VoxelWorld {
             return true;
         }
 
+        let ratio = scale / self.scale;
         self.scale = scale;
-        self.scale_dirty = true;
+        self.scale_meshes(ratio);
+        self.scale_dirty = dirty;
         self.touch();
 
         true
     }
 
-    pub fn apply_scale(&mut self, scale: f64) -> bool {
-        let Some(scale) = finite_scale(scale) else {
-            return false;
-        };
+    fn scale_meshes(&mut self, ratio: f64) {
+        let ratio = ratio as f32;
 
-        if scale == self.scale {
-            return true;
+        for chunk in self.chunks.values_mut() {
+            let Some(mesh) = chunk.mesh.as_mut() else {
+                continue;
+            };
+            let mut vert = 0;
+
+            while vert + super::STRIDE <= mesh.len() {
+                mesh[vert] *= ratio;
+                mesh[vert + 1] *= ratio;
+                mesh[vert + 2] *= ratio;
+                vert += super::STRIDE;
+            }
         }
-
-        self.scale = scale;
-        self.scale_dirty = false;
-        self.touch();
-
-        true
     }
 
     pub fn take_scale(&mut self) -> Option<f64> {
@@ -279,6 +295,7 @@ impl VoxelWorld {
         }
 
         let chunk_pos = pos.chunk();
+        self.invalidate(chunk_pos);
         let (local_x, local_y, local_z) = pos.local();
         let slot = Chunk::index(local_x, local_y, local_z);
 
@@ -339,6 +356,8 @@ impl VoxelWorld {
         };
 
         if update.runs.is_empty() {
+            self.invalidate(pos);
+
             if self.chunks.remove(&pos).is_some() {
                 self.touch();
             }
@@ -365,6 +384,8 @@ impl VoxelWorld {
             cursor = end;
         }
 
+        self.invalidate(pos);
+
         if blocks.iter().all(|block| *block == 0) {
             if self.chunks.remove(&pos).is_some() {
                 self.touch();
@@ -377,6 +398,7 @@ impl VoxelWorld {
             pos,
             Chunk {
                 blocks: blocks.into_boxed_slice(),
+                mesh: None,
             },
         );
         self.touch();
@@ -384,55 +406,96 @@ impl VoxelWorld {
         true
     }
 
-    pub fn mesh(&self) -> Vec<f32> {
+    pub fn mesh(&mut self) -> Vec<f32> {
         self.mesh_at(Vector3::new(0.0, 0.0, 0.0))
     }
 
-    pub fn mesh_at(&self, origin: Vector3) -> Vec<f32> {
-        let mut vertices = Vec::new();
+    pub fn mesh_at(&mut self, origin: Vector3) -> Vec<f32> {
+        let positions: Vec<ChunkPos> = self.chunks.keys().copied().collect();
+        self.gather_mesh(&positions, origin)
+    }
+
+    pub fn mesh_box(&mut self, origin: Vector3, min: Vector3, max: Vector3) -> Vec<f32> {
         let scale = self.scale;
+        let mut positions = Vec::new();
 
-        for (chunk_pos, chunk) in &self.chunks {
-            for idx in 0..chunk.blocks.len() {
-                let id = chunk.blocks[idx];
-
-                if id == 0 {
-                    continue;
-                }
-
-                let edge = CHUNK_EDGE as usize;
-                let local_x = (idx % edge) as i32;
-                let local_y = ((idx / edge) % edge) as i32;
-                let local_z = (idx / (edge * edge)) as i32;
-                let pos = BlockPos::new(
-                    chunk_pos.x * CHUNK_EDGE + local_x,
-                    chunk_pos.y * CHUNK_EDGE + local_y,
-                    chunk_pos.z * CHUNK_EDGE + local_z,
-                );
-                push_block(&mut vertices, self, pos, id, scale, origin);
+        for pos in self.chunks.keys().copied() {
+            if chunk_overlaps(pos, scale, min, max) {
+                positions.push(pos);
             }
+        }
+
+        self.gather_mesh(&positions, origin)
+    }
+
+    fn gather_mesh(&mut self, positions: &[ChunkPos], origin: Vector3) -> Vec<f32> {
+        let mut idx = 0;
+
+        while idx < positions.len() {
+            self.ensure_mesh(positions[idx]);
+            idx += 1;
+        }
+
+        let mut vertices = Vec::new();
+        idx = 0;
+
+        while idx < positions.len() {
+            if let Some(mesh) = self
+                .chunks
+                .get(&positions[idx])
+                .and_then(|chunk| chunk.mesh.as_deref())
+            {
+                append_shifted(&mut vertices, mesh, origin);
+            }
+
+            idx += 1;
         }
 
         vertices
     }
 
-    pub fn mesh_box(&self, origin: Vector3, min: Vector3, max: Vector3) -> Vec<f32> {
+    fn ensure_mesh(&mut self, pos: ChunkPos) {
+        let ready = self
+            .chunks
+            .get(&pos)
+            .map(|chunk| chunk.mesh.is_some())
+            .unwrap_or(false);
+
+        if ready {
+            return;
+        }
+
+        if !self.chunks.contains_key(&pos) {
+            return;
+        }
+
+        let mesh = self.build_chunk_mesh(pos);
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return;
+        };
+
+        chunk.mesh = Some(mesh);
+        self.mesh_builds += 1;
+    }
+
+    fn build_chunk_mesh(&self, chunk_pos: ChunkPos) -> Vec<f32> {
+        let blocks = {
+            let Some(chunk) = self.chunks.get(&chunk_pos) else {
+                return Vec::new();
+            };
+
+            chunk.blocks.clone()
+        };
         let mut vertices = Vec::new();
         let scale = self.scale;
+        let origin = Vector3::new(0.0, 0.0, 0.0);
+        let edge = CHUNK_EDGE as usize;
+        let mut idx = 0;
 
-        for (chunk_pos, chunk) in &self.chunks {
-            if !chunk_overlaps(*chunk_pos, scale, min, max) {
-                continue;
-            }
+        while idx < blocks.len() {
+            let id = blocks[idx];
 
-            for idx in 0..chunk.blocks.len() {
-                let id = chunk.blocks[idx];
-
-                if id == 0 {
-                    continue;
-                }
-
-                let edge = CHUNK_EDGE as usize;
+            if id != 0 {
                 let local_x = (idx % edge) as i32;
                 let local_y = ((idx / edge) % edge) as i32;
                 let local_z = (idx / (edge * edge)) as i32;
@@ -443,9 +506,34 @@ impl VoxelWorld {
                 );
                 push_block(&mut vertices, self, pos, id, scale, origin);
             }
+
+            idx += 1;
         }
 
         vertices
+    }
+
+    fn invalidate(&mut self, pos: ChunkPos) {
+        self.drop_mesh(pos);
+        let mut idx = 0;
+
+        while idx < NEIGHBORS.len() {
+            let (x, y, z) = NEIGHBORS[idx];
+            self.drop_mesh(ChunkPos {
+                x: pos.x + x,
+                y: pos.y + y,
+                z: pos.z + z,
+            });
+            idx += 1;
+        }
+    }
+
+    fn drop_mesh(&mut self, pos: ChunkPos) {
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return;
+        };
+
+        chunk.mesh = None;
     }
 
     pub fn baseline(&self) -> Vec<ChunkUpdate> {
@@ -885,6 +973,25 @@ fn chunk_overlaps(pos: ChunkPos, scale: f64, min: Vector3, max: Vector3) -> bool
         && y0 <= max.y
         && z0 + edge >= min.z
         && z0 <= max.z
+}
+
+fn append_shifted(out: &mut Vec<f32>, mesh: &[f32], origin: Vector3) {
+    if origin.x == 0.0 && origin.y == 0.0 && origin.z == 0.0 {
+        out.extend_from_slice(mesh);
+
+        return;
+    }
+
+    let start = out.len();
+    out.extend_from_slice(mesh);
+    let mut idx = start;
+
+    while idx + super::STRIDE <= out.len() {
+        out[idx] = (f64::from(out[idx]) - origin.x) as f32;
+        out[idx + 1] = (f64::from(out[idx + 1]) - origin.y) as f32;
+        out[idx + 2] = (f64::from(out[idx + 2]) - origin.z) as f32;
+        idx += super::STRIDE;
+    }
 }
 
 fn push_block(
@@ -1389,6 +1496,42 @@ mod tests {
         solid.fill(BlockPos::new(0, 0, 0), BlockPos::new(3, 3, 3), Block(1));
 
         assert_eq!(solid.mesh().len(), 54 * 6 * crate::world::STRIDE);
+    }
+
+    #[test]
+    fn scale_multiplies_cached_mesh_and_keeps_blocks() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(1, 2, 3), Block(4));
+        let before = world.mesh();
+        let builds = world.mesh_builds;
+        assert!(world.set_scale(2.0));
+        assert_eq!(world.get(BlockPos::new(1, 2, 3)), Block(4));
+        assert_eq!(world.mesh_builds, builds);
+        let after = world.mesh();
+        assert!((after[0] - before[0] * 2.0).abs() < 1e-3);
+        assert!((after[1] - before[1] * 2.0).abs() < 1e-3);
+        assert!((after[2] - before[2] * 2.0).abs() < 1e-3);
+
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(1, 0, 0), Block(1));
+        let before = world.mesh()[0];
+        assert!(world.apply_scale(2.0));
+        assert!(world.take_scale().is_none());
+        assert!((world.mesh()[0] - before * 2.0).abs() < 1e-3);
+        assert_eq!(world.mesh_builds, 1);
+    }
+
+    #[test]
+    fn block_edit_rebuilds_only_the_touched_chunks() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block(1));
+        world.set(BlockPos::new(16, 0, 0), Block(1));
+        world.set(BlockPos::new(48, 0, 0), Block(1));
+        let _ = world.mesh();
+        assert_eq!(world.mesh_builds, 3);
+        world.set(BlockPos::new(0, 0, 1), Block(1));
+        let _ = world.mesh();
+        assert_eq!(world.mesh_builds, 5);
     }
 
     #[test]

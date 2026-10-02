@@ -278,7 +278,7 @@ impl PhysicsWorld {
         dt: f64,
         gravity: f64,
         brushes: &BrushMap,
-        voxels: &VoxelWorld,
+        voxels: &mut VoxelWorld,
     ) {
         if !dt.is_finite() || dt <= 0.0 {
             return;
@@ -397,7 +397,7 @@ impl PhysicsWorld {
         }
     }
 
-    fn refresh_static(&mut self, brushes: &BrushMap, voxels: &VoxelWorld) {
+    fn refresh_static(&mut self, brushes: &BrushMap, voxels: &mut VoxelWorld) {
         let brush_rev = brushes.revision();
         let voxel_rev = voxels.revision();
 
@@ -430,12 +430,16 @@ impl PhysicsWorld {
             self.origin.y + reach,
             self.origin.z + reach,
         );
-        let hulls = brushes.hulls_in(min, max);
-        let mut idx = 0;
+        if let Some(mesh) = brushes.cached_mesh() {
+            self.add_brush_mesh(body, mesh, min, max);
+        } else {
+            let hulls = brushes.hulls_in(min, max);
+            let mut idx = 0;
 
-        while idx < hulls.len() {
-            self.add_hull(body, &hulls[idx]);
-            idx += 1;
+            while idx < hulls.len() {
+                self.add_hull(body, &hulls[idx]);
+                idx += 1;
+            }
         }
 
         let voxel_mesh = voxels.mesh_box(self.origin, min, max);
@@ -465,6 +469,48 @@ impl PhysicsWorld {
         };
 
         self.attach(body, builder);
+    }
+
+    fn add_brush_mesh(&mut self, body: RigidBodyHandle, mesh: &[f32], min: Vector3, max: Vector3) {
+        let stride = crate::world::STRIDE;
+        let mut points = Vec::new();
+        let mut indices = Vec::new();
+        let mut idx = 0;
+
+        while idx + stride * 3 <= mesh.len() {
+            let ax = mesh[idx];
+            let ay = mesh[idx + 1];
+            let az = mesh[idx + 2];
+            let bx = mesh[idx + stride];
+            let by = mesh[idx + stride + 1];
+            let bz = mesh[idx + stride + 2];
+            let cx = mesh[idx + stride * 2];
+            let cy = mesh[idx + stride * 2 + 1];
+            let cz = mesh[idx + stride * 2 + 2];
+
+            if triangle_overlaps(ax, ay, az, bx, by, bz, cx, cy, cz, min, max) {
+                let base = points.len() as u32;
+                points.push(self.to_sim(Vector3::new(f64::from(ax), f64::from(ay), f64::from(az))));
+                points.push(self.to_sim(Vector3::new(f64::from(bx), f64::from(by), f64::from(bz))));
+                points.push(self.to_sim(Vector3::new(f64::from(cx), f64::from(cy), f64::from(cz))));
+                indices.push([base, base + 1, base + 2]);
+            }
+
+            idx += stride * 3;
+        }
+
+        if indices.is_empty() {
+            return;
+        }
+
+        match ColliderBuilder::trimesh(points, indices) {
+            Ok(builder) => {
+                self.attach(body, builder);
+            }
+            Err(err) => {
+                log::warn!("[physics] brush mesh: {err:?}");
+            }
+        }
     }
 
     fn add_voxels(&mut self, body: RigidBodyHandle, floats: &[f32]) {
@@ -593,11 +639,7 @@ impl PhysicsWorld {
             let position = entity.base().position;
             let angles = entity.base().angles;
             let velocity = entity.base().velocity;
-            let active = self
-                .props
-                .get(&handle)
-                .and_then(|prop| prop.body)
-                .is_some();
+            let active = self.props.get(&handle).and_then(|prop| prop.body).is_some();
             let dist = dist_sq(self.origin, position);
 
             if active && dist > SHIFT * SHIFT {
@@ -822,12 +864,7 @@ fn rotation_of(angles: Angle3) -> Rotation {
         return Rotation::IDENTITY;
     }
 
-    let quat = quat_from_pose(pose_matrix(
-        [0.0, 0.0, 0.0],
-        angles.p,
-        angles.y,
-        angles.r,
-    ));
+    let quat = quat_from_pose(pose_matrix([0.0, 0.0, 0.0], angles.p, angles.y, angles.r));
 
     Rotation::from_xyzw(quat[0], quat[1], quat[2], quat[3])
 }
@@ -837,22 +874,8 @@ fn angles_of(rotation: &Rotation) -> Angle3 {
     let y_axis = *rotation * Vector::Y;
     let z_axis = *rotation * Vector::Z;
     let angles = angles_from_pose([
-        x_axis.x,
-        x_axis.y,
-        x_axis.z,
-        0.0,
-        y_axis.x,
-        y_axis.y,
-        y_axis.z,
-        0.0,
-        z_axis.x,
-        z_axis.y,
-        z_axis.z,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
+        x_axis.x, x_axis.y, x_axis.z, 0.0, y_axis.x, y_axis.y, y_axis.z, 0.0, z_axis.x, z_axis.y,
+        z_axis.z, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]);
 
     Angle3::new(angles[0], angles[1], angles[2]).normalize()
@@ -871,36 +894,16 @@ fn quat_from_pose(mat: [f32; 16]) -> [f32; 4] {
     let trace = m00 + m11 + m22;
     let (x, y, z, w) = if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
-        (
-            (m21 - m12) / s,
-            (m02 - m20) / s,
-            (m10 - m01) / s,
-            0.25 * s,
-        )
+        ((m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s)
     } else if m00 > m11 && m00 > m22 {
         let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
-        (
-            0.25 * s,
-            (m01 + m10) / s,
-            (m02 + m20) / s,
-            (m21 - m12) / s,
-        )
+        (0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s)
     } else if m11 > m22 {
         let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
-        (
-            (m01 + m10) / s,
-            0.25 * s,
-            (m12 + m21) / s,
-            (m02 - m20) / s,
-        )
+        ((m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s)
     } else {
         let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
-        (
-            (m02 + m20) / s,
-            (m12 + m21) / s,
-            0.25 * s,
-            (m10 - m01) / s,
-        )
+        ((m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s)
     };
     let len = (x * x + y * y + z * z + w * w).sqrt();
 
@@ -911,6 +914,34 @@ fn quat_from_pose(mat: [f32; 16]) -> [f32; 4] {
     let inv = 1.0 / len;
 
     [x * inv, y * inv, z * inv, w * inv]
+}
+
+fn triangle_overlaps(
+    ax: f32,
+    ay: f32,
+    az: f32,
+    bx: f32,
+    by: f32,
+    bz: f32,
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    min: Vector3,
+    max: Vector3,
+) -> bool {
+    let min_x = f64::from(ax.min(bx).min(cx));
+    let min_y = f64::from(ay.min(by).min(cy));
+    let min_z = f64::from(az.min(bz).min(cz));
+    let max_x = f64::from(ax.max(bx).max(cx));
+    let max_y = f64::from(ay.max(by).max(cy));
+    let max_z = f64::from(az.max(bz).max(cz));
+
+    max_x >= min.x
+        && min_x <= max.x
+        && max_y >= min.y
+        && min_y <= max.y
+        && max_z >= min.z
+        && min_z <= max.z
 }
 
 fn voxel_trimesh(floats: &[f32]) -> Option<(Vec<Vector>, Vec<[u32; 3]>)> {
@@ -927,7 +958,11 @@ fn voxel_trimesh(floats: &[f32]) -> Option<(Vec<Vector>, Vec<[u32; 3]>)> {
 
     while (tri as usize) < tris {
         let base = tri as usize * VOXEL_STRIDE * 3;
-        points.push(Vector::new(floats[base], floats[base + 1], floats[base + 2]));
+        points.push(Vector::new(
+            floats[base],
+            floats[base + 1],
+            floats[base + 2],
+        ));
         points.push(Vector::new(
             floats[base + VOXEL_STRIDE],
             floats[base + VOXEL_STRIDE + 1],
@@ -1004,7 +1039,7 @@ mod tests {
             0,
         ));
 
-        let voxels = VoxelWorld::new();
+        let mut voxels = VoxelWorld::new();
         let mut entities = EntityList::new();
         let handle = entities
             .spawn(Box::new(ScriptedEntity::new(1)))
@@ -1022,7 +1057,7 @@ mod tests {
         let mut idx = 0;
 
         while idx < 120 {
-            world.step(&mut entities, &[], dt, 24.0, &brushes, &voxels);
+            world.step(&mut entities, &[], dt, 24.0, &brushes, &mut voxels);
             idx += 1;
         }
 
@@ -1046,11 +1081,9 @@ mod tests {
             0,
         ));
 
-        let voxels = VoxelWorld::new();
+        let mut voxels = VoxelWorld::new();
         let mut entities = EntityList::new();
-        let player = entities
-            .spawn(Box::new(Player::new()))
-            .expect("player");
+        let player = entities.spawn(Box::new(Player::new())).expect("player");
         {
             let entity = entities.get_mut(player).expect("player entity");
             entity.base_mut().position = Vector3::new(far, 0.0, 0.0);
@@ -1074,7 +1107,7 @@ mod tests {
         let mut idx = 0;
 
         while idx < 120 {
-            world.step(&mut entities, &[player], dt, 24.0, &brushes, &voxels);
+            world.step(&mut entities, &[player], dt, 24.0, &brushes, &mut voxels);
             idx += 1;
         }
 
@@ -1083,7 +1116,11 @@ mod tests {
         assert!((pos.x - far).abs() < 0.05, "x {}", pos.x);
         assert!((pos.y - 1.5).abs() < 0.05, "y {}", pos.y);
         assert!(pos.z > -0.05 && pos.z < 0.2, "z {}", pos.z);
-        assert!((world.origin.x - far).abs() < 1.0, "origin {}", world.origin.x);
+        assert!(
+            (world.origin.x - far).abs() < 1.0,
+            "origin {}",
+            world.origin.x
+        );
     }
 
     #[test]
@@ -1097,7 +1134,7 @@ mod tests {
             0,
         ));
 
-        let voxels = VoxelWorld::new();
+        let mut voxels = VoxelWorld::new();
         let mut entities = EntityList::new();
         let player = entities.spawn(Box::new(Player::new())).expect("player");
         let handle = entities
@@ -1119,7 +1156,7 @@ mod tests {
         let mut idx = 0;
 
         while idx < 30 {
-            world.step(&mut entities, &[player], dt, 24.0, &brushes, &voxels);
+            world.step(&mut entities, &[player], dt, 24.0, &brushes, &mut voxels);
             idx += 1;
         }
 

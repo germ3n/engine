@@ -11,6 +11,7 @@ mod input;
 mod movement;
 mod network;
 mod physics;
+mod scale;
 mod script;
 mod server;
 mod sound;

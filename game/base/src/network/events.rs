@@ -267,6 +267,12 @@ pub enum ServerToClient {
         scale: f64,
     },
     VoxelChunk(ChunkUpdate),
+    BrushScale {
+        scale: f64,
+    },
+    WorldMotion {
+        ratio: f64,
+    },
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
@@ -299,6 +305,9 @@ pub enum ClientToServer {
         buttons: InputButtons,
         movement: Vector3,
         viewangles: Angle3,
+    },
+    ScaleMaps {
+        ratio: f64,
     },
 }
 
@@ -553,6 +562,8 @@ impl ServerToClient {
             ServerToClient::VoxelChunk(update) => {
                 format!("VoxelChunk({} {} {})", update.x, update.y, update.z)
             }
+            ServerToClient::BrushScale { scale } => format!("BrushScale({scale})"),
+            ServerToClient::WorldMotion { ratio } => format!("WorldMotion({ratio})"),
         }
     }
 }
@@ -588,6 +599,7 @@ impl ClientToServer {
                 viewangles.y,
                 viewangles.r
             ),
+            ClientToServer::ScaleMaps { ratio } => format!("ScaleMaps({ratio})"),
         }
     }
 }

@@ -1,5 +1,5 @@
-use super::material::MaterialBank;
 use super::material::FileSource;
+use super::material::MaterialBank;
 use super::surface::{
     push_vertex, tri_normal, tri_tangent, MapGraphics, SurfaceRange, MATERIAL_NONE, PASS_OPAQUE,
     STRIDE,
@@ -248,16 +248,16 @@ impl BrushGrid {
         self.cells.clear();
     }
 
-    fn rebuild(&mut self, bounds: &[Aabb]) {
+    fn rebuild(&mut self, bounds: &[Aabb], cell: f64) {
         self.cells.clear();
 
         for (idx, aabb) in bounds.iter().enumerate() {
-            let x0 = cell_coord(aabb.min.x);
-            let y0 = cell_coord(aabb.min.y);
-            let z0 = cell_coord(aabb.min.z);
-            let x1 = cell_coord(aabb.max.x);
-            let y1 = cell_coord(aabb.max.y);
-            let z1 = cell_coord(aabb.max.z);
+            let x0 = cell_coord(aabb.min.x, cell);
+            let y0 = cell_coord(aabb.min.y, cell);
+            let z0 = cell_coord(aabb.min.z, cell);
+            let x1 = cell_coord(aabb.max.x, cell);
+            let y1 = cell_coord(aabb.max.y, cell);
+            let z1 = cell_coord(aabb.max.z, cell);
             let mut z = z0;
 
             while z <= z1 {
@@ -279,19 +279,40 @@ impl BrushGrid {
         }
     }
 
-    fn query(&self, min: Vector3, max: Vector3, brush_count: usize) -> Vec<usize> {
+    fn query(&self, min: Vector3, max: Vector3, brush_count: usize, cell: f64) -> Vec<usize> {
         if brush_count == 0 {
             return Vec::new();
         }
 
-        let x0 = cell_coord(min.x);
-        let y0 = cell_coord(min.y);
-        let z0 = cell_coord(min.z);
-        let x1 = cell_coord(max.x);
-        let y1 = cell_coord(max.y);
-        let z1 = cell_coord(max.z);
+        let x0 = cell_coord(min.x, cell);
+        let y0 = cell_coord(min.y, cell);
+        let z0 = cell_coord(min.z, cell);
+        let x1 = cell_coord(max.x, cell);
+        let y1 = cell_coord(max.y, cell);
+        let z1 = cell_coord(max.z, cell);
         let mut seen = HashSet::new();
         let mut out = Vec::new();
+        let span_x = (x1 as i64 - x0 as i64).saturating_add(1).max(0);
+        let span_y = (y1 as i64 - y0 as i64).saturating_add(1).max(0);
+        let span_z = (z1 as i64 - z0 as i64).saturating_add(1).max(0);
+        let volume = span_x.saturating_mul(span_y).saturating_mul(span_z);
+
+        if volume > self.cells.len() as i64 {
+            for (&(x, y, z), list) in &self.cells {
+                if x < x0 || x > x1 || y < y0 || y > y1 || z < z0 || z > z1 {
+                    continue;
+                }
+
+                for &idx in list {
+                    if seen.insert(idx) {
+                        out.push(idx);
+                    }
+                }
+            }
+
+            return out;
+        }
+
         let mut z = z0;
 
         while z <= z1 {
@@ -322,8 +343,8 @@ impl BrushGrid {
     }
 }
 
-fn cell_coord(value: f64) -> i32 {
-    (value / GRID_CELL).floor() as i32
+fn cell_coord(value: f64, cell: f64) -> i32 {
+    (value / cell).floor() as i32
 }
 
 pub struct BrushMap {
@@ -336,6 +357,7 @@ pub struct BrushMap {
     ranges: Vec<SurfaceRange>,
     graphics: MapGraphics,
     scale: f64,
+    scale_dirty: bool,
 }
 
 impl BrushMap {
@@ -350,6 +372,7 @@ impl BrushMap {
             ranges: Vec::new(),
             graphics: MapGraphics::plain(),
             scale: 1.0,
+            scale_dirty: false,
         }
     }
 
@@ -368,9 +391,20 @@ impl BrushMap {
 
         let ratio = scale / self.scale;
         self.scale = scale;
+        self.scale_dirty = true;
         self.apply_ratio(ratio);
 
         true
+    }
+
+    pub fn take_scale(&mut self) -> Option<f64> {
+        if !self.scale_dirty {
+            return None;
+        }
+
+        self.scale_dirty = false;
+
+        Some(self.scale)
     }
 
     fn apply_ratio(&mut self, ratio: f64) {
@@ -386,10 +420,12 @@ impl BrushMap {
                 plane += 1;
             }
 
-            if let Some(aabb) = brush_aabb(&self.brushes[idx]) {
-                self.bounds[idx] = aabb;
-            }
-
+            self.bounds[idx].min.x *= ratio;
+            self.bounds[idx].min.y *= ratio;
+            self.bounds[idx].min.z *= ratio;
+            self.bounds[idx].max.x *= ratio;
+            self.bounds[idx].max.y *= ratio;
+            self.bounds[idx].max.z *= ratio;
             idx += 1;
         }
 
@@ -438,7 +474,7 @@ impl BrushMap {
     }
 
     pub fn hulls_in(&self, min: Vector3, max: Vector3) -> Vec<Vec<Vector3>> {
-        let indices = self.grid.query(min, max, self.brushes.len());
+        let indices = self.grid.query(min, max, self.brushes.len(), self.cell());
         let mut out = Vec::new();
         let mut idx = 0;
 
@@ -636,7 +672,14 @@ impl BrushMap {
                     .unwrap_or((1.0, 1.0));
 
                 if selected == Some(idx) {
-                    push_poly_color(&mut vertices, &poly, [1.0, 0.86, 0.28], origin, width, height);
+                    push_poly_color(
+                        &mut vertices,
+                        &poly,
+                        [1.0, 0.86, 0.28],
+                        origin,
+                        width,
+                        height,
+                    );
                 } else {
                     push_poly(&mut vertices, &poly, origin, width, height);
                 }
@@ -679,7 +722,7 @@ impl BrushMap {
         let delta = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
         let max_dist = delta.len();
         let (min, max) = segment_aabb(start, end);
-        let candidates = self.grid.query(min, max, self.brushes.len());
+        let candidates = self.grid.query(min, max, self.brushes.len(), self.cell());
 
         if max_dist == 0.0 {
             for idx in candidates {
@@ -743,7 +786,9 @@ impl BrushMap {
         let (seg_min, seg_max) = segment_aabb(start, end);
         let query_min = Vector3::new(seg_min.x + mins.x, seg_min.y + mins.y, seg_min.z + mins.z);
         let query_max = Vector3::new(seg_max.x + maxs.x, seg_max.y + maxs.y, seg_max.z + maxs.z);
-        let candidates = self.grid.query(query_min, query_max, self.brushes.len());
+        let candidates = self
+            .grid
+            .query(query_min, query_max, self.brushes.len(), self.cell());
         let mut best: Option<BrushHit> = None;
 
         if max_dist == 0.0 {
@@ -793,13 +838,21 @@ impl BrushMap {
         best
     }
 
+    fn cell(&self) -> f64 {
+        (GRID_CELL * self.scale).max(1.0e-4)
+    }
+
+    pub fn cached_mesh(&self) -> Option<&[f32]> {
+        self.mesh_cache.as_deref()
+    }
+
     fn touch(&mut self) {
         self.revision = self.revision.wrapping_add(1);
-        self.grid.rebuild(&self.bounds);
+        self.grid.rebuild(&self.bounds, self.cell());
     }
 
     fn finalize(&mut self) {
-        self.grid.rebuild(&self.bounds);
+        self.grid.rebuild(&self.bounds, self.cell());
     }
 }
 
@@ -1949,7 +2002,11 @@ fn rotate_axes(axes: (Vector3, Vector3), normal: Vector3, degrees: f64) -> (Vect
     let rotate = |axis: Vector3| {
         let dot = normal.dot(axis);
         let parallel = Vector3::new(normal.x * dot, normal.y * dot, normal.z * dot);
-        let flat = Vector3::new(axis.x - parallel.x, axis.y - parallel.y, axis.z - parallel.z);
+        let flat = Vector3::new(
+            axis.x - parallel.x,
+            axis.y - parallel.y,
+            axis.z - parallel.z,
+        );
         let cross = normal.cross(flat);
 
         Vector3::new(
@@ -2225,13 +2282,7 @@ fn buried(points: &[Vector3], owner: usize, brushes: &[Brush]) -> bool {
     false
 }
 
-fn push_poly(
-    vertices: &mut Vec<f32>,
-    poly: &Poly,
-    origin: Vector3,
-    width: f64,
-    height: f64,
-) {
+fn push_poly(vertices: &mut Vec<f32>, poly: &Poly, origin: Vector3, width: f64, height: f64) {
     let [red, green, blue] = material_rgb(poly.material);
     let shade = 0.42 + 0.58 * ((poly.normal.z as f32 + 1.0) * 0.5);
 
@@ -2256,14 +2307,7 @@ fn push_poly_color(
     height: f64,
 ) {
     push_fan(
-        vertices,
-        poly,
-        color[0],
-        color[1],
-        color[2],
-        origin,
-        width,
-        height,
+        vertices, poly, color[0], color[1], color[2], origin, width, height,
     );
 }
 
@@ -2285,7 +2329,9 @@ fn push_fan(
         let c = poly.points[idx + 1];
 
         if tri_area(a, b, c) > AREA_EPS {
-            push_tri(vertices, poly, a, b, c, red, green, blue, origin, width, height);
+            push_tri(
+                vertices, poly, a, b, c, red, green, blue, origin, width, height,
+            );
         }
 
         idx += 1;
@@ -2313,9 +2359,21 @@ fn push_tri(
     height: f64,
 ) {
     let positions = [
-        [(a.x - origin.x) as f32, (a.y - origin.y) as f32, (a.z - origin.z) as f32],
-        [(b.x - origin.x) as f32, (b.y - origin.y) as f32, (b.z - origin.z) as f32],
-        [(c.x - origin.x) as f32, (c.y - origin.y) as f32, (c.z - origin.z) as f32],
+        [
+            (a.x - origin.x) as f32,
+            (a.y - origin.y) as f32,
+            (a.z - origin.z) as f32,
+        ],
+        [
+            (b.x - origin.x) as f32,
+            (b.y - origin.y) as f32,
+            (b.z - origin.z) as f32,
+        ],
+        [
+            (c.x - origin.x) as f32,
+            (c.y - origin.y) as f32,
+            (c.z - origin.z) as f32,
+        ],
     ];
     let normal = tri_normal(positions[0], positions[1], positions[2]);
     let tangent = [
@@ -2350,8 +2408,16 @@ fn push_tri(
 }
 
 fn surface_uv(poly: &Poly, point: Vector3, width: f64, height: f64) -> [f32; 2] {
-    let scale_u = if poly.scale_u.abs() < 1e-8 { 1.0 } else { poly.scale_u };
-    let scale_v = if poly.scale_v.abs() < 1e-8 { 1.0 } else { poly.scale_v };
+    let scale_u = if poly.scale_u.abs() < 1e-8 {
+        1.0
+    } else {
+        poly.scale_u
+    };
+    let scale_v = if poly.scale_v.abs() < 1e-8 {
+        1.0
+    } else {
+        poly.scale_v
+    };
     let u = (point.dot(poly.axis_u) / scale_u + poly.shift_u) / width.max(1.0);
     let v = (point.dot(poly.axis_v) / scale_v + poly.shift_v) / height.max(1.0);
 
@@ -2597,11 +2663,37 @@ mod tests {
         let mut idx = 0;
 
         while idx + 2 < mesh.len() {
-            max = max.max(mesh[idx].abs()).max(mesh[idx + 1].abs()).max(mesh[idx + 2].abs());
+            max = max
+                .max(mesh[idx].abs())
+                .max(mesh[idx + 1].abs())
+                .max(mesh[idx + 2].abs());
             idx += STRIDE;
         }
 
         assert!(near(f64::from(max), 2.0));
+    }
+
+    #[test]
+    fn set_scale_moves_stored_bounds() {
+        let mut map = BrushMap::new();
+        assert!(map.add_box(
+            Vector3::new(-4.0, -3.0, -2.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            1,
+        ));
+        assert!(map.set_scale(2.0));
+        assert!(near(map.bounds[0].min.x, -8.0));
+        assert!(near(map.bounds[0].min.y, -6.0));
+        assert!(near(map.bounds[0].min.z, -4.0));
+        assert!(near(map.bounds[0].max.x, -2.0));
+        assert!(near(map.bounds[0].max.y, -2.0));
+        assert!(near(map.bounds[0].max.z, -2.0));
+        assert_eq!(map.take_scale(), Some(2.0));
+        assert!(map.take_scale().is_none());
+        assert!(map.set_scale(2.0));
+        assert!(near(map.bounds[0].min.x, -8.0));
+        assert!(near(map.bounds[0].max.z, -2.0));
+        assert!(map.take_scale().is_none());
     }
 
     #[test]
@@ -3132,6 +3224,20 @@ mod tests {
 
         assert_eq!(near_hit.brush, 0);
         assert_eq!(far_hit.brush, 1);
+        assert!(map.set_scale(1.0 / 24.0));
+        let scaled = map
+            .trace(
+                Vector3::new(-1.0, 0.5 / 24.0, 0.5 / 24.0),
+                Vector3::new(0.5 / 24.0, 0.5 / 24.0, 0.5 / 24.0),
+            )
+            .unwrap();
+        assert_eq!(scaled.brush, 0);
+        assert!(map
+            .trace(
+                Vector3::new(1000.0 / 24.0, 0.5 / 24.0, 0.5 / 24.0),
+                Vector3::new(1001.0 / 24.0, 0.5 / 24.0, 0.5 / 24.0),
+            )
+            .is_none());
         assert!(map
             .trace(
                 Vector3::new(1000.0, 0.5, 0.5),

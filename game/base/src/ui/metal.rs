@@ -170,7 +170,11 @@ impl MetalWindow {
         let wrap_sampler = metal_sampler(&device, MTLSamplerAddressMode::Repeat);
         let clamp_sampler = metal_sampler(&device, MTLSamplerAddressMode::ClampToEdge);
         let white = metal_image(&device, &crate::world::surface::CpuImage::white(), true);
-        let flat = metal_image(&device, &crate::world::surface::CpuImage::flat_normal(), true);
+        let flat = metal_image(
+            &device,
+            &crate::world::surface::CpuImage::flat_normal(),
+            true,
+        );
         let white_cube = metal_cube(
             &device,
             &crate::world::surface::CubeImage::solid(crate::world::surface::CpuImage::white()),
@@ -997,10 +1001,18 @@ struct MetalMaterial {
 impl MetalWindow {
     fn sync_graphics(&mut self, graphics: &crate::world::MapGraphics) {
         let mut key = graphics.materials.len() as u64;
-        key = key.wrapping_mul(131).wrapping_add(graphics.lightmaps[0].width as u64);
-        key = key.wrapping_mul(131).wrapping_add(graphics.lightmaps[0].bytes.len() as u64);
-        key = key.wrapping_mul(131).wrapping_add(graphics.cubemaps.len() as u64);
-        key = key.wrapping_mul(131).wrapping_add(u64::from(graphics.sky.is_some()));
+        key = key
+            .wrapping_mul(131)
+            .wrapping_add(graphics.lightmaps[0].width as u64);
+        key = key
+            .wrapping_mul(131)
+            .wrapping_add(graphics.lightmaps[0].bytes.len() as u64);
+        key = key
+            .wrapping_mul(131)
+            .wrapping_add(graphics.cubemaps.len() as u64);
+        key = key
+            .wrapping_mul(131)
+            .wrapping_add(u64::from(graphics.sky.is_some()));
         let sample = graphics.lightmaps[0].bytes.len().min(64);
         let mut idx = 0;
 
@@ -1051,11 +1063,15 @@ impl MetalWindow {
         idx = 0;
 
         while idx < graphics.cubemaps.len() {
-            self.cubemaps.push(metal_cube(&self.device, &graphics.cubemaps[idx]));
+            self.cubemaps
+                .push(metal_cube(&self.device, &graphics.cubemaps[idx]));
             idx += 1;
         }
 
-        self.sky = graphics.sky.as_ref().map(|sky| metal_cube(&self.device, sky));
+        self.sky = graphics
+            .sky
+            .as_ref()
+            .map(|sky| metal_cube(&self.device, sky));
     }
 
     fn encode_mesh(
@@ -1169,7 +1185,11 @@ impl MetalWindow {
                 encoder.set_depth_stencil_state(&self.depth_write);
             }
 
-            encoder.draw_primitives(MTLPrimitiveType::Triangle, range.first as u64, range.count as u64);
+            encoder.draw_primitives(
+                MTLPrimitiveType::Triangle,
+                range.first as u64,
+                range.count as u64,
+            );
             idx += 1;
         }
     }
@@ -1179,7 +1199,11 @@ impl MetalWindow {
             return;
         }
 
-        let image = crate::world::surface::CpuImage::solid(width as u32, height as u32, [255, 255, 255, 255]);
+        let image = crate::world::surface::CpuImage::solid(
+            width as u32,
+            height as u32,
+            [255, 255, 255, 255],
+        );
         self.scene = metal_image(&self.device, &image, false);
     }
 
