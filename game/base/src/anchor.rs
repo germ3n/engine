@@ -20,14 +20,6 @@ impl Anchor {
         Self { x, y, z }
     }
 
-    pub fn from_vec(value: Vector3) -> Self {
-        Self {
-            x: value.x,
-            y: value.y,
-            z: value.z,
-        }
-    }
-
     pub fn to_vec(self) -> Vector3 {
         Vector3::new(self.x, self.y, self.z)
     }

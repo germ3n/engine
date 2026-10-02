@@ -307,6 +307,32 @@ impl BrushMap {
         out
     }
 
+    pub fn hulls_in(&self, min: Vector3, max: Vector3) -> Vec<Vec<Vector3>> {
+        let indices = self.grid.query(min, max, self.brushes.len());
+        let mut out = Vec::new();
+        let mut idx = 0;
+
+        while idx < indices.len() {
+            let brush_idx = indices[idx];
+            idx += 1;
+            let bounds = &self.bounds[brush_idx];
+
+            if bounds.max.x < min.x
+                || bounds.min.x > max.x
+                || bounds.max.y < min.y
+                || bounds.min.y > max.y
+                || bounds.max.z < min.z
+                || bounds.min.z > max.z
+            {
+                continue;
+            }
+
+            out.push(vertices(&self.brushes[brush_idx].planes));
+        }
+
+        out
+    }
+
     pub fn add_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
         let Some(brush) = Brush::aabb(min, max, material) else {
             return false;

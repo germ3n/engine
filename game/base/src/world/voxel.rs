@@ -416,6 +416,38 @@ impl VoxelWorld {
         vertices
     }
 
+    pub fn mesh_box(&self, origin: Vector3, min: Vector3, max: Vector3) -> Vec<f32> {
+        let mut vertices = Vec::new();
+        let scale = self.scale;
+
+        for (chunk_pos, chunk) in &self.chunks {
+            if !chunk_overlaps(*chunk_pos, scale, min, max) {
+                continue;
+            }
+
+            for idx in 0..chunk.blocks.len() {
+                let id = chunk.blocks[idx];
+
+                if id == 0 {
+                    continue;
+                }
+
+                let edge = CHUNK_EDGE as usize;
+                let local_x = (idx % edge) as i32;
+                let local_y = ((idx / edge) % edge) as i32;
+                let local_z = (idx / (edge * edge)) as i32;
+                let pos = BlockPos::new(
+                    chunk_pos.x * CHUNK_EDGE + local_x,
+                    chunk_pos.y * CHUNK_EDGE + local_y,
+                    chunk_pos.z * CHUNK_EDGE + local_z,
+                );
+                push_block(&mut vertices, self, pos, id, scale, origin);
+            }
+        }
+
+        vertices
+    }
+
     pub fn baseline(&self) -> Vec<ChunkUpdate> {
         let mut updates = Vec::with_capacity(self.chunks.len());
 
@@ -840,6 +872,20 @@ const QUADS: [[(i32, i32, i32); 4]; 6] = [
 ];
 
 const SHADES: [f32; 6] = [0.72, 0.62, 0.58, 0.5, 1.0, 0.4];
+
+fn chunk_overlaps(pos: ChunkPos, scale: f64, min: Vector3, max: Vector3) -> bool {
+    let edge = CHUNK_EDGE as f64 * scale;
+    let x0 = pos.x as f64 * edge;
+    let y0 = pos.y as f64 * edge;
+    let z0 = pos.z as f64 * edge;
+
+    x0 + edge >= min.x
+        && x0 <= max.x
+        && y0 + edge >= min.y
+        && y0 <= max.y
+        && z0 + edge >= min.z
+        && z0 <= max.z
+}
 
 fn push_block(
     vertices: &mut Vec<f32>,

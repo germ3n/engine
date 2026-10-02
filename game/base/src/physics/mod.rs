@@ -1,4 +1,4 @@
-use crate::anchor::Anchor;
+use crate::anchor::SHIFT;
 use crate::anim::{angles_from_pose, pose_matrix};
 use crate::entities::{EntityHandle, EntityList};
 use crate::movement::{STAND_MAXS, STAND_MINS};
@@ -18,6 +18,7 @@ use std::sync::Arc;
 const DENSITY: f32 = 300.0;
 const MIN_HALF: f32 = 0.02;
 const VOXEL_STRIDE: usize = 6;
+const ORIGIN_SNAP: f64 = 64.0;
 
 pub type PhysicsAccess = Arc<AtomicPtr<PhysicsWorld>>;
 
@@ -47,6 +48,15 @@ struct Link {
     kinematic: bool,
 }
 
+#[derive(Clone, Copy)]
+struct Prop {
+    center: [f32; 3],
+    half: [f32; 3],
+    mass: f32,
+    body: Option<RigidBodyHandle>,
+    collider: Option<ColliderHandle>,
+}
+
 pub struct PhysicsWorld {
     pipeline: PhysicsPipeline,
     islands: IslandManager,
@@ -59,6 +69,7 @@ pub struct PhysicsWorld {
     soft_bodies: SoftBodySet,
     ccd: CCDSolver,
     links: HashMap<EntityHandle, Link>,
+    props: HashMap<EntityHandle, Prop>,
     static_body: Option<RigidBodyHandle>,
     origin: Vector3,
     static_origin: Vector3,
@@ -80,6 +91,7 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
             links: HashMap::new(),
+            props: HashMap::new(),
             static_body: None,
             origin: Vector3::new(0.0, 0.0, 0.0),
             static_origin: Vector3::new(f64::MAX, f64::MAX, f64::MAX),
@@ -91,9 +103,9 @@ impl PhysicsWorld {
     pub fn enable_box(
         &mut self,
         handle: EntityHandle,
-        position: Vector3,
-        angles: Angle3,
-        velocity: Vector3,
+        _position: Vector3,
+        _angles: Angle3,
+        _velocity: Vector3,
         center: [f32; 3],
         half: [f32; 3],
     ) -> bool {
@@ -101,32 +113,23 @@ impl PhysicsWorld {
             return false;
         }
 
-        if let Some(link) = self.links.get(&handle) {
-            return !link.kinematic;
+        if self.links.get(&handle).is_some_and(|link| link.kinematic) {
+            return false;
+        }
+
+        if self.props.contains_key(&handle) {
+            return true;
         }
 
         let half = sanitize_half(half);
-        let mass = box_mass(half);
-        let pose = Pose::from_parts(self.to_sim(position), rotation_of(angles));
-        let body = self.bodies.insert(
-            RigidBodyBuilder::dynamic()
-                .pose(pose)
-                .linvel(linear_velocity(velocity))
-                .ccd_enabled(true)
-                .build(),
-        );
-        let collider = self.attach(
-            body,
-            ColliderBuilder::cuboid(half[0], half[1], half[2])
-                .translation(Vector::new(center[0], center[1], center[2]))
-                .mass(mass),
-        );
-        self.links.insert(
+        self.props.insert(
             handle,
-            Link {
-                body,
-                collider,
-                kinematic: false,
+            Prop {
+                center,
+                half,
+                mass: box_mass(half),
+                body: None,
+                collider: None,
             },
         );
 
@@ -138,25 +141,37 @@ impl PhysicsWorld {
             return false;
         }
 
-        let Some(link) = self.links.get(&handle).copied() else {
+        let Some(prop) = self.props.get_mut(&handle) else {
             return false;
         };
 
-        if link.kinematic {
-            return false;
+        prop.mass = mass;
+        let collider = prop.collider;
+        let body = prop.body;
+
+        if let Some(collider) = collider {
+            if let Some(shape) = self.colliders.get_mut(collider) {
+                shape.set_mass(mass);
+            }
         }
 
-        let Some(collider) = self.colliders.get_mut(link.collider) else {
-            return false;
-        };
-
-        collider.set_mass(mass);
-
-        if let Some(body) = self.bodies.get_mut(link.body) {
-            body.wake_up(true);
+        if let Some(body) = body {
+            if let Some(rigid) = self.bodies.get_mut(body) {
+                rigid.wake_up(true);
+            }
         }
 
         true
+    }
+
+    pub fn asleep_mass(&self, handle: EntityHandle) -> Option<f32> {
+        let prop = self.props.get(&handle)?;
+
+        if prop.body.is_some() {
+            return None;
+        }
+
+        Some(prop.mass)
     }
 
     pub fn apply_impulse(&mut self, handle: EntityHandle, impulse: Vector3) -> bool {
@@ -164,19 +179,19 @@ impl PhysicsWorld {
             return false;
         }
 
-        let Some(link) = self.links.get(&handle).copied() else {
+        let Some(prop) = self.props.get(&handle).copied() else {
             return false;
         };
 
-        if link.kinematic {
-            return false;
-        }
-
-        let Some(body) = self.bodies.get_mut(link.body) else {
+        let Some(body) = prop.body else {
             return false;
         };
 
-        body.apply_impulse(
+        let Some(rigid) = self.bodies.get_mut(body) else {
+            return false;
+        };
+
+        rigid.apply_impulse(
             Vector::new(impulse.x as f32, impulse.y as f32, impulse.z as f32),
             true,
         );
@@ -189,38 +204,41 @@ impl PhysicsWorld {
             return;
         }
 
-        let Some(link) = self.links.get(&handle).copied() else {
-            return;
-        };
-        let translation = if link.kinematic {
-            self.player_sim(Vector3::new(x, y, z))
-        } else {
-            self.to_sim(Vector3::new(x, y, z))
-        };
-        let Some(body) = self.bodies.get_mut(link.body) else {
-            return;
-        };
+        if let Some(link) = self.links.get(&handle).copied() {
+            if link.kinematic {
+                let translation = self.player_sim(Vector3::new(x, y, z));
+                let Some(body) = self.bodies.get_mut(link.body) else {
+                    return;
+                };
+                body.set_translation(translation, true);
+                body.set_next_kinematic_translation(translation);
 
-        if link.kinematic {
-            body.set_translation(translation, true);
-            body.set_next_kinematic_translation(translation);
-
-            return;
+                return;
+            }
         }
+
+        let Some(prop) = self.props.get(&handle).copied() else {
+            return;
+        };
+        let Some(body_handle) = prop.body else {
+            return;
+        };
+        let translation = self.to_sim(Vector3::new(x, y, z));
+        let Some(body) = self.bodies.get_mut(body_handle) else {
+            return;
+        };
 
         body.set_translation(translation, true);
     }
 
     pub fn teleport_angles(&mut self, handle: EntityHandle, angles: Angle3) {
-        let Some(link) = self.links.get(&handle).copied() else {
+        let Some(prop) = self.props.get(&handle).copied() else {
             return;
         };
-
-        if link.kinematic {
+        let Some(body_handle) = prop.body else {
             return;
-        }
-
-        let Some(body) = self.bodies.get_mut(link.body) else {
+        };
+        let Some(body) = self.bodies.get_mut(body_handle) else {
             return;
         };
 
@@ -228,15 +246,13 @@ impl PhysicsWorld {
     }
 
     pub fn teleport_velocity(&mut self, handle: EntityHandle, velocity: Vector3) {
-        let Some(link) = self.links.get(&handle).copied() else {
+        let Some(prop) = self.props.get(&handle).copied() else {
             return;
         };
-
-        if link.kinematic {
+        let Some(body_handle) = prop.body else {
             return;
-        }
-
-        let Some(body) = self.bodies.get_mut(link.body) else {
+        };
+        let Some(body) = self.bodies.get_mut(body_handle) else {
             return;
         };
 
@@ -244,11 +260,15 @@ impl PhysicsWorld {
     }
 
     pub fn forget(&mut self, handle: EntityHandle) {
-        let Some(link) = self.links.remove(&handle) else {
-            return;
-        };
+        if let Some(link) = self.links.remove(&handle) {
+            self.remove_body(link.body);
+        }
 
-        self.remove_body(link.body);
+        if let Some(prop) = self.props.remove(&handle) {
+            if let Some(body) = prop.body {
+                self.remove_body(body);
+            }
+        }
     }
 
     pub fn step(
@@ -267,6 +287,7 @@ impl PhysicsWorld {
         self.forget_invalid(entities);
         self.recenter(entities, players);
         self.refresh_static(brushes, voxels);
+        self.sync_props(entities);
         self.sync_players(entities, players);
         self.integrate(dt as f32, gravity as f32);
         self.write_dynamic(entities);
@@ -276,6 +297,12 @@ impl PhysicsWorld {
         let mut stale = Vec::new();
 
         for handle in self.links.keys() {
+            if !entities.is_valid(*handle) {
+                stale.push(*handle);
+            }
+        }
+
+        for handle in self.props.keys() {
             if !entities.is_valid(*handle) {
                 stale.push(*handle);
             }
@@ -307,7 +334,7 @@ impl PhysicsWorld {
             return;
         };
 
-        if !Anchor::from_vec(self.origin).drifted(focus.x, focus.y, focus.z) {
+        if !farther(self.origin, focus, ORIGIN_SNAP) {
             return;
         }
 
@@ -343,6 +370,31 @@ impl PhysicsWorld {
                 body.set_rotation(rotation_of(entity.base().angles), true);
             }
         }
+
+        let prop_handles: Vec<EntityHandle> = self.props.keys().copied().collect();
+        idx = 0;
+
+        while idx < prop_handles.len() {
+            let handle = prop_handles[idx];
+            idx += 1;
+            let Some(prop) = self.props.get(&handle).copied() else {
+                continue;
+            };
+            let Some(body_handle) = prop.body else {
+                continue;
+            };
+            let Some(entity) = entities.get(handle) else {
+                continue;
+            };
+            let position = entity.base().position;
+            let angles = entity.base().angles;
+            let translation = self.to_sim(position);
+            let Some(body) = self.bodies.get_mut(body_handle) else {
+                continue;
+            };
+            body.set_translation(translation, true);
+            body.set_rotation(rotation_of(angles), true);
+        }
     }
 
     fn refresh_static(&mut self, brushes: &BrushMap, voxels: &VoxelWorld) {
@@ -367,7 +419,18 @@ impl PhysicsWorld {
 
         let body = self.bodies.insert(RigidBodyBuilder::fixed().build());
         self.static_body = Some(body);
-        let hulls = brushes.hulls();
+        let reach = SHIFT;
+        let min = Vector3::new(
+            self.origin.x - reach,
+            self.origin.y - reach,
+            self.origin.z - reach,
+        );
+        let max = Vector3::new(
+            self.origin.x + reach,
+            self.origin.y + reach,
+            self.origin.z + reach,
+        );
+        let hulls = brushes.hulls_in(min, max);
         let mut idx = 0;
 
         while idx < hulls.len() {
@@ -375,7 +438,7 @@ impl PhysicsWorld {
             idx += 1;
         }
 
-        let voxel_mesh = voxels.mesh_at(self.origin);
+        let voxel_mesh = voxels.mesh_box(self.origin, min, max);
         self.add_voxels(body, &voxel_mesh);
     }
 
@@ -510,13 +573,112 @@ impl PhysicsWorld {
         );
     }
 
-    fn write_dynamic(&self, entities: &mut EntityList) {
-        for (handle, link) in &self.links {
-            if link.kinematic {
+    fn sync_props(&mut self, entities: &mut EntityList) {
+        let handles: Vec<EntityHandle> = self.props.keys().copied().collect();
+        let mut idx = 0;
+
+        while idx < handles.len() {
+            let handle = handles[idx];
+            idx += 1;
+
+            if !entities.is_valid(handle) {
+                self.forget(handle);
+
                 continue;
             }
 
-            let Some(body) = self.bodies.get(link.body) else {
+            let Some(entity) = entities.get(handle) else {
+                continue;
+            };
+            let position = entity.base().position;
+            let angles = entity.base().angles;
+            let velocity = entity.base().velocity;
+            let active = self
+                .props
+                .get(&handle)
+                .and_then(|prop| prop.body)
+                .is_some();
+            let dist = dist_sq(self.origin, position);
+
+            if active && dist > SHIFT * SHIFT {
+                self.sleep_prop(handle, entities);
+            } else if !active && dist <= SHIFT * SHIFT {
+                self.wake_prop(handle, position, angles, velocity);
+            }
+        }
+    }
+
+    fn wake_prop(
+        &mut self,
+        handle: EntityHandle,
+        position: Vector3,
+        angles: Angle3,
+        velocity: Vector3,
+    ) {
+        let Some(prop) = self.props.get(&handle).copied() else {
+            return;
+        };
+
+        if prop.body.is_some() {
+            return;
+        }
+
+        let pose = Pose::from_parts(self.to_sim(position), rotation_of(angles));
+        let body = self.bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .pose(pose)
+                .linvel(linear_velocity(velocity))
+                .ccd_enabled(true)
+                .build(),
+        );
+        let collider = self.attach(
+            body,
+            ColliderBuilder::cuboid(prop.half[0], prop.half[1], prop.half[2])
+                .translation(Vector::new(prop.center[0], prop.center[1], prop.center[2]))
+                .mass(prop.mass),
+        );
+
+        if let Some(stored) = self.props.get_mut(&handle) {
+            stored.body = Some(body);
+            stored.collider = Some(collider);
+        }
+    }
+
+    fn sleep_prop(&mut self, handle: EntityHandle, entities: &mut EntityList) {
+        let Some(prop) = self.props.get(&handle).copied() else {
+            return;
+        };
+        let Some(body_handle) = prop.body else {
+            return;
+        };
+
+        if let Some(body) = self.bodies.get(body_handle) {
+            let position = self.from_sim(body.translation());
+            let angles = angles_of(body.rotation());
+            let vel = body.linvel();
+
+            if let Some(entity) = entities.get_mut(handle) {
+                let base = entity.base_mut();
+                base.position = position;
+                base.angles = angles;
+                base.velocity = Vector3::new(vel.x as f64, vel.y as f64, vel.z as f64);
+            }
+        }
+
+        self.remove_body(body_handle);
+
+        if let Some(stored) = self.props.get_mut(&handle) {
+            stored.body = None;
+            stored.collider = None;
+        }
+    }
+
+    fn write_dynamic(&self, entities: &mut EntityList) {
+        for (handle, prop) in &self.props {
+            let Some(body_handle) = prop.body else {
+                continue;
+            };
+            let Some(body) = self.bodies.get(body_handle) else {
                 continue;
             };
             let translation = body.translation();
@@ -625,6 +787,18 @@ fn box_mass(half: [f32; 3]) -> f32 {
     let volume = (half[0] * 2.0) * (half[1] * 2.0) * (half[2] * 2.0);
 
     (volume * DENSITY).max(0.1)
+}
+
+fn farther(origin: Vector3, point: Vector3, reach: f64) -> bool {
+    dist_sq(origin, point) > reach * reach
+}
+
+fn dist_sq(origin: Vector3, point: Vector3) -> f64 {
+    let dx = point.x - origin.x;
+    let dy = point.y - origin.y;
+    let dz = point.z - origin.z;
+
+    dx * dx + dy * dy + dz * dz
 }
 
 fn linear_velocity(velocity: Vector3) -> Vector {
@@ -910,5 +1084,48 @@ mod tests {
         assert!((pos.y - 1.5).abs() < 0.05, "y {}", pos.y);
         assert!(pos.z > -0.05 && pos.z < 0.2, "z {}", pos.z);
         assert!((world.origin.x - far).abs() < 1.0, "origin {}", world.origin.x);
+    }
+
+    #[test]
+    fn box_outside_the_bubble_stays_put() {
+        let mut world = PhysicsWorld::new();
+        let mut brushes = BrushMap::new();
+
+        assert!(brushes.add_box(
+            Vector3::new(-2.0, -2.0, -0.5),
+            Vector3::new(2.0, 2.0, 0.0),
+            0,
+        ));
+
+        let voxels = VoxelWorld::new();
+        let mut entities = EntityList::new();
+        let player = entities.spawn(Box::new(Player::new())).expect("player");
+        let handle = entities
+            .spawn(Box::new(ScriptedEntity::new(1)))
+            .expect("crate");
+        {
+            let entity = entities.get_mut(handle).expect("crate entity");
+            entity.base_mut().position = Vector3::new(1000.0, 0.0, 5.0);
+        }
+        world.enable_box(
+            handle,
+            Vector3::new(1000.0, 0.0, 5.0),
+            Angle3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            [0.0, 0.0, 0.25],
+            [0.25, 0.25, 0.25],
+        );
+        let dt = 1.0 / 60.0;
+        let mut idx = 0;
+
+        while idx < 30 {
+            world.step(&mut entities, &[player], dt, 24.0, &brushes, &voxels);
+            idx += 1;
+        }
+
+        let pos = entities.get(handle).expect("entity").base().position;
+
+        assert!((pos.x - 1000.0).abs() < 0.01, "x {}", pos.x);
+        assert!((pos.z - 5.0).abs() < 0.01, "z {}", pos.z);
     }
 }

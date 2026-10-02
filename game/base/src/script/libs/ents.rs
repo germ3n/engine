@@ -402,8 +402,26 @@ fn build_native(
             let Some(world) = physics(&bodies) else {
                 return Ok(false);
             };
+            let impulse = Vector3::new(x, y, z);
 
-            Ok(world.apply_impulse(handle, Vector3::new(x, y, z)))
+            if world.apply_impulse(handle, impulse) {
+                return Ok(true);
+            }
+
+            let Some(mass) = world.asleep_mass(handle) else {
+                return Ok(false);
+            };
+            let list = entities(&ents_access)?;
+            let entity = list.get_mut(handle).ok_or_else(|| invalid(raw))?;
+            let velocity = entity.base().velocity;
+            let scale = 1.0 / f64::from(mass);
+            entity.base_mut().velocity = Vector3::new(
+                velocity.x + impulse.x * scale,
+                velocity.y + impulse.y * scale,
+                velocity.z + impulse.z * scale,
+            );
+
+            Ok(true)
         },
     );
 
