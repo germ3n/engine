@@ -20,7 +20,7 @@ const COMPILED_MAGIC: &[u8; 4] = b"CMAP";
 const COMPILED_VERSION: u32 = 2;
 const COMPILED_VERSION_V1: u32 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug, PartialEq)]
 pub struct BrushPlane {
     pub normal: Vector3,
     pub distance: f64,
@@ -31,6 +31,21 @@ pub struct BrushBox {
     pub min: Vector3,
     pub max: Vector3,
     pub material: u16,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub enum BrushEdit {
+    Box(BrushBox),
+    Convex {
+        planes: Vec<BrushPlane>,
+        material: u16,
+    },
+    Remove(u32),
+    Move {
+        index: u32,
+        delta: Vector3,
+    },
+    Clear,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -365,8 +380,8 @@ pub struct BrushMap {
     graphics: MapGraphics,
     scale: f64,
     scale_dirty: bool,
-    pending_boxes: Vec<BrushBox>,
-    runtime_boxes: Vec<BrushBox>,
+    pending_edits: Vec<BrushEdit>,
+    edits: Vec<BrushEdit>,
 }
 
 impl BrushMap {
@@ -382,8 +397,8 @@ impl BrushMap {
             graphics: MapGraphics::plain(),
             scale: 1.0,
             scale_dirty: false,
-            pending_boxes: Vec::new(),
-            runtime_boxes: Vec::new(),
+            pending_edits: Vec::new(),
+            edits: Vec::new(),
         }
     }
 
@@ -461,8 +476,8 @@ impl BrushMap {
             }
         }
 
-        scale_boxes(&mut self.pending_boxes, ratio);
-        scale_boxes(&mut self.runtime_boxes, ratio);
+        scale_edits(&mut self.pending_edits, ratio);
+        scale_edits(&mut self.edits, ratio);
         self.touch();
     }
 
@@ -513,15 +528,18 @@ impl BrushMap {
     }
 
     pub fn add_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
+        self.add_box_index(min, max, material).is_some()
+    }
+
+    pub fn add_box_index(&mut self, min: Vector3, max: Vector3, material: u16) -> Option<usize> {
         if !self.place_box(min, max, material) {
-            return false;
+            return None;
         }
 
-        let brush = BrushBox { min, max, material };
-        self.pending_boxes.push(brush);
-        self.runtime_boxes.push(brush);
+        let index = self.brushes.len() - 1;
+        self.note(BrushEdit::Box(BrushBox { min, max, material }));
 
-        true
+        Some(index)
     }
 
     pub fn place_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
@@ -532,20 +550,134 @@ impl BrushMap {
         self.push(brush)
     }
 
-    pub fn boxes(&self) -> &[BrushBox] {
-        &self.runtime_boxes
-    }
-
-    pub fn take_boxes(&mut self) -> Vec<BrushBox> {
-        std::mem::take(&mut self.pending_boxes)
-    }
-
     pub fn add_convex(&mut self, planes: Vec<BrushPlane>, material: u16) -> bool {
-        let Some(brush) = Brush::convex(planes, material) else {
+        self.add_convex_index(planes, material).is_some()
+    }
+
+    pub fn add_convex_index(
+        &mut self,
+        planes: Vec<BrushPlane>,
+        material: u16,
+    ) -> Option<usize> {
+        if !self.apply_convex(&planes, material) {
+            return None;
+        }
+
+        let index = self.brushes.len() - 1;
+        self.note(BrushEdit::Convex { planes, material });
+
+        Some(index)
+    }
+
+    pub fn apply_convex(&mut self, planes: &[BrushPlane], material: u16) -> bool {
+        let Some(brush) = Brush::convex(planes.to_vec(), material) else {
             return false;
         };
 
         self.push(brush)
+    }
+
+    pub fn remove_brush(&mut self, index: usize) -> bool {
+        let Ok(stored) = u32::try_from(index) else {
+            return false;
+        };
+
+        if !self.apply_remove(index) {
+            return false;
+        }
+
+        self.note(BrushEdit::Remove(stored));
+
+        true
+    }
+
+    pub fn apply_remove(&mut self, index: usize) -> bool {
+        if index >= self.brushes.len() {
+            return false;
+        }
+
+        self.brushes.remove(index);
+        self.bounds.remove(index);
+        self.mesh_cache = None;
+        self.touch();
+
+        true
+    }
+
+    pub fn move_brush(&mut self, index: usize, delta: Vector3) -> bool {
+        if !finite(delta) {
+            return false;
+        }
+
+        let Ok(stored) = u32::try_from(index) else {
+            return false;
+        };
+
+        if delta.x == 0.0 && delta.y == 0.0 && delta.z == 0.0 {
+            return index < self.brushes.len();
+        }
+
+        if !self.apply_move(index, delta) {
+            return false;
+        }
+
+        self.note(BrushEdit::Move {
+            index: stored,
+            delta,
+        });
+
+        true
+    }
+
+    pub fn apply_move(&mut self, index: usize, delta: Vector3) -> bool {
+        if !finite(delta) || index >= self.brushes.len() {
+            return false;
+        }
+
+        let mut plane = 0;
+
+        while plane < self.brushes[index].planes.len() {
+            let normal = self.brushes[index].planes[plane].normal;
+            self.brushes[index].planes[plane].distance += normal.dot(delta);
+            plane += 1;
+        }
+
+        let Some(aabb) = brush_aabb(&self.brushes[index]) else {
+            return false;
+        };
+
+        self.bounds[index] = aabb;
+        self.mesh_cache = None;
+        self.touch();
+
+        true
+    }
+
+    pub fn edits(&self) -> &[BrushEdit] {
+        &self.edits
+    }
+
+    pub fn take_edits(&mut self) -> Vec<BrushEdit> {
+        std::mem::take(&mut self.pending_edits)
+    }
+
+    pub fn apply_edit(&mut self, edit: &BrushEdit) -> bool {
+        match edit {
+            BrushEdit::Box(brush) => self.place_box(brush.min, brush.max, brush.material),
+            BrushEdit::Convex { planes, material } => self.apply_convex(planes, *material),
+            BrushEdit::Remove(index) => self.apply_remove(*index as usize),
+            BrushEdit::Move { index, delta } => self.apply_move(*index as usize, *delta),
+            BrushEdit::Clear => {
+                self.apply_clear();
+
+                true
+            }
+        }
+    }
+
+    fn note(&mut self, edit: BrushEdit) {
+        self.pending_edits.push(edit.clone());
+        self.edits.push(edit);
     }
 
     pub fn load_file(&mut self, name: &str) -> Result<(), String> {
@@ -629,6 +761,13 @@ impl BrushMap {
             return;
         }
 
+        self.apply_clear();
+        self.pending_edits.clear();
+        self.edits.clear();
+        self.note(BrushEdit::Clear);
+    }
+
+    pub fn apply_clear(&mut self) {
         self.brushes.clear();
         self.bounds.clear();
         self.spawns.clear();
@@ -636,8 +775,6 @@ impl BrushMap {
         self.ranges.clear();
         self.graphics = MapGraphics::plain();
         self.grid.clear();
-        self.pending_boxes.clear();
-        self.runtime_boxes.clear();
         self.touch();
     }
 
@@ -2560,16 +2697,35 @@ fn player_start(entity: &CompiledEntity) -> Option<Vector3> {
     }
 }
 
-fn scale_boxes(boxes: &mut [BrushBox], ratio: f64) {
+fn scale_edits(edits: &mut [BrushEdit], ratio: f64) {
     let mut idx = 0;
 
-    while idx < boxes.len() {
-        boxes[idx].min.x *= ratio;
-        boxes[idx].min.y *= ratio;
-        boxes[idx].min.z *= ratio;
-        boxes[idx].max.x *= ratio;
-        boxes[idx].max.y *= ratio;
-        boxes[idx].max.z *= ratio;
+    while idx < edits.len() {
+        match &mut edits[idx] {
+            BrushEdit::Box(brush) => {
+                brush.min.x *= ratio;
+                brush.min.y *= ratio;
+                brush.min.z *= ratio;
+                brush.max.x *= ratio;
+                brush.max.y *= ratio;
+                brush.max.z *= ratio;
+            }
+            BrushEdit::Convex { planes, .. } => {
+                let mut plane = 0;
+
+                while plane < planes.len() {
+                    planes[plane].distance *= ratio;
+                    plane += 1;
+                }
+            }
+            BrushEdit::Move { delta, .. } => {
+                delta.x *= ratio;
+                delta.y *= ratio;
+                delta.z *= ratio;
+            }
+            BrushEdit::Remove(_) | BrushEdit::Clear => {}
+        }
+
         idx += 1;
     }
 }
@@ -2758,18 +2914,91 @@ mod tests {
             Vector3::new(5.0, 1.0, 1.0),
             4,
         ));
-        assert_eq!(map.boxes().len(), 1);
+        assert_eq!(map.edits().len(), 1);
         assert!(map.set_scale(2.0));
-        assert!(near(map.boxes()[0].min.x, 0.0));
-        assert!(near(map.boxes()[0].max.x, 4.0));
-        assert_eq!(map.boxes()[0].material, 4);
-        let pending = map.take_boxes();
+        match &map.edits()[0] {
+            BrushEdit::Box(brush) => {
+                assert!(near(brush.min.x, 0.0));
+                assert!(near(brush.max.x, 4.0));
+                assert_eq!(brush.material, 4);
+            }
+            _ => panic!("expected a box edit"),
+        }
+        let pending = map.take_edits();
         assert_eq!(pending.len(), 1);
-        assert!(near(pending[0].max.y, 2.0));
-        assert!(map.take_boxes().is_empty());
-        assert_eq!(map.boxes().len(), 1);
+        match &pending[0] {
+            BrushEdit::Box(brush) => assert!(near(brush.max.y, 2.0)),
+            _ => panic!("expected a box edit"),
+        }
+        assert!(map.take_edits().is_empty());
+        assert_eq!(map.edits().len(), 1);
+        let index = map.add_box_index(Vector3::new(8.0, 0.0, 0.0), Vector3::new(10.0, 2.0, 2.0), 4);
+        assert_eq!(index, Some(2));
+        assert!(map.move_brush(2, Vector3::new(1.0, 0.0, 0.0)));
+        assert!(near(map.bounds[2].min.x, 9.0));
+        assert!(map.remove_brush(2));
+        assert_eq!(map.len(), 2);
         map.clear();
-        assert!(map.boxes().is_empty());
+        assert_eq!(map.edits(), &[BrushEdit::Clear]);
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn edits_replay_onto_an_empty_map() {
+        let mut map = BrushMap::new();
+        let index = map
+            .add_box_index(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 1.0),
+                2,
+            )
+            .unwrap();
+        assert!(map.move_brush(index, Vector3::new(3.0, 0.0, 0.0)));
+        assert!(map
+            .add_convex_index(
+                vec![
+                    BrushPlane {
+                        normal: Vector3::new(1.0, 0.0, 0.0),
+                        distance: 2.0,
+                    },
+                    BrushPlane {
+                        normal: Vector3::new(-1.0, 0.0, 0.0),
+                        distance: -1.0,
+                    },
+                    BrushPlane {
+                        normal: Vector3::new(0.0, 1.0, 0.0),
+                        distance: 1.0,
+                    },
+                    BrushPlane {
+                        normal: Vector3::new(0.0, -1.0, 0.0),
+                        distance: 0.0,
+                    },
+                    BrushPlane {
+                        normal: Vector3::new(0.0, 0.0, 1.0),
+                        distance: 1.0,
+                    },
+                    BrushPlane {
+                        normal: Vector3::new(0.0, 0.0, -1.0),
+                        distance: 0.0,
+                    },
+                ],
+                5,
+            )
+            .is_some());
+        let edits = map.edits().to_vec();
+        let mut client = BrushMap::new();
+        let mut idx = 0;
+
+        while idx < edits.len() {
+            assert!(client.apply_edit(&edits[idx]));
+            idx += 1;
+        }
+
+        assert_eq!(client.len(), 2);
+        assert!(near(client.bounds[0].min.x, 3.0));
+        assert!(near(client.bounds[1].min.x, 1.0));
+        assert!(client.apply_edit(&BrushEdit::Clear));
+        assert_eq!(client.len(), 0);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::entities::EntityHandle;
 use crate::r#enum::{EntityFlags, InputButtons};
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
-use crate::world::{BrushBox, ChunkUpdate};
+use crate::world::{BrushEdit, ChunkUpdate};
 use std::net::SocketAddr;
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -270,7 +270,7 @@ pub enum ServerToClient {
     BrushScale {
         scale: f64,
     },
-    BrushAdded(BrushBox),
+    BrushEdit(BrushEdit),
     WorldMotion {
         ratio: f64,
     },
@@ -394,6 +394,29 @@ pub fn networked_summary(entities: &[EntityNetworked]) -> String {
     }
 
     out
+}
+
+fn edit_summary(edit: &BrushEdit) -> String {
+    match edit {
+        BrushEdit::Box(brush) => format!(
+            "box ({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2}) mat={}",
+            brush.min.x,
+            brush.min.y,
+            brush.min.z,
+            brush.max.x,
+            brush.max.y,
+            brush.max.z,
+            brush.material
+        ),
+        BrushEdit::Convex { planes, material } => {
+            format!("convex {} planes mat={material}", planes.len())
+        }
+        BrushEdit::Remove(index) => format!("remove {index}"),
+        BrushEdit::Move { index, delta } => {
+            format!("move {index} ({:.2},{:.2},{:.2})", delta.x, delta.y, delta.z)
+        }
+        BrushEdit::Clear => "clear".to_string(),
+    }
 }
 
 impl ServerToClient {
@@ -564,16 +587,7 @@ impl ServerToClient {
                 format!("VoxelChunk({} {} {})", update.x, update.y, update.z)
             }
             ServerToClient::BrushScale { scale } => format!("BrushScale({scale})"),
-            ServerToClient::BrushAdded(brush) => format!(
-                "BrushAdded(({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2}) mat={})",
-                brush.min.x,
-                brush.min.y,
-                brush.min.z,
-                brush.max.x,
-                brush.max.y,
-                brush.max.z,
-                brush.material
-            ),
+            ServerToClient::BrushEdit(edit) => format!("BrushEdit({})", edit_summary(edit)),
             ServerToClient::WorldMotion { ratio } => format!("WorldMotion({ratio})"),
         }
     }

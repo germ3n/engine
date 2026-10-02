@@ -2,8 +2,8 @@ use crate::physics::PhysicsAccess;
 use crate::script::libs::ents::EntityAccess;
 use crate::script::libs::vector3::Vector3;
 use crate::script::Realm;
-use crate::world::{Block, BrushMap, VoxelWorld};
-use mlua::Lua;
+use crate::world::{Block, BrushMap, BrushPlane, Face, VoxelWorld};
+use mlua::{Lua, Table};
 use r#macro::document;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
@@ -214,9 +214,127 @@ fn engine_voxel_fill() {}
         max = { ty = "Vector3", desc = "The opposite corner of the box in world units." },
         material = { ty = "number", desc = "Color id. Omitted values use 1." },
     },
-    returns = { ty = "boolean", desc = "False when the caller is not the server or the box has no volume." },
+    returns = { ty = "number", desc = "Brush index, or nil when the caller is not the server or the box has no volume." },
 )]
 fn engine_brush_box() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_delete",
+    kind = "function",
+    realm = "server",
+    summary = "Deletes one block, or every block overlapped by a world box.",
+    params = {
+        pos = { ty = "Vector3", desc = "World position to delete, or one corner of a box." },
+        max = { ty = "Vector3", desc = "Opposite corner. Omit it to delete the single block at pos." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the box is invalid." },
+)]
+fn engine_voxel_delete() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_sphere",
+    kind = "function",
+    realm = "server",
+    summary = "Fills every block the sphere touches.",
+    params = {
+        center = { ty = "Vector3", desc = "Sphere center in world units." },
+        radius = { ty = "number", desc = "Sphere radius in world units." },
+        block = { ty = "number", desc = "Block id. 0 clears those blocks." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server, the sphere is invalid, or it covers more than 1000000 blocks." },
+)]
+fn engine_voxel_sphere() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_clear",
+    kind = "function",
+    realm = "server",
+    summary = "Removes every voxel block.",
+    returns = { ty = "boolean", desc = "False when the caller is not the server." },
+)]
+fn engine_voxel_clear() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_trace",
+    kind = "function",
+    realm = "shared",
+    summary = "First solid block hit by a line.",
+    params = {
+        start = { ty = "Vector3", desc = "Start of the line in world units." },
+        end_pos = { ty = "Vector3", desc = "End of the line in world units." },
+    },
+    returns = { ty = "table", desc = "Nil on a miss. Otherwise pos, block, face, distance, and position." },
+)]
+fn engine_voxel_trace() {}
+
+#[document(
+    parent = "engine",
+    name = "brush_convex",
+    kind = "function",
+    realm = "server",
+    summary = "Adds a convex brush from planes. Each plane is { normal = Vector3, distance = number }.",
+    params = {
+        planes = { ty = "table", desc = "At least four planes. distance is the plane offset along normal." },
+        material = { ty = "number", desc = "Color id. Omitted values use 1." },
+    },
+    returns = { ty = "number", desc = "Brush index, or nil when the solid is invalid." },
+)]
+fn engine_brush_convex() {}
+
+#[document(
+    parent = "engine",
+    name = "brush_remove",
+    kind = "function",
+    realm = "server",
+    summary = "Removes one brush. Later brushes keep their order, so their indexes move down by one.",
+    params = {
+        index = { ty = "number", desc = "Index returned by brush_box or brush_convex." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the index is missing." },
+)]
+fn engine_brush_remove() {}
+
+#[document(
+    parent = "engine",
+    name = "brush_move",
+    kind = "function",
+    realm = "server",
+    summary = "Moves one brush by a world offset.",
+    params = {
+        index = { ty = "number", desc = "Index returned by brush_box or brush_convex." },
+        delta = { ty = "Vector3", desc = "World offset added to the brush." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the index is missing." },
+)]
+fn engine_brush_move() {}
+
+#[document(
+    parent = "engine",
+    name = "brush_clear",
+    kind = "function",
+    realm = "server",
+    summary = "Removes every brush, including the loaded map.",
+    returns = { ty = "boolean", desc = "False when the caller is not the server." },
+)]
+fn engine_brush_clear() {}
+
+#[document(
+    parent = "engine",
+    name = "brush_trace",
+    kind = "function",
+    realm = "shared",
+    summary = "First brush hit by a line.",
+    params = {
+        start = { ty = "Vector3", desc = "Start of the line in world units." },
+        end_pos = { ty = "Vector3", desc = "End of the line in world units." },
+    },
+    returns = { ty = "table", desc = "Nil on a miss. Otherwise brush, distance, position, and normal." },
+)]
+fn engine_brush_trace() {}
 
 pub fn register_engine_lib(
     lua: &Lua,
@@ -321,7 +439,7 @@ pub fn register_engine_lib(
             lua.create_function(
                 move |_, (min, max, material): (Vector3, Vector3, Option<f64>)| {
                     if !server {
-                        return Ok(false);
+                        return Ok(None);
                     }
 
                     Ok(brush_box(&brushes, min, max, material))
@@ -330,6 +448,129 @@ pub fn register_engine_lib(
             .expect("[engine] Failed to create brush_box"),
         )
         .expect("[engine] Failed setting brush_box");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_delete",
+            lua.create_function(move |_, (pos, max): (Vector3, Option<Vector3>)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(match max {
+                    Some(max) => voxel_fill(&voxels, pos, max, 0.0),
+                    None => voxel_write(&voxels, pos, 0.0),
+                })
+            })
+            .expect("[engine] Failed to create voxel_delete"),
+        )
+        .expect("[engine] Failed setting voxel_delete");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_sphere",
+            lua.create_function(move |_, (center, radius, block): (Vector3, f64, f64)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(voxel_sphere(&voxels, center, radius, block))
+            })
+            .expect("[engine] Failed to create voxel_sphere"),
+        )
+        .expect("[engine] Failed setting voxel_sphere");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_clear",
+            lua.create_function(move |_, ()| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(voxel_clear(&voxels))
+            })
+            .expect("[engine] Failed to create voxel_clear"),
+        )
+        .expect("[engine] Failed setting voxel_clear");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_trace",
+            lua.create_function(move |lua, (start, end): (Vector3, Vector3)| {
+                voxel_trace(lua, &voxels, start, end)
+            })
+            .expect("[engine] Failed to create voxel_trace"),
+        )
+        .expect("[engine] Failed setting voxel_trace");
+    let brushes = brush_access.clone();
+    engine_table
+        .set(
+            "brush_convex",
+            lua.create_function(move |_, (planes, material): (Table, Option<f64>)| {
+                if !server {
+                    return Ok(None);
+                }
+
+                let planes = read_planes(planes)?;
+
+                Ok(brush_convex(&brushes, planes, material))
+            })
+            .expect("[engine] Failed to create brush_convex"),
+        )
+        .expect("[engine] Failed setting brush_convex");
+    let brushes = brush_access.clone();
+    engine_table
+        .set(
+            "brush_remove",
+            lua.create_function(move |_, index: f64| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(brush_remove(&brushes, index))
+            })
+            .expect("[engine] Failed to create brush_remove"),
+        )
+        .expect("[engine] Failed setting brush_remove");
+    let brushes = brush_access.clone();
+    engine_table
+        .set(
+            "brush_move",
+            lua.create_function(move |_, (index, delta): (f64, Vector3)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(brush_move(&brushes, index, delta))
+            })
+            .expect("[engine] Failed to create brush_move"),
+        )
+        .expect("[engine] Failed setting brush_move");
+    let brushes = brush_access.clone();
+    engine_table
+        .set(
+            "brush_clear",
+            lua.create_function(move |_, ()| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(brush_clear(&brushes))
+            })
+            .expect("[engine] Failed to create brush_clear"),
+        )
+        .expect("[engine] Failed setting brush_clear");
+    let brushes = brush_access.clone();
+    engine_table
+        .set(
+            "brush_trace",
+            lua.create_function(move |lua, (start, end): (Vector3, Vector3)| {
+                brush_trace(lua, &brushes, start, end)
+            })
+            .expect("[engine] Failed to create brush_trace"),
+        )
+        .expect("[engine] Failed setting brush_trace");
     let voxels = voxel_access;
     let entities = entity_access;
     let physics = physics_access;
@@ -440,23 +681,188 @@ fn voxel_fill(access: &VoxelAccess, min: Vector3, max: Vector3, block: f64) -> b
     world.fill_bounds(min, max, Block(block))
 }
 
-fn brush_box(access: &BrushAccess, min: Vector3, max: Vector3, material: Option<f64>) -> bool {
-    let material = match material {
-        Some(value) => {
-            let Some(id) = block_id(value) else {
-                return false;
-            };
-
-            id
-        }
-        None => 1,
+fn brush_box(access: &BrushAccess, min: Vector3, max: Vector3, material: Option<f64>) -> Option<f64> {
+    let material = material_id(material)?;
+    let Some(map) = brush_mut(access) else {
+        return None;
     };
-    let map = unsafe { access.load(Ordering::Relaxed).as_mut() };
-    let Some(map) = map else {
+    let (lo, hi) = ordered_box(min, max);
+
+    map.add_box_index(lo, hi, material)
+        .map(|index| index as f64)
+}
+
+fn brush_convex(
+    access: &BrushAccess,
+    planes: Vec<BrushPlane>,
+    material: Option<f64>,
+) -> Option<f64> {
+    let material = material_id(material)?;
+    let Some(map) = brush_mut(access) else {
+        return None;
+    };
+
+    map.add_convex_index(planes, material)
+        .map(|index| index as f64)
+}
+
+fn brush_remove(access: &BrushAccess, index: f64) -> bool {
+    let Some(index) = whole_index(index) else {
         return false;
     };
-    let lo = Vector3::new(min.x.min(max.x), min.y.min(max.y), min.z.min(max.z));
-    let hi = Vector3::new(min.x.max(max.x), min.y.max(max.y), min.z.max(max.z));
+    let Some(map) = brush_mut(access) else {
+        return false;
+    };
 
-    map.add_box(lo, hi, material)
+    map.remove_brush(index)
+}
+
+fn brush_move(access: &BrushAccess, index: f64, delta: Vector3) -> bool {
+    let Some(index) = whole_index(index) else {
+        return false;
+    };
+    let Some(map) = brush_mut(access) else {
+        return false;
+    };
+
+    map.move_brush(index, delta)
+}
+
+fn brush_clear(access: &BrushAccess) -> bool {
+    let Some(map) = brush_mut(access) else {
+        return false;
+    };
+
+    map.clear();
+
+    true
+}
+
+fn brush_trace(
+    lua: &Lua,
+    access: &BrushAccess,
+    start: Vector3,
+    end: Vector3,
+) -> mlua::Result<Option<Table>> {
+    let map = unsafe { access.load(Ordering::Relaxed).as_ref() };
+    let Some(map) = map else {
+        return Ok(None);
+    };
+    let Some(hit) = map.trace(start, end) else {
+        return Ok(None);
+    };
+    let table = lua.create_table()?;
+    table.set("brush", hit.brush as f64)?;
+    table.set("distance", hit.distance)?;
+    table.set("position", hit.position)?;
+    table.set("normal", hit.normal)?;
+
+    Ok(Some(table))
+}
+
+fn voxel_sphere(access: &VoxelAccess, center: Vector3, radius: f64, block: f64) -> bool {
+    let Some(block) = block_id(block) else {
+        return false;
+    };
+    let Some(world) = voxels_mut(access) else {
+        return false;
+    };
+
+    world.fill_sphere(center, radius, Block(block))
+}
+
+fn voxel_clear(access: &VoxelAccess) -> bool {
+    let Some(world) = voxels_mut(access) else {
+        return false;
+    };
+
+    world.clear();
+
+    true
+}
+
+fn voxel_trace(
+    lua: &Lua,
+    access: &VoxelAccess,
+    start: Vector3,
+    end: Vector3,
+) -> mlua::Result<Option<Table>> {
+    let world = unsafe { access.load(Ordering::Relaxed).as_ref() };
+    let Some(world) = world else {
+        return Ok(None);
+    };
+    let Some(hit) = world.trace(start, end) else {
+        return Ok(None);
+    };
+    let table = lua.create_table()?;
+    table.set(
+        "pos",
+        Vector3::new(hit.block.x as f64, hit.block.y as f64, hit.block.z as f64),
+    )?;
+    table.set("block", world.get(hit.block).0 as f64)?;
+    table.set("distance", hit.distance)?;
+    table.set("position", hit.position)?;
+    table.set("face", hit.face.map(face_name))?;
+
+    Ok(Some(table))
+}
+
+fn material_id(material: Option<f64>) -> Option<u16> {
+    match material {
+        Some(value) => block_id(value),
+        None => Some(1),
+    }
+}
+
+fn whole_index(value: f64) -> Option<usize> {
+    if !value.is_finite() || value < 0.0 || value > u32::MAX as f64 {
+        return None;
+    }
+
+    let index = value as u32;
+
+    if f64::from(index) != value {
+        return None;
+    }
+
+    Some(index as usize)
+}
+
+fn ordered_box(min: Vector3, max: Vector3) -> (Vector3, Vector3) {
+    (
+        Vector3::new(min.x.min(max.x), min.y.min(max.y), min.z.min(max.z)),
+        Vector3::new(min.x.max(max.x), min.y.max(max.y), min.z.max(max.z)),
+    )
+}
+
+fn brush_mut(access: &BrushAccess) -> Option<&mut BrushMap> {
+    unsafe { access.load(Ordering::Relaxed).as_mut() }
+}
+
+fn voxels_mut(access: &VoxelAccess) -> Option<&mut VoxelWorld> {
+    unsafe { access.load(Ordering::Relaxed).as_mut() }
+}
+
+fn face_name(face: Face) -> &'static str {
+    match face {
+        Face::NegX => "-x",
+        Face::PosX => "+x",
+        Face::NegY => "-y",
+        Face::PosY => "+y",
+        Face::NegZ => "-z",
+        Face::PosZ => "+z",
+    }
+}
+
+fn read_planes(planes: Table) -> mlua::Result<Vec<BrushPlane>> {
+    let mut out = Vec::new();
+
+    for plane in planes.sequence_values::<Table>() {
+        let plane = plane?;
+        let normal: Vector3 = plane.get("normal")?;
+        let distance: f64 = plane.get("distance")?;
+        out.push(BrushPlane { normal, distance });
+    }
+
+    Ok(out)
 }

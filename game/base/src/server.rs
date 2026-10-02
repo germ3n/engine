@@ -271,7 +271,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         flush_sounds(&mut game);
 
         emit_scale_dirty(&mut game, &peers);
-        emit_brush_boxes(&mut game, &peers, &joined);
+        emit_brush_edits(&mut game, &peers, &joined);
         emit_motion(&mut game, &peers, &joined);
 
         if ticked {
@@ -983,30 +983,30 @@ fn emit_motion(
 
 #[cfg(feature = "server")]
 fn emit_brush_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
-    let boxes = game.brush_world.boxes();
+    let edits = game.brush_world.edits();
     let mut idx = 0;
 
-    while idx < boxes.len() {
-        game.send_state_to(addr, ServerToClient::BrushAdded(boxes[idx]));
+    while idx < edits.len() {
+        game.send_state_to(addr, ServerToClient::BrushEdit(edits[idx].clone()));
         idx += 1;
     }
 }
 
 #[cfg(feature = "server")]
-fn emit_brush_boxes(
+fn emit_brush_edits(
     game: &mut GameState<FromClient, ServerToClient>,
     peers: &[SocketAddr],
     skip: &[SocketAddr],
 ) {
-    let boxes = game.brush_world.take_boxes();
+    let edits = game.brush_world.take_edits();
     let mut idx = 0;
 
-    while idx < boxes.len() {
+    while idx < edits.len() {
         let mut peer = 0;
 
         while peer < peers.len() {
             if !skip.contains(&peers[peer]) {
-                game.send_state_to(peers[peer], ServerToClient::BrushAdded(boxes[idx]));
+                game.send_state_to(peers[peer], ServerToClient::BrushEdit(edits[idx].clone()));
             }
 
             peer += 1;

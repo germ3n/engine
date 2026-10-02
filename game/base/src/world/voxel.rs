@@ -261,8 +261,15 @@ impl VoxelWorld {
     }
 
     pub fn clear(&mut self) {
+        let positions: Vec<ChunkPos> = self.chunks.keys().copied().collect();
         self.chunks.clear();
         self.dirty.clear();
+        let mut idx = 0;
+
+        while idx < positions.len() {
+            self.dirty.insert(positions[idx]);
+            idx += 1;
+        }
 
         if self.scale != 1.0 {
             self.scale = 1.0;
@@ -368,12 +375,55 @@ impl VoxelWorld {
     }
 
     pub fn fill_bounds(&mut self, min: Vector3, max: Vector3, block: Block) -> bool {
-        let Some(a) = self.block_of(min, false) else {
+        let Some((min, max)) = self.world_box_blocks(min, max) else {
             return false;
         };
-        let Some(b) = self.block_of(max, true) else {
+
+        self.fill(min, max, block);
+
+        true
+    }
+
+    pub fn fill_sphere(&mut self, center: Vector3, radius: f64, block: Block) -> bool {
+        if !is_finite(center) || !radius.is_finite() || radius <= 0.0 {
+            return false;
+        }
+
+        let min = Vector3::new(center.x - radius, center.y - radius, center.z - radius);
+        let max = Vector3::new(center.x + radius, center.y + radius, center.z + radius);
+        let Some((min, max)) = self.world_box_blocks(min, max) else {
             return false;
         };
+        let mut z = min.z;
+
+        while z < max.z {
+            let mut y = min.y;
+
+            while y < max.y {
+                let mut x = min.x;
+
+                while x < max.x {
+                    let pos = BlockPos::new(x, y, z);
+
+                    if cell_hits_sphere(pos, center, radius, self.scale) {
+                        self.set(pos, block);
+                    }
+
+                    x += 1;
+                }
+
+                y += 1;
+            }
+
+            z += 1;
+        }
+
+        true
+    }
+
+    fn world_box_blocks(&self, min: Vector3, max: Vector3) -> Option<(BlockPos, BlockPos)> {
+        let a = self.block_of(min, false)?;
+        let b = self.block_of(max, true)?;
         let min = BlockPos::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
         let max = BlockPos::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
         let volume = span(min.x, max.x)
@@ -381,12 +431,10 @@ impl VoxelWorld {
             .saturating_mul(span(min.z, max.z));
 
         if volume > MAX_FILL {
-            return false;
+            return None;
         }
 
-        self.fill(min, max, block);
-
-        true
+        Some((min, max))
     }
 
     fn block_of(&self, point: Vector3, end: bool) -> Option<BlockPos> {
@@ -1122,6 +1170,20 @@ fn span(min: i32, max: i32) -> i64 {
     max as i64 - min as i64
 }
 
+fn cell_hits_sphere(pos: BlockPos, center: Vector3, radius: f64, scale: f64) -> bool {
+    let min_x = pos.x as f64 * scale;
+    let min_y = pos.y as f64 * scale;
+    let min_z = pos.z as f64 * scale;
+    let x = center.x.clamp(min_x, min_x + scale);
+    let y = center.y.clamp(min_y, min_y + scale);
+    let z = center.z.clamp(min_z, min_z + scale);
+    let dx = x - center.x;
+    let dy = y - center.y;
+    let dz = z - center.z;
+
+    dx * dx + dy * dy + dz * dz <= radius * radius
+}
+
 fn div_floor(value: i32, size: i32) -> i32 {
     let quot = value / size;
     let rem = value % size;
@@ -1652,6 +1714,16 @@ mod tests {
             Block(1),
         ));
         assert!(world.get(BlockPos::new(10, 10, 10)).is_air());
+        let mut round = VoxelWorld::new();
+        assert!(round.fill_sphere(Vector3::new(0.5, 0.5, 0.5), 0.2, Block(5)));
+        assert_eq!(round.get(BlockPos::new(0, 0, 0)), Block(5));
+        assert!(round.get(BlockPos::new(1, 0, 0)).is_air());
+        assert!(!round.fill_sphere(Vector3::new(0.0, 0.0, 0.0), 0.0, Block(1)));
+        round.clear();
+        let cleared = round.take_dirty();
+        assert_eq!(cleared.len(), 1);
+        assert!(cleared[0].runs.is_empty());
+        assert!(round.get(BlockPos::new(0, 0, 0)).is_air());
     }
 
     fn faces_point_outward(mesh: &[f32], center: f32) -> bool {
