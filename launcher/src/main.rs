@@ -6,6 +6,7 @@ use eframe::egui::{
     Vec2,
 };
 use std::process::Command;
+use std::time::Duration;
 
 const BG: Color32 = Color32::from_rgb(14, 15, 18);
 const SURFACE: Color32 = Color32::from_rgb(24, 26, 32);
@@ -15,6 +16,8 @@ const LINE: Color32 = Color32::from_rgb(52, 56, 68);
 const TEXT: Color32 = Color32::from_rgb(236, 234, 228);
 const MUTED: Color32 = Color32::from_rgb(132, 136, 148);
 const ACCENT: Color32 = Color32::from_rgb(214, 132, 58);
+const ACCENT_HOVER: Color32 = Color32::from_rgb(234, 152, 78);
+const ACCENT_PRESS: Color32 = Color32::from_rgb(188, 112, 46);
 const ACCENT_SOFT: Color32 = Color32::from_rgb(84, 52, 28);
 const ACCENT_INK: Color32 = Color32::from_rgb(28, 18, 10);
 const ERROR: Color32 = Color32::from_rgb(216, 88, 78);
@@ -23,6 +26,7 @@ const RAIL_COLLAPSED: f32 = 52.0;
 const RAIL_EXPANDED: f32 = 248.0;
 const DRAWER_H: f32 = 68.0;
 const SLIDE_SECS: f32 = 0.2;
+const HOVER_GRACE: f64 = 0.35;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -46,8 +50,10 @@ struct LauncherApp {
     settings: Settings,
     status: Option<String>,
     close: bool,
-    open_drawer: Option<&'static str>,
-    pinned_drawer: Option<&'static str>,
+    hovered: Option<&'static str>,
+    hover_seen: f64,
+    pinned: Option<&'static str>,
+    focused: Option<&'static str>,
     appear: f32,
 }
 
@@ -59,8 +65,10 @@ impl LauncherApp {
             settings: config::load(),
             status: None,
             close: false,
-            open_drawer: None,
-            pinned_drawer: None,
+            hovered: None,
+            hover_seen: 0.0,
+            pinned: None,
+            focused: None,
             appear: 0.0,
         }
     }
@@ -131,6 +139,9 @@ impl eframe::App for LauncherApp {
             ctx.request_repaint();
         }
 
+        let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter))
+            && ctx.memory(|m| m.focused().is_none() && !m.any_popup_open());
+
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(BG))
             .show(ctx, |ui| {
@@ -159,7 +170,7 @@ impl eframe::App for LauncherApp {
                     self.draw_rail(ui);
                 });
 
-                if launch {
+                if launch || enter {
                     self.launch();
                 }
             });
@@ -168,11 +179,16 @@ impl eframe::App for LauncherApp {
 
 impl LauncherApp {
     fn draw_rail(&mut self, ui: &mut Ui) {
-        let mut y = ui.max_rect().min.y;
-        let right = ui.max_rect().max.x;
+        let rail = ui.max_rect();
+        let mut y = rail.min.y;
+        let right = rail.max.x;
         let gap = 8.0;
-        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let now = ui.input(|input| input.time);
         let popup_open = ui.memory(|m| m.any_popup_open());
+        let layer = ui.layer_id();
+        let pointer = ui
+            .input(|input| input.pointer.hover_pos())
+            .filter(|pos| ui.ctx().layer_id_at(*pos).map_or(true, |top| top == layer));
 
         let drawers: [Drawer; 5] = [
             Drawer {
@@ -209,40 +225,67 @@ impl LauncherApp {
             },
         ];
 
+        let engaged = self.hovered.is_some();
         let mut slots = Vec::with_capacity(drawers.len());
 
         for drawer in &drawers {
+            let held = self.pinned == Some(drawer.id) || self.focused == Some(drawer.id);
+            let reach = if engaged || held {
+                RAIL_EXPANDED
+            } else {
+                RAIL_COLLAPSED
+            };
             let hit = Rect::from_min_max(
-                Pos2::new(right - RAIL_EXPANDED, y),
+                Pos2::new(right - reach, y),
                 Pos2::new(right, y + DRAWER_H + gap),
             );
-            slots.push((drawer.id, hit));
+            slots.push(hit);
             y += DRAWER_H + gap;
         }
 
-        let mut next_open = pointer.and_then(|pos| {
-            slots
-                .iter()
-                .find(|(_, hit)| hit.contains(pos))
-                .map(|(id, _)| *id)
-        });
+        let under = pointer.and_then(|pos| slots.iter().position(|hit| hit.contains(pos)));
 
-        if next_open.is_none() {
-            if let Some(id) = self.open_drawer {
-                if popup_open || self.pinned_drawer == Some(id) {
-                    next_open = Some(id);
-                }
+        if popup_open {
+            self.hover_seen = now;
+        } else if let Some(idx) = under {
+            self.hovered = Some(drawers[idx].id);
+            self.hover_seen = now;
+        } else if self.hovered.is_some() {
+            let away = now - self.hover_seen;
+
+            if away >= HOVER_GRACE {
+                self.hovered = None;
+            } else {
+                ui.ctx()
+                    .request_repaint_after(Duration::from_secs_f64(HOVER_GRACE - away));
             }
         }
 
-        if next_open != self.open_drawer {
-            self.open_drawer = next_open;
+        if !popup_open {
+            let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+            let clicked_outside = ui.input(|input| {
+                input.pointer.primary_clicked()
+                    && input
+                        .pointer
+                        .interact_pos()
+                        .is_some_and(|pos| !rail.contains(pos))
+            });
+
+            if escape {
+                self.pinned = None;
+                self.hovered = None;
+            } else if clicked_outside {
+                self.pinned = None;
+            }
         }
 
         let mut animating = false;
+        let mut focused = None;
+        let mut toggled = None;
 
-        for (drawer, (_, hit)) in drawers.iter().zip(slots.iter()) {
-            let open = self.open_drawer == Some(drawer.id);
+        for (drawer, hit) in drawers.iter().zip(slots.iter()) {
+            let pinned = self.pinned == Some(drawer.id);
+            let open = pinned || self.hovered == Some(drawer.id) || self.focused == Some(drawer.id);
             let t = ui.ctx().animate_bool_with_time(
                 egui::Id::new(("drawer", drawer.id)),
                 open,
@@ -260,13 +303,25 @@ impl LauncherApp {
                 Vec2::new(width, DRAWER_H),
             );
 
-            if let Some(pin) = draw_drawer(ui, rect, hit, drawer, &mut self.settings, eased, open) {
-                if pin {
-                    self.pinned_drawer = Some(drawer.id);
-                } else if self.pinned_drawer == Some(drawer.id) {
-                    self.pinned_drawer = None;
-                }
+            let state = draw_drawer(ui, rect, drawer, &mut self.settings, eased, open, pinned);
+
+            if state.busy {
+                focused = Some(drawer.id);
             }
+
+            if state.toggled {
+                toggled = Some(drawer.id);
+            }
+        }
+
+        self.focused = focused;
+
+        if let Some(id) = toggled {
+            self.pinned = if self.pinned == Some(id) {
+                None
+            } else {
+                Some(id)
+            };
         }
 
         if animating {
@@ -289,16 +344,28 @@ enum DrawerKind {
     Editor,
 }
 
+#[derive(Default)]
+struct DrawerState {
+    toggled: bool,
+    busy: bool,
+}
+
 fn draw_drawer(
     ui: &mut Ui,
     rect: Rect,
-    hit: &Rect,
     drawer: &Drawer,
     settings: &mut Settings,
     t: f32,
     open: bool,
-) -> Option<bool> {
-    let _ = ui.interact(*hit, egui::Id::new(("hit", drawer.id)), Sense::hover());
+    pinned: bool,
+) -> DrawerState {
+    let mut state = DrawerState::default();
+    let tab = Rect::from_min_max(Pos2::new(rect.max.x - RAIL_COLLAPSED, rect.min.y), rect.max);
+    let tab_response = ui
+        .interact(tab, egui::Id::new(("tab", drawer.id)), Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    state.toggled = tab_response.clicked();
+
     let fill = lerp_color(SURFACE, FIELD_HOVER, t);
     let edge = lerp_color(LINE, ACCENT, t);
 
@@ -325,16 +392,29 @@ fn draw_drawer(
         lerp_color(ACCENT_SOFT, ACCENT, t),
     );
 
-    let label_pos = Pos2::new(rect.max.x - RAIL_COLLAPSED * 0.5, rect.center().y);
+    let tab_center = tab.center().x - 1.5;
     ui.painter().text(
-        label_pos,
+        Pos2::new(tab_center, tab.center().y - 8.0),
         egui::Align2::CENTER_CENTER,
         drawer.label,
-        FontId::proportional(11.0),
-        lerp_color(MUTED, TEXT, t.max(0.35)),
+        FontId::proportional(10.0),
+        lerp_color(MUTED, ACCENT, t),
     );
 
-    let mut pin = None;
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        drawer_value(drawer, settings),
+        FontId::proportional(12.0),
+        TEXT,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(RAIL_COLLAPSED - 10.0);
+    let value = ui.painter().layout_job(job);
+    let value_pos = Pos2::new(tab_center - value.size().x * 0.5, tab.center().y + 1.0);
+    ui.painter().galley(value_pos, value, TEXT);
+
+    if pinned {
+        ui.painter()
+            .circle_filled(Pos2::new(tab_center, rect.min.y + 10.0), 2.5, ACCENT);
+    }
 
     if t > 0.2 && open {
         ui.scope_builder(
@@ -372,7 +452,7 @@ fn draw_drawer(
                                     .margin(Margin::symmetric(8, 4))
                                     .hint_text("map name"),
                             );
-                            pin = Some(edit.has_focus());
+                            state.busy = edit.has_focus();
                         }
                         DrawerKind::Tick => {
                             ui.horizontal(|ui| {
@@ -382,7 +462,7 @@ fn draw_drawer(
                                         .speed(1.0)
                                         .min_decimals(0),
                                 );
-                                pin = Some(drag.has_focus());
+                                state.busy = drag.has_focus() || drag.dragged();
                                 ui.label(RichText::new("Hz").size(12.0).color(MUTED));
                             });
                         }
@@ -395,7 +475,34 @@ fn draw_drawer(
         );
     }
 
-    pin
+    state
+}
+
+fn drawer_value(drawer: &Drawer, settings: &Settings) -> String {
+    match drawer.kind {
+        DrawerKind::Combo { value_key } => match value_key {
+            "renderer" => short_renderer(&settings.renderer).to_string(),
+            "host" => display_host(&settings.host).to_uppercase(),
+            _ => String::new(),
+        },
+        DrawerKind::Map => {
+            let map = settings.map.trim();
+
+            if map.is_empty() {
+                return "—".to_string();
+            }
+
+            map.to_string()
+        }
+        DrawerKind::Tick => settings.tickrate.to_string(),
+        DrawerKind::Editor => {
+            if settings.editor {
+                return "ON".to_string();
+            }
+
+            "OFF".to_string()
+        }
+    }
 }
 
 fn brand_panel(ui: &mut Ui, appear: f32, status: &Option<String>) -> bool {
@@ -411,25 +518,17 @@ fn brand_panel(ui: &mut Ui, appear: f32, status: &Option<String>) -> bool {
     );
     ui.add_space(6.0);
     ui.label(
-        RichText::new("Hover the rail to tune the session.")
+        RichText::new("Hover a tab to tune the session, click it to keep it open.")
             .size(13.0)
             .color(MUTED),
     );
 
     ui.add_space(28.0);
 
-    let launch = egui::Button::new(
-        RichText::new("Launch")
-            .size(15.0)
-            .color(ACCENT_INK)
-            .strong(),
-    )
-    .fill(ACCENT)
-    .stroke(Stroke::NONE)
-    .corner_radius(CornerRadius::same(8))
-    .min_size(Vec2::new(168.0, 42.0));
+    let clicked = launch_button(ui);
 
-    let clicked = ui.add(launch).clicked();
+    ui.add_space(8.0);
+    ui.label(RichText::new("or press Enter").size(11.0).color(MUTED));
 
     if let Some(status) = status {
         ui.add_space(12.0);
@@ -437,6 +536,41 @@ fn brand_panel(ui: &mut Ui, appear: f32, status: &Option<String>) -> bool {
     }
 
     clicked
+}
+
+fn launch_button(ui: &mut Ui) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(168.0, 42.0), Sense::click());
+    let hover =
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.12);
+    let mut fill = lerp_color(ACCENT, ACCENT_HOVER, hover);
+
+    if response.is_pointer_button_down_on() {
+        fill = ACCENT_PRESS;
+    }
+
+    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(3.0),
+            CornerRadius::same(10),
+            Stroke::new(1.0_f32, ACCENT),
+            egui::StrokeKind::Outside,
+        );
+    }
+
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Launch",
+        FontId::proportional(15.0),
+        ACCENT_INK,
+    );
+
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
 }
 
 fn paint_atmosphere(ui: &mut Ui, full: Rect) {
@@ -524,6 +658,18 @@ fn display_renderer(name: &str) -> &str {
         "opengl" => "OpenGL",
         "d3d12" => "Direct3D 12",
         "d3d11" => "Direct3D 11",
+        other => other,
+    }
+}
+
+fn short_renderer(name: &str) -> &str {
+    match name {
+        "auto" => "AUTO",
+        "metal" => "MTL",
+        "vulkan" => "VK",
+        "opengl" => "GL",
+        "d3d12" => "DX12",
+        "d3d11" => "DX11",
         other => other,
     }
 }
