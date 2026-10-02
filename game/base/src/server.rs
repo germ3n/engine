@@ -1,7 +1,7 @@
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::movement::{self, UserCommand};
-use crate::network::events::{EntityNetworked, EntitySnapshot};
+use crate::network::events::{EntityNetworked, EntityOwnership, EntitySnapshot};
 use crate::network::packet::STREAM_STATE;
 use crate::network::packet::{
     encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart,
@@ -867,6 +867,14 @@ fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketA
         }
 
         let base = entity.base();
+        let owner = if base.owner.is_null() {
+            None
+        } else {
+            Some(EntityOwnership {
+                handle,
+                owner: base.owner,
+            })
+        };
         pending.push((
             EntitySnapshot {
                 handle,
@@ -878,58 +886,68 @@ fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketA
                 ack: 0,
             },
             states.remove(&handle),
+            owner,
         ));
     }
 
-    let mut batches = Vec::new();
-    if pending.is_empty() {
-        batches.push((Vec::new(), Vec::new()));
-    }
+    pending.sort_by_key(|(_, _, owner)| owner.is_some());
 
+    let mut batches = Vec::new();
     let mut batch = Vec::new();
     let mut networked = Vec::new();
-    for (entity, state) in pending {
+    let mut owners = Vec::new();
+    for (entity, state, owner) in pending {
         let has_state = state.is_some();
+        let has_owner = owner.is_some();
         batch.push(entity);
         networked.extend(state);
-        if snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch, &networked) {
+        owners.extend(owner);
+        if snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch, &networked, &owners) {
             continue;
         }
 
         let overflow = batch.pop().unwrap();
         let overflow_state = if has_state { networked.pop() } else { None };
+        let overflow_owner = if has_owner { owners.pop() } else { None };
         if !batch.is_empty() {
-            batches.push((std::mem::take(&mut batch), std::mem::take(&mut networked)));
+            batches.push((
+                std::mem::take(&mut batch),
+                std::mem::take(&mut networked),
+                std::mem::take(&mut owners),
+            ));
         }
 
         batch.push(overflow);
         networked.extend(overflow_state);
-        if !snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch, &networked) {
+        owners.extend(overflow_owner);
+        if !snapshot_fits(generation, true, u16::MAX, u16::MAX, &batch, &networked, &owners) {
             log::warn!("[sv] snapshot entity too large");
             batch.clear();
             networked.clear();
+            owners.clear();
         }
     }
 
     if !batch.is_empty() {
-        batches.push((batch, networked));
+        batches.push((batch, networked, owners));
     }
 
     if batches.is_empty() {
-        batches.push((Vec::new(), Vec::new()));
+        batches.push((Vec::new(), Vec::new(), Vec::new()));
     }
 
     let part_count = batches.len() as u16;
-    for (idx, (entities, networked)) in batches.into_iter().enumerate() {
+    for (idx, (entities, networked, owners)) in batches.into_iter().enumerate() {
         log::info!(
-            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={} networked={}",
+            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={} networked={} owners={}",
             addr,
             generation,
             idx == 0,
             idx,
             part_count,
             entities.len(),
-            networked.len()
+            networked.len(),
+            owners.len()
         );
         game.send_state_to(
             addr,
@@ -940,21 +958,9 @@ fn emit_snapshot(game: &mut GameState<FromClient, ServerToClient>, addr: SocketA
                 parts: part_count,
                 entities,
                 networked,
+                owners,
             },
         );
-    }
-
-    let mut owners = Vec::new();
-    for (handle, entity) in game.entities.iter() {
-        let owner = entity.base().owner;
-
-        if entity.is_spawned() && !owner.is_null() {
-            owners.push((handle, owner));
-        }
-    }
-
-    for (handle, owner) in owners {
-        game.send_state_to(addr, ServerToClient::EntityOwner { handle, owner });
     }
 }
 
@@ -1007,6 +1013,17 @@ fn emit_predicted_state(game: &mut GameState<FromClient, ServerToClient>, player
 
 #[cfg(feature = "server")]
 fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
+    let spawned = game.entities.take_net_spawned();
+    let (removed, updates): (Vec<_>, Vec<_>) = game
+        .collect_networked()
+        .into_iter()
+        .partition(|entity| !game.entities.is_valid(entity.handle));
+    let removed = removed
+        .into_iter()
+        .filter(|entity| !spawned.contains(&entity.handle))
+        .collect();
+    send_networked(game, removed);
+
     for handle in game.take_despawned() {
         game.send_reliable(ServerToClient::EntityDespawned { handle });
     }
@@ -1020,7 +1037,7 @@ fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
         game.send_reliable(ServerToClient::EntityOwner { handle, owner });
     }
 
-    for handle in game.entities.take_net_spawned() {
+    for handle in spawned {
         let Some((class_hash, position, angles, owner)) = game.entities.get(handle).map(|entity| {
             (
                 entity.class_hash(),
@@ -1054,8 +1071,11 @@ fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
         });
     }
 
-    let updates = game.collect_networked();
+    send_networked(game, updates);
+}
 
+#[cfg(feature = "server")]
+fn send_networked(game: &mut GameState<FromClient, ServerToClient>, updates: Vec<EntityNetworked>) {
     if updates.is_empty() {
         return;
     }
@@ -1189,6 +1209,7 @@ fn snapshot_fits(
     parts: u16,
     entities: &[EntitySnapshot],
     networked: &[EntityNetworked],
+    owners: &[EntityOwnership],
 ) -> bool {
     let event = ServerToClient::WorldSnapshot {
         generation,
@@ -1197,6 +1218,7 @@ fn snapshot_fits(
         parts,
         entities: entities.to_vec(),
         networked: networked.to_vec(),
+        owners: owners.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
 

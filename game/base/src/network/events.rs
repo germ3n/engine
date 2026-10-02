@@ -41,6 +41,12 @@ pub struct EntityNetworked {
     pub vars: Vec<NetVar>,
 }
 
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug)]
+pub struct EntityOwnership {
+    pub handle: EntityHandle,
+    pub owner: EntityHandle,
+}
+
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum ServerToClient {
     MapChange {
@@ -181,6 +187,7 @@ pub enum ServerToClient {
         parts: u16,
         entities: Vec<EntitySnapshot>,
         networked: Vec<EntityNetworked>,
+        owners: Vec<EntityOwnership>,
     },
     TickState {
         tick: u64,
@@ -443,10 +450,12 @@ impl ServerToClient {
                 parts,
                 entities,
                 networked,
+                owners,
             } => format!(
-                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={})",
+                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={})",
                 entities.len(),
-                networked.len()
+                networked.len(),
+                owners.len()
             ),
             ServerToClient::TickState {
                 tick,

@@ -2,7 +2,7 @@ use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player, ScriptedEntity};
 use crate::input::Action;
 use crate::movement::{self, NetPose, Prediction, UserCommand};
-use crate::network::events::{EntityNetworked, EntitySnapshot, NetVar};
+use crate::network::events::{EntityNetworked, EntityOwnership, EntitySnapshot, NetVar};
 use crate::network::packet::{
     bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT,
     KEEPALIVE_INTERVAL, STREAM_STATE,
@@ -116,6 +116,7 @@ struct BuiltSnapshot {
     reset: bool,
     entities: Vec<EntitySnapshot>,
     networked: Vec<EntityNetworked>,
+    owners: Vec<EntityOwnership>,
 }
 
 struct SnapshotIngress {
@@ -123,7 +124,7 @@ struct SnapshotIngress {
     reset: bool,
     part_count: u16,
     filled: u16,
-    parts: Vec<Option<(Vec<EntitySnapshot>, Vec<EntityNetworked>)>>,
+    parts: Vec<Option<(Vec<EntitySnapshot>, Vec<EntityNetworked>, Vec<EntityOwnership>)>>,
 }
 
 impl SnapshotIngress {
@@ -145,6 +146,7 @@ impl SnapshotIngress {
         part_count: u16,
         entities: Vec<EntitySnapshot>,
         networked: Vec<EntityNetworked>,
+        owners: Vec<EntityOwnership>,
     ) -> Option<BuiltSnapshot> {
         if part_count == 0 || part >= part_count || part_count > 1024 {
             return None;
@@ -166,7 +168,7 @@ impl SnapshotIngress {
         }
 
         if self.parts[part as usize].is_none() {
-            self.parts[part as usize] = Some((entities, networked));
+            self.parts[part as usize] = Some((entities, networked, owners));
             self.filled = self.filled.saturating_add(1);
         }
 
@@ -176,10 +178,12 @@ impl SnapshotIngress {
 
         let mut built_entities = Vec::new();
         let mut built_networked = Vec::new();
+        let mut built_owners = Vec::new();
         for slot in self.parts.drain(..) {
-            if let Some((batch, networked)) = slot {
+            if let Some((batch, networked, owners)) = slot {
                 built_entities.extend(batch);
                 built_networked.extend(networked);
+                built_owners.extend(owners);
             }
         }
 
@@ -187,6 +191,7 @@ impl SnapshotIngress {
             reset: self.reset,
             entities: built_entities,
             networked: built_networked,
+            owners: built_owners,
         };
         self.filled = 0;
         self.part_count = 0;
@@ -429,6 +434,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
+                                game.sync_entities();
                                 prediction.clear();
                                 remotes.clear();
                                 game.voxel_world.clear();
@@ -452,20 +458,23 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 parts,
                                 entities,
                                 networked,
+                                owners,
                             } = message
                             {
                                 log::info!(
-                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={})",
+                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={})",
                                     entities.len(),
-                                    networked.len()
+                                    networked.len(),
+                                    owners.len()
                                 );
 
                                 if generation == world_generation {
                                     if let Some(built) = snapshot_ingress
-                                        .push(generation, reset, part, parts, entities, networked)
+                                        .push(generation, reset, part, parts, entities, networked, owners)
                                     {
                                         if built.reset {
                                             game.entities.clear();
+                                            game.sync_entities();
                                             prediction.clear();
                                             remotes.clear();
                                         }
@@ -477,9 +486,18 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                             .into_iter()
                                             .map(|entity| (entity.handle, entity.vars))
                                             .collect();
+                                        let owners: HashMap<EntityHandle, EntityHandle> = built
+                                            .owners
+                                            .into_iter()
+                                            .map(|ownership| (ownership.handle, ownership.owner))
+                                            .collect();
 
                                         for entity in built.entities {
                                             let vars = states.remove(&entity.handle).unwrap_or_default();
+                                            let owner = owners
+                                                .get(&entity.handle)
+                                                .copied()
+                                                .unwrap_or(EntityHandle::NULL);
                                             log::info!(
                                                 "[cl] snapshot spawn {:?} class={} hp={} pos=({:.2},{:.2},{:.2})",
                                                 entity.handle,
@@ -495,6 +513,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                                 now,
                                                 interval,
                                                 entity,
+                                                owner,
                                                 &vars,
                                             );
                                         }
@@ -1993,6 +2012,7 @@ fn apply_spawn(
     now: f64,
     interval: f64,
     entity: EntitySnapshot,
+    owner: EntityHandle,
     vars: &[NetVar],
 ) {
     if entity.class_hash == Player::CLASS_HASH {
@@ -2001,6 +2021,7 @@ fn apply_spawn(
         player.base.position = entity.position;
         player.base.angles = entity.angles;
         player.base.velocity = entity.velocity;
+        player.base.owner = owner;
         game.entities.insert_at(entity.handle, Box::new(player));
 
         if !vars.is_empty() {
@@ -2016,7 +2037,7 @@ fn apply_spawn(
         entity.position,
         entity.angles,
         entity.velocity,
-        EntityHandle::NULL,
+        owner,
         vars,
     ) {
         return;

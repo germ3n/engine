@@ -66,6 +66,55 @@ return function(native)
         print("[ents] " .. tostring(ent._class) .. ":" .. name .. " error: " .. tostring(err));
     end
 
+    local function is_class_table(value)
+        if type(value) ~= "table" or type(value.class_name) ~= "string" then
+            return false;
+        end
+
+        return scripted_ents.get(value.class_name) == value;
+    end
+
+    local function copy_value(value, seen)
+        if type(value) ~= "table" or is_class_table(value) then
+            return value;
+        end
+
+        local existing = seen[value];
+
+        if existing ~= nil then
+            return existing;
+        end
+
+        local out = {};
+        seen[value] = out;
+
+        for key, item in next, value do
+            out[copy_value(key, seen)] = copy_value(item, seen);
+        end
+
+        local meta = getmetatable(value);
+
+        if meta ~= nil then
+            setmetatable(out, meta);
+        end
+
+        return out;
+    end
+
+    local function call_hook(ent, name)
+        local callback = ent[name];
+
+        if callback == nil then
+            return;
+        end
+
+        local ok, err = pcall(callback, ent);
+
+        if not ok then
+            report(ent, name, err);
+        end
+    end
+
     local function wrap(raw)
         local index = raw % INDEX_SPAN;
         local ent = storage[index];
@@ -102,6 +151,17 @@ return function(native)
             _removed = false,
             _owner = 0,
         }, mt);
+
+        if mt ~= native_meta then
+            local seen = {};
+
+            for key, value in pairs(mt) do
+                if key ~= "__index" and type(value) ~= "function" then
+                    ent[key] = copy_value(value, seen);
+                end
+            end
+        end
+
         storage[index] = ent;
 
         local owner_raw = native_get_owner(raw);
@@ -228,7 +288,6 @@ return function(native)
         ent._removed = true;
         remove_think(ent);
         detach_owned(ent);
-        dirty[ent] = nil;
         saved[ent] = nil;
 
         if storage[ent._index] == ent then
@@ -241,11 +300,7 @@ return function(native)
             add_think(ent);
         end
 
-        local on_spawn = ent.on_spawn;
-
-        if on_spawn ~= nil then
-            on_spawn(ent);
-        end
+        call_hook(ent, "on_spawn");
     end
 
     local function encode(out, n, key, value)
@@ -470,11 +525,29 @@ return function(native)
         start(self);
     end
 
+    local function call_on_remove(ent)
+        if ent._removing then
+            return;
+        end
+
+        ent._removing = true;
+        local callback = ent.on_remove;
+
+        if callback ~= nil then
+            local ok, err = pcall(callback, ent);
+
+            if not ok then
+                report(ent, "on_remove", err);
+            end
+        end
+    end
+
     function meta:remove()
         if self._removed then
             return;
         end
 
+        call_on_remove(self);
         native_remove(self._handle);
         unlink(self);
     end
@@ -593,7 +666,7 @@ return function(native)
 
     function ents.create(class)
         if CLIENT then
-            error("ents.create is server only", 2);
+            error("create is server only", 2);
         end
 
         local resolved = scripted_ents.get(class);
@@ -613,11 +686,7 @@ return function(native)
         end
 
         local ent = wrap(raw);
-        local initialize = ent.initialize;
-
-        if initialize ~= nil then
-            initialize(ent);
-        end
+        call_hook(ent, "initialize");
 
         return ent;
     end
@@ -652,7 +721,7 @@ return function(native)
         for idx = 1, #handles do
             local ent = wrap(handles[idx]);
 
-            if ent ~= nil then
+            if ent ~= nil and scripted_ents.get_stored(ent._class) ~= nil then
                 count = count + 1;
                 out[count] = ent;
             end
@@ -664,7 +733,37 @@ return function(native)
         return out;
     end
 
-    function ents.find_by_class(class)
+    function ents.get(value)
+        if type(value) == "table" then
+            if value._removed then
+                return nil;
+            end
+
+            return value;
+        end
+
+        if type(value) == "number" then
+            return wrap(value);
+        end
+
+        if value ~= nil and value.raw ~= nil then
+            return wrap(value:raw());
+        end
+
+        return nil;
+    end
+
+    function ents.remove(value)
+        local ent = ents.get(value);
+
+        if ent == nil then
+            return;
+        end
+
+        ent:remove();
+    end
+
+    function ents.get_by_class(class)
         local list = ents.get_all();
         local out = {};
         local count = 0;
@@ -672,13 +771,17 @@ return function(native)
         for idx = 1, #list do
             local ent = list[idx];
 
-            if ent._class == class then
+            if ent._class == class and scripted_ents.get_stored(ent._class) ~= nil then
                 count = count + 1;
                 out[count] = ent;
             end
         end
 
         return out;
+    end
+
+    function ents.find_by_class(class)
+        return ents.get_by_class(class);
     end
 
     function ents.get_count()
@@ -716,6 +819,7 @@ return function(native)
             local ent = storage[raw % INDEX_SPAN];
 
             if ent ~= nil and ent._handle == raw then
+                call_on_remove(ent);
                 unlink(ent);
             end
         end
@@ -731,22 +835,8 @@ return function(native)
         local ent = wrap(raw);
         ent._spawned = true;
         apply_vars(ent, flat, 1, count, false);
-
-        local initialize = ent.initialize;
-
-        if initialize ~= nil then
-            local ok, err = pcall(initialize, ent);
-
-            if not ok then
-                report(ent, "initialize", err);
-            end
-        end
-
-        local ok, err = pcall(start, ent);
-
-        if not ok then
-            report(ent, "on_spawn", err);
-        end
+        call_hook(ent, "initialize");
+        start(ent);
 
         return true;
     end

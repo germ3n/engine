@@ -1,3 +1,4 @@
+ENT.base = "base_entity";
 ENT.print_name = "Counter";
 ENT.think_rate = 1;
 ENT.step = 1;

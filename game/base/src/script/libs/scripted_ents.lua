@@ -16,17 +16,14 @@ local function flatten(class, visiting)
         return nil;
     end
 
+    if visiting[class] then
+        error("scripted_ents.register: inheritance cycle at " .. class, 2);
+    end
+
     local out = resolved[class];
 
     if out == nil then
         out = {};
-        resolved[class] = out;
-    end
-
-    if visiting[class] then
-        print("[scripted_ents] inheritance cycle at " .. class);
-
-        return out;
     end
 
     visiting[class] = true;
@@ -44,13 +41,13 @@ local function flatten(class, visiting)
 
     if base_name ~= nil then
         if storage[base_name] == nil then
-            print("[scripted_ents] " .. class .. " has missing base " .. tostring(base_name));
-        else
-            base_class = flatten(base_name, visiting);
+            error("scripted_ents.register: base '" .. tostring(base_name) .. "' is not registered", 2);
+        end
 
-            for key, value in pairs(base_class) do
-                out[key] = value;
-            end
+        base_class = flatten(base_name, visiting);
+
+        for key, value in pairs(base_class) do
+            out[key] = value;
         end
     end
 
@@ -65,6 +62,7 @@ local function flatten(class, visiting)
     out.base_class = base_class;
     out.__index = out;
     visiting[class] = nil;
+    resolved[class] = out;
 
     return out;
 end
@@ -88,18 +86,32 @@ local function flatten_tree(class, done)
 end
 
 function scripted_ents.register(ENT, class)
-    if type(ENT) ~= "table" or type(class) ~= "string" then
+    if type(ENT) ~= "table" or type(class) ~= "string" or class == "" then
         error("scripted_ents.register expects (table, string)", 2);
     end
 
-    local previous = storage[class];
+    if storage[class] ~= nil then
+        error("scripted_ents.register: '" .. class .. "' is already registered", 2);
+    end
 
-    if previous ~= nil and previous.base ~= nil and children[previous.base] ~= nil then
-        children[previous.base][class] = nil;
+    local hash = net.hash(class);
+
+    if hash == net.hash("Player") or by_hash[hash] ~= nil then
+        error("scripted_ents.register: class hash for '" .. class .. "' collides", 2);
+    end
+
+    if class ~= "base_entity" then
+        if type(ENT.base) ~= "string" or ENT.base == "" then
+            error("scripted_ents.register: '" .. class .. "' is missing base", 2);
+        end
+
+        if not scripted_ents._loading and storage[ENT.base] == nil then
+            error("scripted_ents.register: base '" .. ENT.base .. "' is not registered", 2);
+        end
     end
 
     storage[class] = ENT;
-    by_hash[net.hash(class)] = class;
+    by_hash[hash] = class;
 
     if ENT.base ~= nil then
         local derived = children[ENT.base];
@@ -117,6 +129,36 @@ function scripted_ents.register(ENT, class)
     end
 
     flatten_tree(class, {});
+end
+
+function scripted_ents.get_stored(class)
+    local raw = storage[class];
+
+    if raw == nil then
+        return nil;
+    end
+
+    return { def = raw, base = raw.base };
+end
+
+function scripted_ents.is_based_on(class, base)
+    local current = class;
+
+    while current ~= nil do
+        if current == base then
+            return true;
+        end
+
+        local raw = storage[current];
+
+        if raw == nil then
+            return false;
+        end
+
+        current = raw.base;
+    end
+
+    return false;
 end
 
 function scripted_ents.get(class)
@@ -143,20 +185,134 @@ function scripted_ents.get_list()
     return out;
 end
 
-function scripted_ents._resolve_all()
-    local done = {};
+local function base_problem(class)
+    if class == "base_entity" then
+        return nil;
+    end
+
+    local raw = storage[class];
+
+    if raw == nil then
+        return "scripted_ents.register: base '" .. class .. "' is not registered";
+    end
+
+    if type(raw.base) ~= "string" or raw.base == "" then
+        return "scripted_ents.register: '" .. class .. "' is missing base";
+    end
+
+    if storage[raw.base] == nil then
+        return "scripted_ents.register: base '" .. tostring(raw.base) .. "' is not registered";
+    end
+
+    return nil;
+end
+
+local function collect_broken()
+    local bad = {};
+    local skip = {};
+    local known = {};
+
+    local function walk(class, visiting)
+        if known[class] then
+            return skip[class] == true;
+        end
+
+        if visiting[class] then
+            bad[class] = "scripted_ents.register: inheritance cycle at " .. class;
+            skip[class] = true;
+            known[class] = true;
+
+            return true;
+        end
+
+        visiting[class] = true;
+        local direct = base_problem(class);
+        local broken = direct ~= nil;
+
+        if direct ~= nil then
+            bad[class] = direct;
+        end
+
+        local raw = storage[class];
+
+        if not broken and raw ~= nil and type(raw.base) == "string" then
+            broken = walk(raw.base, visiting);
+        end
+
+        if broken then
+            skip[class] = true;
+        end
+
+        known[class] = true;
+        visiting[class] = nil;
+
+        return broken;
+    end
 
     for class in pairs(storage) do
-        if done[class] == nil then
-            local visiting = {};
+        walk(class, {});
+    end
+
+    return bad, skip;
+end
+
+function scripted_ents._resolve_all()
+    local bad, skip = collect_broken();
+    local done = {};
+
+    local function flatten_ok(class)
+        if done[class] or skip[class] then
+            return;
+        end
+
+        done[class] = true;
+        flatten(class, {});
+        local derived = children[class];
+
+        if derived == nil then
+            return;
+        end
+
+        for child in pairs(derived) do
+            flatten_ok(child);
+        end
+    end
+
+    for class in pairs(storage) do
+        if done[class] == nil and not skip[class] then
             local root = class;
 
-            while storage[root] ~= nil and storage[root].base ~= nil and storage[storage[root].base] ~= nil and not visiting[root] do
-                visiting[root] = true;
+            while storage[root] ~= nil and type(storage[root].base) == "string" and storage[storage[root].base] ~= nil and not skip[storage[root].base] do
                 root = storage[root].base;
             end
 
-            flatten_tree(root, done);
+            flatten_ok(root);
         end
     end
+
+    local names = {};
+
+    for class in pairs(bad) do
+        names[#names + 1] = class;
+    end
+
+    table.sort(names);
+
+    if #names == 0 then
+        return;
+    end
+
+    local lines = {};
+
+    for idx = 1, #names do
+        lines[idx] = bad[names[idx]];
+    end
+
+    error(table.concat(lines, "\n"), 2);
 end
+
+scripted_ents.register({
+    initialize = function() end,
+    think = function() end,
+    on_remove = function() end,
+}, "base_entity");
