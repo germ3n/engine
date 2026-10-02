@@ -11,6 +11,7 @@ mod movement;
 mod network;
 mod script;
 mod server;
+mod sound;
 mod state;
 mod ui;
 mod world;

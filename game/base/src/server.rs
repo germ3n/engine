@@ -174,6 +174,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
                     emit_snapshot(&mut game, addr, generation);
                     emit_voxel_baseline(&game, addr);
+                    emit_sound_baseline(&game, addr);
                     game.send_state_to(
                         addr,
                         ServerToClient::MapChange {
@@ -244,6 +245,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         emit_entity_changes(&mut game);
         emit_anim_models(&mut game);
+        flush_sounds(&mut game);
 
         if ticked {
             emit_tick_state(&game, &players);
@@ -854,6 +856,71 @@ fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: Socke
 }
 
 #[cfg(feature = "server")]
+fn emit_sound_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
+    let pending = game.sound.baseline();
+    let mut sounds = Vec::new();
+    let mut idx = 0;
+
+    while idx < pending.len() {
+        let play = &pending[idx];
+        sounds.push(crate::network::events::LoopingSound {
+            sound_hash: play.sound_hash,
+            def_hash: play.def_hash,
+            entity_handle: play.entity,
+            position: play.position,
+            volume: play.volume,
+            pitch: play.pitch,
+            positional: play.positional,
+        });
+        idx += 1;
+    }
+
+    game.send_reliable_to(addr, ServerToClient::SoundBaseline { sounds });
+}
+
+#[cfg(feature = "server")]
+fn flush_sounds(game: &mut GameState<FromClient, ServerToClient>) {
+    let pending = game.sound.take_pending();
+    let mut idx = 0;
+
+    while idx < pending.len() {
+        match &pending[idx] {
+            crate::sound::Pending::Play(play) => {
+                let event = ServerToClient::PlaySound {
+                    sound_hash: play.sound_hash,
+                    entity_handle: if play.entity.is_null() {
+                        None
+                    } else {
+                        Some(play.entity)
+                    },
+                    position: play.position,
+                    volume: play.volume,
+                    pitch: play.pitch,
+                    def_hash: play.def_hash,
+                    tick: play.tick,
+                    positional: play.positional,
+                };
+
+                if play.looping {
+                    game.send_reliable(event);
+                } else {
+                    game.send_unreliable(event);
+                }
+            }
+            crate::sound::Pending::Stop(stop) => {
+                game.send_reliable(ServerToClient::StopSound {
+                    def_hash: stop.def_hash,
+                    sound_hash: stop.sound_hash,
+                    entity_handle: stop.entity,
+                });
+            }
+        }
+
+        idx += 1;
+    }
+}
+
+#[cfg(feature = "server")]
 fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
     if let Some(scale) = game.voxel_world.take_scale() {
         for addr in peers {
@@ -1089,6 +1156,7 @@ fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
     send_networked(game, removed);
 
     for handle in game.take_despawned() {
+        game.sound.forget_entity(handle);
         game.send_reliable(ServerToClient::EntityDespawned { handle });
     }
 

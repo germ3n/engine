@@ -29,6 +29,7 @@ zstd = "0.14.0"
 memmap2 = "0.9.11"
 gilrs = "0.11.2"
 vbsp = "0.9.1"
+lewton = "0.10"
 
 [build-dependencies]
 cc = "1"

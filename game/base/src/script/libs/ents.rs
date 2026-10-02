@@ -795,7 +795,14 @@ mod tests {
         );
         let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
         let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
-        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars), binds, pads);
+        let engine = ScriptEngine::new(
+            Realm::Server,
+            1.0 / 60.0,
+            Arc::new(cvars),
+            binds,
+            pads,
+            std::ptr::null_mut(),
+        );
         let mut list = EntityList::new();
         let _scope = super::EntityScope::new(&engine.entity_access, &mut list);
         let (raw, buddy): (f64, f64) = engine
@@ -997,7 +1004,14 @@ mod tests {
         );
         let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
         let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
-        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars), binds, pads);
+        let engine = ScriptEngine::new(
+            Realm::Server,
+            1.0 / 60.0,
+            Arc::new(cvars),
+            binds,
+            pads,
+            std::ptr::null_mut(),
+        );
         let mut list = EntityList::new();
         let _scope = super::EntityScope::new(&engine.entity_access, &mut list);
         let raw: f64 = engine

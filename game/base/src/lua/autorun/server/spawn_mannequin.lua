@@ -1,5 +1,5 @@
 local spawned = false;
-local count = 0;
+local count = 1;
 local columns = 10;
 local spacing = 1.6;
 

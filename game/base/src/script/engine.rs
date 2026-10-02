@@ -9,8 +9,9 @@ use crate::script::libs::ents::{AnimAccess, EntityAccess};
 use crate::script::libs::{
     register_angle3_lib, register_console_lib, register_convar_lib, register_engine_lib,
     register_ents_lib, register_net_lib, register_pad_lib, register_scripted_ents_lib,
-    register_surface_lib, register_vector3_lib,
+    register_sound_lib, register_surface_lib, register_vector3_lib,
 };
+use crate::sound::SoundAccess;
 use crate::ui::Color;
 use mlua::{Lua, LuaOptions, RegistryKey, StdLib};
 use std::collections::HashMap;
@@ -62,6 +63,7 @@ pub struct ScriptEngine {
     pub render_queue: RenderQueue,
     pub entity_access: EntityAccess,
     pub anim_access: AnimAccess,
+    pub sound_access: SoundAccess,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -72,6 +74,7 @@ impl ScriptEngine {
         cvars: Arc<HashMap<String, Arc<ConVar>>>,
         binds: Arc<Mutex<Binds>>,
         pads: Arc<Mutex<PadCache>>,
+        sound: *mut crate::sound::SoundWorld,
     ) -> Self {
         let (usermsg_sender, usermsg_receiver) = std::sync::mpsc::channel();
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
@@ -111,7 +114,9 @@ impl ScriptEngine {
 
         let entity_access: EntityAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let anim_access: AnimAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let sound_access: SoundAccess = Arc::new(AtomicPtr::new(sound));
         if !matches!(realm, Realm::Menu) {
+            register_sound_lib(&lua, sound_access.clone());
             register_ents_lib(&lua, entity_access.clone(), anim_access.clone());
             register_scripted_ents_lib(&lua);
             crate::script::libs::scripted_ents::load_entities(&lua, realm);
@@ -136,6 +141,7 @@ impl ScriptEngine {
             render_queue: render_queue.clone(),
             entity_access,
             anim_access,
+            sound_access,
             usermsg_receiver,
         }
     }

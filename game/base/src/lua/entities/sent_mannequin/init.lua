@@ -22,6 +22,7 @@ function ENT:think()
 
     if engine.curtime >= (self._wave_at or 0) then
         self:play_gesture("wave");
+        self:emit_sound("npc.mannequin.wave");
         self._wave_at = engine.curtime + 4;
     end
 

@@ -87,6 +87,17 @@ pub struct EntityOwnership {
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+pub struct LoopingSound {
+    pub sound_hash: u32,
+    pub def_hash: u32,
+    pub entity_handle: EntityHandle,
+    pub position: Vector3,
+    pub volume: f32,
+    pub pitch: f32,
+    pub positional: bool,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub enum ServerToClient {
     MapChange {
         map_name: String,
@@ -177,6 +188,17 @@ pub enum ServerToClient {
         position: Vector3,
         volume: f32,
         pitch: f32,
+        def_hash: u32,
+        tick: u64,
+        positional: bool,
+    },
+    StopSound {
+        def_hash: u32,
+        sound_hash: u32,
+        entity_handle: EntityHandle,
+    },
+    SoundBaseline {
+        sounds: Vec<LoopingSound>,
     },
     PlayEffect {
         effect_hash: u32,
@@ -457,6 +479,14 @@ impl ServerToClient {
                 entity_handle,
                 ..
             } => format!("PlaySound(hash={sound_hash} ent={entity_handle:?})"),
+            ServerToClient::StopSound {
+                def_hash,
+                sound_hash,
+                entity_handle,
+            } => format!("StopSound(def={def_hash} hash={sound_hash} ent={entity_handle:?})"),
+            ServerToClient::SoundBaseline { sounds } => {
+                format!("SoundBaseline({} loops)", sounds.len())
+            }
             ServerToClient::PlayEffect { effect_hash, .. } => {
                 format!("PlayEffect(hash={effect_hash})")
             }

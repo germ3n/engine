@@ -127,7 +127,14 @@ mod tests {
         );
         let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
         let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
-        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars), binds, pads);
+        let engine = ScriptEngine::new(
+            Realm::Server,
+            1.0 / 60.0,
+            Arc::new(cvars),
+            binds,
+            pads,
+            std::ptr::null_mut(),
+        );
         let len: f64 = engine
             .lua
             .load("return Vector3(3, 4, 0):len()")

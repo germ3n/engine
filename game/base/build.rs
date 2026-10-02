@@ -3,6 +3,7 @@ fn main() {
     stage_steam();
     compile_bundled_lua();
     write_base_pak();
+    compile_sound_device();
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
@@ -152,6 +153,43 @@ fn stage_steam() {
     }
 }
 
+fn compile_sound_device() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    println!("cargo:rerun-if-changed=src/sound/device.c");
+    println!("cargo:rerun-if-changed=third_party/miniaudio/miniaudio.h");
+    cc::Build::new()
+        .file("src/sound/device.c")
+        .include("third_party/miniaudio")
+        .warnings(false)
+        .compile("sound_device");
+
+    match target_os.as_str() {
+        "macos" | "ios" => {
+            println!("cargo:rustc-link-lib=framework=AudioToolbox");
+            println!("cargo:rustc-link-lib=framework=CoreAudio");
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
+
+            if target_os == "ios" {
+                println!("cargo:rustc-link-lib=framework=AVFoundation");
+            }
+        }
+        "android" => {
+            println!("cargo:rustc-link-lib=aaudio");
+            println!("cargo:rustc-link-lib=OpenSLES");
+        }
+        "linux" => {
+            println!("cargo:rustc-link-lib=dl");
+            println!("cargo:rustc-link-lib=pthread");
+            println!("cargo:rustc-link-lib=m");
+        }
+        "windows" => {
+            println!("cargo:rustc-link-lib=ole32");
+            println!("cargo:rustc-link-lib=user32");
+        }
+        _ => {}
+    }
+}
+
 fn compile_bundled_lua() {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -164,6 +202,7 @@ fn compile_bundled_lua() {
         "src/script/libs/angle3.lua",
         "src/script/libs/ents.lua",
         "src/script/libs/scripted_ents.lua",
+        "src/script/libs/sound.lua",
         "src/lua/menu/menu.lua",
     ];
 
@@ -259,6 +298,7 @@ fn write_base_pak() {
         ("shaders/skinned.wgsl", "src/ui/shaders/skinned.wgsl"),
         ("models/test.mdl", "models/test.mdl"),
         ("models/test.anm", "models/test.anm"),
+        ("sound/mannequin/wave.wav", "sound/mannequin/wave.wav"),
     ];
     let lua = [
         ("lua/libs/hook.luac", "hook.luac"),
@@ -267,6 +307,7 @@ fn write_base_pak() {
         ("lua/libs/angle3.luac", "angle3.luac"),
         ("lua/libs/ents.luac", "ents.luac"),
         ("lua/libs/scripted_ents.luac", "scripted_ents.luac"),
+        ("lua/libs/sound.luac", "sound.luac"),
         ("lua/menu/menu.luac", "menu.luac"),
     ];
     let mut owned = Vec::new();

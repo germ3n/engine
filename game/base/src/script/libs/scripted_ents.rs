@@ -134,7 +134,14 @@ mod tests {
         let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
         let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
 
-        ScriptEngine::new(realm, 1.0 / 60.0, Arc::new(cvars), binds, pads)
+        ScriptEngine::new(
+            realm,
+            1.0 / 60.0,
+            Arc::new(cvars),
+            binds,
+            pads,
+            std::ptr::null_mut(),
+        )
     }
 
     fn exec(engine: &ScriptEngine, source: &str) {

@@ -1445,6 +1445,42 @@ return function(native)
     end
 
     --[=[document
+    parent = "Entity",
+    name = "emit_sound",
+    realm = "shared",
+    summary = "Plays a sound at this entity. On the server it is sent to clients. During prediction it plays on the first replay and the server echo is dropped. Pitch 100 is normal.",
+    params = {
+        name = { ty = "string", desc = "Definition name or file path." },
+        volume = { ty = "number", desc = "Loudness from 0 to 1. Omit it to use the definition.", optional = true },
+        pitch = { ty = "number", desc = "Playback pitch. 100 is normal.", optional = true },
+        channel = { ty = "string", desc = "Replaces the definition channel. auto and static do not cut off the previous sound.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "self:emit_sound(\"npc.mannequin.wave\")",
+    see_also = "Entity:stop_sound, sound.play, sound.add",
+    ]=]
+    function meta:emit_sound(name, volume, pitch, channel)
+        local pos = self:get_pos();
+        sound._emit(name, pos.x, pos.y, pos.z, volume, pitch, self._handle, channel);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "stop_sound",
+    realm = "shared",
+    summary = "Stops sounds started on this entity. Without a name, every sound on the entity stops.",
+    params = {
+        name = { ty = "string", desc = "Definition name or file path. Omit it to stop every sound on this entity.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "self:stop_sound(\"npc.mannequin.wave\")",
+    see_also = "Entity:emit_sound",
+    ]=]
+    function meta:stop_sound(name)
+        sound._stop(self._handle, name);
+    end
+
+    --[=[document
     parent = "ents",
     name = "create",
     realm = "server",

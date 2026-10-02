@@ -734,6 +734,14 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     session_start.elapsed().as_secs_f64(),
                     interval,
                 );
+                game.update_sound(
+                    camera.x,
+                    camera.y,
+                    camera.z,
+                    camera.yaw,
+                    camera.pitch,
+                    frame_dt,
+                );
 
                 host.request_redraw();
             }
@@ -1329,6 +1337,7 @@ fn apply_server_event(
             );
         }
         ServerToClient::EntityDespawned { handle } => {
+            game.sound.forget_entity(handle);
             game.entities.remove(handle);
             game.sync_entities();
             remotes.remove(&handle);
@@ -1421,6 +1430,55 @@ fn apply_server_event(
             }
         }
 
+        ServerToClient::PlaySound {
+            sound_hash,
+            entity_handle,
+            position,
+            volume,
+            pitch,
+            def_hash,
+            tick,
+            positional,
+        } => {
+            game.sound.hear_play(
+                sound_hash,
+                def_hash,
+                entity_handle.unwrap_or(EntityHandle::NULL),
+                position,
+                volume,
+                pitch,
+                tick,
+                false,
+                positional,
+            );
+        }
+        ServerToClient::StopSound {
+            def_hash,
+            sound_hash,
+            entity_handle,
+        } => {
+            game.sound.hear_stop(entity_handle, def_hash, sound_hash);
+        }
+        ServerToClient::SoundBaseline { sounds } => {
+            let mut idx = 0;
+
+            while idx < sounds.len()
+            {
+                let sound = &sounds[idx];
+                game.sound.hear_play(
+                    sound.sound_hash,
+                    sound.def_hash,
+                    sound.entity_handle,
+                    sound.position,
+                    sound.volume,
+                    sound.pitch,
+                    0,
+                    true,
+                    sound.positional,
+                );
+                idx += 1;
+            }
+        }
         other => {
             log::warn!("[cl] unhandled {}", other.summary());
         }

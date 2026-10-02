@@ -10,7 +10,9 @@ use crate::network::NetWake;
 use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
 use crate::script::libs::ents::{AnimScope, EntityScope};
+use crate::script::libs::vector3::Vector3;
 use crate::script::{Realm, ScriptEngine};
+use crate::sound::{Buses, SoundScope, SoundWorld};
 use crate::world::{BrushMap, VoxelWorld};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,6 +37,7 @@ pub struct GameState<In, Out> {
     pub frame_time: f64,
     pub tick_count: u64,
     pub anims: AnimAssets,
+    pub sound: Box<SoundWorld>,
     despawned: Vec<EntityHandle>,
     wake: NetWake,
 }
@@ -60,6 +63,7 @@ impl<In, Out> GameState<In, Out> {
             )),
         );
         register_net_sim_cvars(&mut cvars);
+        register_sound_cvars(&mut cvars);
 
         for idx in 0..4 {
             let entries = [
@@ -103,12 +107,14 @@ impl<In, Out> GameState<In, Out> {
         let cvars = Arc::new(cvars);
         let binds = Arc::new(Mutex::new(load_or_defaults(&binds_path())));
         let pads = Arc::new(Mutex::new(PadCache::new()));
+        let mut sound = Box::new(SoundWorld::new(realm, matches!(realm, Realm::Client)));
         let script_engine = ScriptEngine::new(
             realm,
             tick_interval,
             cvars.clone(),
             binds.clone(),
             pads.clone(),
+            &mut *sound,
         );
 
         Self {
@@ -129,6 +135,7 @@ impl<In, Out> GameState<In, Out> {
             frame_time: 0.0,
             tick_count: 0,
             anims: AnimAssets::new(matches!(realm, Realm::Server)),
+            sound,
             despawned: Vec::new(),
             wake,
         }
@@ -136,10 +143,13 @@ impl<In, Out> GameState<In, Out> {
 
     fn with_entities<R>(&mut self, f: impl FnOnce(&ScriptEngine) -> R) -> R {
         let removed = self.entities.take_removed();
+        self.sound.set_clock(self.tick_count);
         let entities: *mut EntityList = &mut self.entities;
         let anims: *mut AnimAssets = &mut self.anims;
+        let sound: *mut SoundWorld = &mut *self.sound;
         let _scope = EntityScope::new(&self.script_engine.entity_access, entities);
         let _anim_scope = AnimScope::new(&self.script_engine.anim_access, anims);
+        let _sound_scope = SoundScope::new(&self.script_engine.sound_access, sound);
 
         if !removed.is_empty() {
             if matches!(self.realm, Realm::Server) {
@@ -215,6 +225,7 @@ impl<In, Out> GameState<In, Out> {
     pub fn run_predicted(&mut self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {
         let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
         let events = self.advance_predicted_anim(handle, cmd.tick);
+        self.sound.set_command_tick(cmd.tick);
 
         self.with_entities(|engine| {
             publish_clock(&engine.lua, cur_time, frame_time, tick_count);
@@ -230,6 +241,29 @@ impl<In, Out> GameState<In, Out> {
 
             engine.run_predicted(handle, cmd, first_time);
         });
+        self.sound.set_command_tick(0);
+    }
+
+    pub fn update_sound(&mut self, x: f32, y: f32, z: f32, yaw: f32, pitch: f32, dt: f32) {
+        let buses = Buses {
+            master: crate::console::float_cvar(&self.cvars, "snd_volume", 1.0).clamp(0.0, 4.0) as f32,
+            sfx: crate::console::float_cvar(&self.cvars, "snd_sfxvolume", 1.0).clamp(0.0, 4.0) as f32,
+            music: crate::console::float_cvar(&self.cvars, "snd_musicvolume", 1.0).clamp(0.0, 4.0) as f32,
+            ui: crate::console::float_cvar(&self.cvars, "snd_uivolume", 1.0).clamp(0.0, 4.0) as f32,
+            voice: crate::console::float_cvar(&self.cvars, "snd_voicevolume", 1.0).clamp(0.0, 4.0) as f32,
+        };
+        let max_distance = crate::console::float_cvar(&self.cvars, "snd_maxdistance", 48.0).max(0.5) as f32;
+        self.sound.update(
+            dt,
+            Vector3::new(x as f64, y as f64, z as f64),
+            yaw,
+            pitch,
+            buses,
+            max_distance,
+            &self.brush_world,
+            &self.voxel_world,
+            &self.entities,
+        );
     }
 
     fn advance_predicted_anim(&mut self, owner: EntityHandle, tick: u64) -> Vec<(EntityHandle, String)> {
@@ -501,6 +535,30 @@ impl<In, Out> GameState<In, Out> {
                 log::warn!("[net] outbound disconnected");
             }
         }
+    }
+}
+
+fn register_sound_cvars(cvars: &mut HashMap<String, Arc<ConVar>>) {
+    let entries = [
+        ("snd_volume", 1.0, "Master volume"),
+        ("snd_sfxvolume", 1.0, "Effect volume"),
+        ("snd_musicvolume", 1.0, "Music and soundscape volume"),
+        ("snd_uivolume", 1.0, "Interface volume"),
+        ("snd_voicevolume", 1.0, "Voice volume"),
+        ("snd_maxdistance", 48.0, "Distance where a level 75 sound falls silent"),
+    ];
+
+    for (name, default, description) in entries {
+        cvars.insert(
+            name.to_string(),
+            Arc::new(ConVar::new(
+                name,
+                ConVarValue::Float(default),
+                description,
+                Some(false),
+                Some(false),
+            )),
+        );
     }
 }
 
