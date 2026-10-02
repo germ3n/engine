@@ -1397,6 +1397,14 @@ fn apply_server_event(
                 log::warn!("[cl] bad chunk {} {} {}", update.x, update.y, update.z);
             }
         }
+        ServerToClient::BrushAdded(brush) => {
+            if !game
+                .brush_world
+                .place_box(brush.min, brush.max, brush.material)
+            {
+                log::warn!("[cl] bad brush box");
+            }
+        }
         ServerToClient::MapChange { map_name } => {
             if let Err(err) = game.brush_world.load_file(&map_name) {
                 log::warn!("[map] {err}");

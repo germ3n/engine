@@ -1,7 +1,8 @@
 use crate::physics::PhysicsAccess;
 use crate::script::libs::ents::EntityAccess;
+use crate::script::libs::vector3::Vector3;
 use crate::script::Realm;
-use crate::world::{BrushMap, VoxelWorld};
+use crate::world::{Block, BrushMap, VoxelWorld};
 use mlua::Lua;
 use r#macro::document;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -160,6 +161,63 @@ fn engine_set_map_scale() {}
 )]
 fn engine_set_voxel_scale() {}
 
+#[document(
+    parent = "engine",
+    name = "voxel_get",
+    kind = "function",
+    realm = "shared",
+    summary = "Block id at a world position. 0 is air.",
+    params = {
+        pos = { ty = "Vector3", desc = "World position. The block containing this point is read." },
+    },
+    returns = { ty = "number", desc = "Block id, or 0 when the world is not available." },
+)]
+fn engine_voxel_get() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_set",
+    kind = "function",
+    realm = "server",
+    summary = "Sets the block that contains a world position. 0 removes it.",
+    params = {
+        pos = { ty = "Vector3", desc = "World position inside the block to write." },
+        block = { ty = "number", desc = "Block id. 0 is air." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the position or block id is invalid." },
+)]
+fn engine_voxel_set() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_fill",
+    kind = "function",
+    realm = "server",
+    summary = "Fills every block overlapped by a world box. Corners can be passed in either order.",
+    params = {
+        min = { ty = "Vector3", desc = "One corner of the world box." },
+        max = { ty = "Vector3", desc = "The opposite corner of the world box." },
+        block = { ty = "number", desc = "Block id. 0 clears the blocks." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server, the box is invalid, or it covers more than 1000000 blocks." },
+)]
+fn engine_voxel_fill() {}
+
+#[document(
+    parent = "engine",
+    name = "brush_box",
+    kind = "function",
+    realm = "server",
+    summary = "Adds a solid box brush. Material 1 is the default flat color.",
+    params = {
+        min = { ty = "Vector3", desc = "One corner of the box in world units." },
+        max = { ty = "Vector3", desc = "The opposite corner of the box in world units." },
+        material = { ty = "number", desc = "Color id. Omitted values use 1." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the box has no volume." },
+)]
+fn engine_brush_box() {}
+
 pub fn register_engine_lib(
     lua: &Lua,
     tick_interval: f64,
@@ -220,6 +278,58 @@ pub fn register_engine_lib(
             .expect("[engine] Failed to create set_map_scale"),
         )
         .expect("[engine] Failed setting set_map_scale");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_get",
+            lua.create_function(move |_, point: Vector3| Ok(voxel_block(&voxels, point)))
+                .expect("[engine] Failed to create voxel_get"),
+        )
+        .expect("[engine] Failed setting voxel_get");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_set",
+            lua.create_function(move |_, (point, block): (Vector3, f64)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(voxel_write(&voxels, point, block))
+            })
+            .expect("[engine] Failed to create voxel_set"),
+        )
+        .expect("[engine] Failed setting voxel_set");
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_fill",
+            lua.create_function(move |_, (min, max, block): (Vector3, Vector3, f64)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(voxel_fill(&voxels, min, max, block))
+            })
+            .expect("[engine] Failed to create voxel_fill"),
+        )
+        .expect("[engine] Failed setting voxel_fill");
+    let brushes = brush_access.clone();
+    engine_table
+        .set(
+            "brush_box",
+            lua.create_function(
+                move |_, (min, max, material): (Vector3, Vector3, Option<f64>)| {
+                    if !server {
+                        return Ok(false);
+                    }
+
+                    Ok(brush_box(&brushes, min, max, material))
+                },
+            )
+            .expect("[engine] Failed to create brush_box"),
+        )
+        .expect("[engine] Failed setting brush_box");
     let voxels = voxel_access;
     let entities = entity_access;
     let physics = physics_access;
@@ -290,4 +400,63 @@ fn apply_voxels(
     };
 
     crate::scale::scale_voxels(voxels, entities, physics, motion, scale)
+}
+
+fn block_id(value: f64) -> Option<u16> {
+    if !value.is_finite() || value < 0.0 || value > u16::MAX as f64 {
+        return None;
+    }
+
+    Some(value as u16)
+}
+
+fn voxel_block(access: &VoxelAccess, point: Vector3) -> f64 {
+    unsafe { access.load(Ordering::Relaxed).as_ref() }
+        .map(|world| world.block_world(point).0 as f64)
+        .unwrap_or(0.0)
+}
+
+fn voxel_write(access: &VoxelAccess, point: Vector3, block: f64) -> bool {
+    let Some(block) = block_id(block) else {
+        return false;
+    };
+    let world = unsafe { access.load(Ordering::Relaxed).as_mut() };
+    let Some(world) = world else {
+        return false;
+    };
+
+    world.set_at(point, Block(block))
+}
+
+fn voxel_fill(access: &VoxelAccess, min: Vector3, max: Vector3, block: f64) -> bool {
+    let Some(block) = block_id(block) else {
+        return false;
+    };
+    let world = unsafe { access.load(Ordering::Relaxed).as_mut() };
+    let Some(world) = world else {
+        return false;
+    };
+
+    world.fill_bounds(min, max, Block(block))
+}
+
+fn brush_box(access: &BrushAccess, min: Vector3, max: Vector3, material: Option<f64>) -> bool {
+    let material = match material {
+        Some(value) => {
+            let Some(id) = block_id(value) else {
+                return false;
+            };
+
+            id
+        }
+        None => 1,
+    };
+    let map = unsafe { access.load(Ordering::Relaxed).as_mut() };
+    let Some(map) = map else {
+        return false;
+    };
+    let lo = Vector3::new(min.x.min(max.x), min.y.min(max.y), min.z.min(max.z));
+    let hi = Vector3::new(min.x.max(max.x), min.y.max(max.y), min.z.max(max.z));
+
+    map.add_box(lo, hi, material)
 }

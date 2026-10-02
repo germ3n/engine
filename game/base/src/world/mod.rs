@@ -6,7 +6,7 @@ mod voxel;
 
 use std::path::PathBuf;
 
-pub use brush::{compile_map, BrushHit, BrushMap, CompiledMap};
+pub use brush::{compile_map, BrushBox, BrushHit, BrushMap, CompiledMap};
 pub use material::image_rgba;
 pub use surface::{
     push_shaded_tri, DrawMesh, MapGraphics, SurfaceRange, CUBEMAP_NONE, MATERIAL_NONE, PASS_OPAQUE,

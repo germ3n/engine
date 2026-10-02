@@ -26,6 +26,13 @@ pub struct BrushPlane {
     pub distance: f64,
 }
 
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug, PartialEq)]
+pub struct BrushBox {
+    pub min: Vector3,
+    pub max: Vector3,
+    pub material: u16,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrushHit {
     pub brush: usize,
@@ -358,6 +365,8 @@ pub struct BrushMap {
     graphics: MapGraphics,
     scale: f64,
     scale_dirty: bool,
+    pending_boxes: Vec<BrushBox>,
+    runtime_boxes: Vec<BrushBox>,
 }
 
 impl BrushMap {
@@ -373,6 +382,8 @@ impl BrushMap {
             graphics: MapGraphics::plain(),
             scale: 1.0,
             scale_dirty: false,
+            pending_boxes: Vec::new(),
+            runtime_boxes: Vec::new(),
         }
     }
 
@@ -450,6 +461,8 @@ impl BrushMap {
             }
         }
 
+        scale_boxes(&mut self.pending_boxes, ratio);
+        scale_boxes(&mut self.runtime_boxes, ratio);
         self.touch();
     }
 
@@ -500,11 +513,31 @@ impl BrushMap {
     }
 
     pub fn add_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
+        if !self.place_box(min, max, material) {
+            return false;
+        }
+
+        let brush = BrushBox { min, max, material };
+        self.pending_boxes.push(brush);
+        self.runtime_boxes.push(brush);
+
+        true
+    }
+
+    pub fn place_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
         let Some(brush) = Brush::aabb(min, max, material) else {
             return false;
         };
 
         self.push(brush)
+    }
+
+    pub fn boxes(&self) -> &[BrushBox] {
+        &self.runtime_boxes
+    }
+
+    pub fn take_boxes(&mut self) -> Vec<BrushBox> {
+        std::mem::take(&mut self.pending_boxes)
     }
 
     pub fn add_convex(&mut self, planes: Vec<BrushPlane>, material: u16) -> bool {
@@ -603,6 +636,8 @@ impl BrushMap {
         self.ranges.clear();
         self.graphics = MapGraphics::plain();
         self.grid.clear();
+        self.pending_boxes.clear();
+        self.runtime_boxes.clear();
         self.touch();
     }
 
@@ -2525,6 +2560,20 @@ fn player_start(entity: &CompiledEntity) -> Option<Vector3> {
     }
 }
 
+fn scale_boxes(boxes: &mut [BrushBox], ratio: f64) {
+    let mut idx = 0;
+
+    while idx < boxes.len() {
+        boxes[idx].min.x *= ratio;
+        boxes[idx].min.y *= ratio;
+        boxes[idx].min.z *= ratio;
+        boxes[idx].max.x *= ratio;
+        boxes[idx].max.y *= ratio;
+        boxes[idx].max.z *= ratio;
+        idx += 1;
+    }
+}
+
 fn brush_aabb(brush: &Brush) -> Option<Aabb> {
     let points = vertices(&brush.planes);
 
@@ -2694,6 +2743,33 @@ mod tests {
         assert!(near(map.bounds[0].min.x, -8.0));
         assert!(near(map.bounds[0].max.z, -2.0));
         assert!(map.take_scale().is_none());
+    }
+
+    #[test]
+    fn runtime_boxes_follow_scale_and_place_does_not_record() {
+        let mut map = BrushMap::new();
+        assert!(map.add_box(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 1.0, 1.0),
+            4,
+        ));
+        assert!(map.place_box(
+            Vector3::new(4.0, 0.0, 0.0),
+            Vector3::new(5.0, 1.0, 1.0),
+            4,
+        ));
+        assert_eq!(map.boxes().len(), 1);
+        assert!(map.set_scale(2.0));
+        assert!(near(map.boxes()[0].min.x, 0.0));
+        assert!(near(map.boxes()[0].max.x, 4.0));
+        assert_eq!(map.boxes()[0].material, 4);
+        let pending = map.take_boxes();
+        assert_eq!(pending.len(), 1);
+        assert!(near(pending[0].max.y, 2.0));
+        assert!(map.take_boxes().is_empty());
+        assert_eq!(map.boxes().len(), 1);
+        map.clear();
+        assert!(map.boxes().is_empty());
     }
 
     #[test]

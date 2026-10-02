@@ -2,7 +2,7 @@ use crate::entities::EntityHandle;
 use crate::r#enum::{EntityFlags, InputButtons};
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
-use crate::world::ChunkUpdate;
+use crate::world::{BrushBox, ChunkUpdate};
 use std::net::SocketAddr;
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -270,6 +270,7 @@ pub enum ServerToClient {
     BrushScale {
         scale: f64,
     },
+    BrushAdded(BrushBox),
     WorldMotion {
         ratio: f64,
     },
@@ -563,6 +564,16 @@ impl ServerToClient {
                 format!("VoxelChunk({} {} {})", update.x, update.y, update.z)
             }
             ServerToClient::BrushScale { scale } => format!("BrushScale({scale})"),
+            ServerToClient::BrushAdded(brush) => format!(
+                "BrushAdded(({:.2},{:.2},{:.2})-({:.2},{:.2},{:.2}) mat={})",
+                brush.min.x,
+                brush.min.y,
+                brush.min.z,
+                brush.max.x,
+                brush.max.y,
+                brush.max.z,
+                brush.material
+            ),
             ServerToClient::WorldMotion { ratio } => format!("WorldMotion({ratio})"),
         }
     }

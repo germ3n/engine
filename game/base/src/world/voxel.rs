@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use wincode::{SchemaRead, SchemaWrite};
 
 pub const CHUNK_EDGE: i32 = 16;
+const MAX_FILL: i64 = 1_000_000;
 const VOLUME: usize = (CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE) as usize;
 const VOXEL_MAGIC: &[u8; 4] = b"VMAP";
 const VOXEL_VERSION: u32 = 1;
@@ -346,6 +347,54 @@ impl VoxelWorld {
 
             z += 1;
         }
+    }
+
+    pub fn block_world(&self, point: Vector3) -> Block {
+        let Some(pos) = self.block_of(point, false) else {
+            return Block::AIR;
+        };
+
+        self.get(pos)
+    }
+
+    pub fn set_at(&mut self, point: Vector3, block: Block) -> bool {
+        let Some(pos) = self.block_of(point, false) else {
+            return false;
+        };
+
+        self.set(pos, block);
+
+        true
+    }
+
+    pub fn fill_bounds(&mut self, min: Vector3, max: Vector3, block: Block) -> bool {
+        let Some(a) = self.block_of(min, false) else {
+            return false;
+        };
+        let Some(b) = self.block_of(max, true) else {
+            return false;
+        };
+        let min = BlockPos::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z));
+        let max = BlockPos::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z));
+        let volume = span(min.x, max.x)
+            .saturating_mul(span(min.y, max.y))
+            .saturating_mul(span(min.z, max.z));
+
+        if volume > MAX_FILL {
+            return false;
+        }
+
+        self.fill(min, max, block);
+
+        true
+    }
+
+    fn block_of(&self, point: Vector3, end: bool) -> Option<BlockPos> {
+        Some(BlockPos::new(
+            axis_block(point.x, self.scale, end)?,
+            axis_block(point.y, self.scale, end)?,
+            axis_block(point.z, self.scale, end)?,
+        ))
     }
 
     pub fn apply(&mut self, update: &ChunkUpdate) -> bool {
@@ -1049,6 +1098,30 @@ fn floor_i32(value: f64) -> i32 {
     value.floor() as i32
 }
 
+fn axis_block(value: f64, scale: f64, end: bool) -> Option<i32> {
+    if scale <= 0.0 {
+        return None;
+    }
+
+    let scaled = value / scale;
+
+    if !scaled.is_finite() {
+        return None;
+    }
+
+    let rounded = if end { scaled.ceil() } else { scaled.floor() };
+
+    if rounded < i32::MIN as f64 || rounded > i32::MAX as f64 {
+        return None;
+    }
+
+    Some(rounded as i32)
+}
+
+fn span(min: i32, max: i32) -> i64 {
+    max as i64 - min as i64
+}
+
 fn div_floor(value: i32, size: i32) -> i32 {
     let quot = value / size;
     let rem = value % size;
@@ -1558,6 +1631,27 @@ mod tests {
 
         assert!(VoxelWorld::new().load_file(&bad).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn world_fill_uses_blocks_the_box_touches() {
+        let mut world = VoxelWorld::with_scale(2.0);
+        assert!(world.fill_bounds(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(4.0, 2.0, 2.0),
+            Block(3),
+        ));
+        assert_eq!(world.get(BlockPos::new(0, 0, 0)), Block(3));
+        assert_eq!(world.get(BlockPos::new(1, 0, 0)), Block(3));
+        assert!(world.get(BlockPos::new(2, 0, 0)).is_air());
+        assert!(world.set_at(Vector3::new(5.0, 0.2, 0.2), Block(4)));
+        assert_eq!(world.block_world(Vector3::new(5.0, 0.2, 0.2)), Block(4));
+        assert!(!world.fill_bounds(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(400.0, 400.0, 400.0),
+            Block(1),
+        ));
+        assert!(world.get(BlockPos::new(10, 10, 10)).is_air());
     }
 
     fn faces_point_outward(mesh: &[f32], center: f32) -> bool {

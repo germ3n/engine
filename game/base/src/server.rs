@@ -200,6 +200,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                             scale: game.brush_world.scale(),
                         },
                     );
+                    emit_brush_baseline(&game, addr);
 
                     if let Some(player) = players.iter().find(|player| player.addr == addr) {
                         game.send_state_to(
@@ -270,6 +271,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         flush_sounds(&mut game);
 
         emit_scale_dirty(&mut game, &peers);
+        emit_brush_boxes(&mut game, &peers, &joined);
         emit_motion(&mut game, &peers, &joined);
 
         if ticked {
@@ -976,6 +978,41 @@ fn emit_motion(
         }
 
         game.send_state_to(*addr, ServerToClient::WorldMotion { ratio });
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_brush_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
+    let boxes = game.brush_world.boxes();
+    let mut idx = 0;
+
+    while idx < boxes.len() {
+        game.send_state_to(addr, ServerToClient::BrushAdded(boxes[idx]));
+        idx += 1;
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_brush_boxes(
+    game: &mut GameState<FromClient, ServerToClient>,
+    peers: &[SocketAddr],
+    skip: &[SocketAddr],
+) {
+    let boxes = game.brush_world.take_boxes();
+    let mut idx = 0;
+
+    while idx < boxes.len() {
+        let mut peer = 0;
+
+        while peer < peers.len() {
+            if !skip.contains(&peers[peer]) {
+                game.send_state_to(peers[peer], ServerToClient::BrushAdded(boxes[idx]));
+            }
+
+            peer += 1;
+        }
+
+        idx += 1;
     }
 }
 
