@@ -1,4 +1,5 @@
 mod format;
+mod gltf;
 mod pose;
 mod rig;
 
@@ -315,6 +316,15 @@ impl AnimAssets {
             return Ok(*id);
         }
 
+        if gltf::is_gltf(path) {
+            let loaded = gltf::load_path(path)?;
+            let id = self.meshes.len() as u32;
+            self.meshes.push(store_mesh(loaded.mesh));
+            self.mesh_names.insert(path.to_string(), id);
+
+            return Ok(id);
+        }
+
         let bytes = match crate::fs::read(path) {
             Ok(bytes) => bytes,
             Err(_) if path == TEST_MESH => rig::mesh_bytes(),
@@ -331,6 +341,15 @@ impl AnimAssets {
     pub fn load_clips(&mut self, path: &str) -> Result<u32, String> {
         if let Some(id) = self.clip_names.get(path) {
             return Ok(*id);
+        }
+
+        if gltf::is_gltf(path) {
+            let loaded = gltf::load_path(path)?;
+            let id = self.clips.len() as u32;
+            self.clips.push(loaded.clips);
+            self.clip_names.insert(path.to_string(), id);
+
+            return Ok(id);
         }
 
         let bytes = match crate::fs::read(path) {
@@ -377,7 +396,12 @@ impl AnimAssets {
         clips: &str,
     ) -> Result<(), String> {
         let mesh_id = self.load_mesh(mesh)?;
-        let clip_id = self.load_clips(clips)?;
+        let clip_path = if clips.is_empty() && gltf::is_gltf(mesh) {
+            mesh
+        } else {
+            clips
+        };
+        let clip_id = self.load_clips(clip_path)?;
         playback.mesh = mesh_id;
         playback.clips = clip_id;
         playback.sequence = NONE_SEQ;

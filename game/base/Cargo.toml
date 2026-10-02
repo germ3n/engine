@@ -30,6 +30,9 @@ memmap2 = "0.9.11"
 gilrs = "0.11.2"
 vbsp = "0.9.1"
 lewton = "0.10"
+gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }
+png = "0.17"
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [build-dependencies]
 cc = "1"

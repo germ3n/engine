@@ -1385,10 +1385,10 @@ return function(native)
     parent = "Entity",
     name = "set_model",
     realm = "shared",
-    summary = "Sets the mesh and animation clip file.",
+    summary = "Sets the mesh and animation clip file. A glTF or GLB path supplies both when the clip path is omitted.",
     params = {
-        mesh = { ty = "string", desc = "Model path, such as models/test.mdl." },
-        clips = { ty = "string", desc = "Animation path, such as models/test.anm. Defaults to an empty string.", optional = true },
+        mesh = { ty = "string", desc = "Model path, such as models/test.mdl or models/hero.glb." },
+        clips = { ty = "string", desc = "Animation path, such as models/test.anm. For glTF or GLB, pass the same path or omit it.", optional = true },
     },
     returns = { ty = "nil", desc = "" },
     example = "ent:set_model(\"models/test.mdl\", \"models/test.anm\")",
