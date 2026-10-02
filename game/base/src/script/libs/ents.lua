@@ -117,6 +117,9 @@ return function(native)
     local native_set_angles = native.set_angles;
     local native_get_velocity = native.get_velocity;
     local native_set_velocity = native.set_velocity;
+    local native_enable_physics = native.enable_physics;
+    local native_set_mass = native.set_mass;
+    local native_apply_impulse = native.apply_impulse;
     local native_set_owner = native.set_owner;
     local native_get_owner = native.get_owner;
     local native_set_model = native.set_model;
@@ -1192,6 +1195,48 @@ return function(native)
     ]=]
     function meta:set_velocity(velocity)
         native_set_velocity(self._handle, velocity.x, velocity.y, velocity.z);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "enable_physics",
+    realm = "shared",
+    summary = "Gives the entity a dynamic box rigid body from its model bounds. Server only; returns false on the client or for players.",
+    returns = { ty = "boolean", desc = "True when a dynamic body is attached." },
+    see_also = "Entity:set_mass, Entity:apply_impulse",
+    ]=]
+    function meta:enable_physics()
+        return native_enable_physics(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "set_mass",
+    realm = "shared",
+    summary = "Sets the mass of a dynamic physics body, in kilograms.",
+    params = {
+        mass = { ty = "number", desc = "Mass in kilograms. Must be positive." },
+    },
+    returns = { ty = "boolean", desc = "True when the body mass changed." },
+    see_also = "Entity:enable_physics",
+    ]=]
+    function meta:set_mass(mass)
+        return native_set_mass(self._handle, mass);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "apply_impulse",
+    realm = "shared",
+    summary = "Applies an instant impulse to a dynamic physics body.",
+    params = {
+        impulse = { ty = "Vector3", desc = "Impulse in kilogram meters per second." },
+    },
+    returns = { ty = "boolean", desc = "True when the impulse was applied." },
+    see_also = "Entity:enable_physics",
+    ]=]
+    function meta:apply_impulse(impulse)
+        return native_apply_impulse(self._handle, impulse.x, impulse.y, impulse.z);
     end
 
     --[=[document

@@ -118,6 +118,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             game.fire_anim_events(anim_events);
             game.think_entities();
             simulate_players(&mut game, &mut players);
+            game.step_physics(&player_handles);
 
             ticked = true;
         }

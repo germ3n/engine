@@ -3,6 +3,7 @@ use crate::entities::EntityHandle;
 use crate::input::Binds;
 use crate::movement::UserCommand;
 use crate::network::events::{networked_summary, vars_summary, EntityNetworked, NetVar};
+use crate::physics::PhysicsAccess;
 use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
 use crate::script::libs::ents::{AnimAccess, EntityAccess};
@@ -64,6 +65,7 @@ pub struct ScriptEngine {
     pub entity_access: EntityAccess,
     pub anim_access: AnimAccess,
     pub sound_access: SoundAccess,
+    pub physics_access: PhysicsAccess,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -115,9 +117,15 @@ impl ScriptEngine {
         let entity_access: EntityAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let anim_access: AnimAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let sound_access: SoundAccess = Arc::new(AtomicPtr::new(sound));
+        let physics_access: PhysicsAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         if !matches!(realm, Realm::Menu) {
             register_sound_lib(&lua, sound_access.clone());
-            register_ents_lib(&lua, entity_access.clone(), anim_access.clone());
+            register_ents_lib(
+                &lua,
+                entity_access.clone(),
+                anim_access.clone(),
+                physics_access.clone(),
+            );
             register_scripted_ents_lib(&lua);
             crate::script::libs::scripted_ents::load_entities(&lua, realm);
             crate::script::autorun::load_autorun(&lua, realm);
@@ -142,6 +150,7 @@ impl ScriptEngine {
             entity_access,
             anim_access,
             sound_access,
+            physics_access,
             usermsg_receiver,
         }
     }

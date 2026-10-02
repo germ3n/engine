@@ -9,6 +9,7 @@ pub mod fs;
 mod input;
 mod movement;
 mod network;
+mod physics;
 mod script;
 mod server;
 mod sound;

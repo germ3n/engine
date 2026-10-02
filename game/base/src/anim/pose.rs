@@ -426,6 +426,60 @@ pub fn mat3x4(mat: [f32; 16]) -> [f32; 12] {
     ]
 }
 
+pub fn pose_matrix(position: [f32; 3], pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [f32; 16] {
+    if pitch_deg == 0.0 && roll_deg == 0.0 {
+        return yaw_matrix(position, yaw_deg);
+    }
+
+    let (sy, cy) = yaw_deg.to_radians().sin_cos();
+    let (sp, cp) = pitch_deg.to_radians().sin_cos();
+    let (sr, cr) = roll_deg.to_radians().sin_cos();
+    let r00 = cy * cp;
+    let r10 = sy * cp;
+    let r20 = -sp;
+    let r01 = cy * sp * sr - sy * cr;
+    let r11 = sy * sp * sr + cy * cr;
+    let r21 = cp * sr;
+    let r02 = cy * sp * cr + sy * sr;
+    let r12 = sy * sp * cr - cy * sr;
+    let r22 = cp * cr;
+
+    [
+        r00,
+        r10,
+        r20,
+        0.0,
+        r01,
+        r11,
+        r21,
+        0.0,
+        r02,
+        r12,
+        r22,
+        0.0,
+        position[0],
+        position[1],
+        position[2],
+        1.0,
+    ]
+}
+
+pub fn angles_from_pose(mat: [f32; 16]) -> [f32; 3] {
+    let r00 = mat[0];
+    let r10 = mat[1];
+    let r20 = mat[2];
+    let r21 = mat[6];
+    let r22 = mat[10];
+    let pitch = (-r20).clamp(-1.0, 1.0).asin();
+    let (yaw, roll) = if r20.abs() < 0.9999 {
+        (r10.atan2(r00), r21.atan2(r22))
+    } else {
+        (mat[9].atan2(mat[8]), 0.0)
+    };
+
+    [pitch.to_degrees(), yaw.to_degrees(), roll.to_degrees()]
+}
+
 pub fn yaw_matrix(position: [f32; 3], yaw_deg: f32) -> [f32; 16] {
     let (sin, cos) = yaw_deg.to_radians().sin_cos();
 

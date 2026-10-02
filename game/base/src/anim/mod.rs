@@ -6,7 +6,7 @@ mod rig;
 use crate::anim::format::{read_clips, read_mesh, Mesh};
 use crate::anim::pose::{
     elapsed, events_between, locals_from_tracks, palette, root_delta, sees, strip_root, wrap_time,
-    yaw_matrix, ClipSet, FADE_SECONDS,
+    ClipSet, FADE_SECONDS,
 };
 use crate::movement::RootStep;
 use crate::network::events::AnimSnapshot;
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use format::{write_clips, write_mesh};
-pub use pose::yaw_of;
+pub use pose::{angles_from_pose, pose_matrix, yaw_of};
 
 pub const NONE_ASSET: u32 = u32::MAX;
 pub const NONE_SEQ: u16 = u16::MAX;
@@ -181,7 +181,9 @@ pub struct DrawInput {
     pub clips: u32,
     pub playback: AnimPlayback,
     pub position: [f32; 3],
+    pub pitch: f32,
     pub yaw: f32,
+    pub roll: f32,
     pub time: f64,
 }
 
@@ -216,6 +218,57 @@ pub fn cull_from(
         aspect,
         far,
     }
+}
+
+const VERTEX_STRIDE: usize = 16;
+
+fn vertex_bounds(vertices: &[f32]) -> Option<([f32; 3], [f32; 3])> {
+    let mut min = [f32::MAX, f32::MAX, f32::MAX];
+    let mut max = [f32::MIN, f32::MIN, f32::MIN];
+    let mut found = false;
+    let mut idx = 0;
+
+    while idx + 2 < vertices.len() {
+        let x = vertices[idx];
+        let y = vertices[idx + 1];
+        let z = vertices[idx + 2];
+
+        if x.is_finite() && y.is_finite() && z.is_finite() {
+            found = true;
+
+            if x < min[0] {
+                min[0] = x;
+            }
+
+            if y < min[1] {
+                min[1] = y;
+            }
+
+            if z < min[2] {
+                min[2] = z;
+            }
+
+            if x > max[0] {
+                max[0] = x;
+            }
+
+            if y > max[1] {
+                max[1] = y;
+            }
+
+            if z > max[2] {
+                max[2] = z;
+            }
+        }
+
+        idx += VERTEX_STRIDE;
+    }
+
+    if !found {
+        return None;
+    }
+
+    Some((min, max))
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -284,6 +337,12 @@ impl AnimAssets {
             scratch_world: Vec::new(),
             scratch_palette: Vec::new(),
         }
+    }
+
+    pub fn mesh_bounds(&self, id: u32) -> Option<([f32; 3], [f32; 3])> {
+        let stored = self.meshes.get(id as usize)?;
+
+        vertex_bounds(&stored.vertices)
     }
 
     pub fn mesh_path(&self, id: u32) -> Option<&str> {
@@ -520,7 +579,7 @@ impl AnimAssets {
 
             while cursor < order.len() && inputs[order[cursor]].mesh == mesh_id {
                 let input = inputs[order[cursor]];
-                let world = yaw_matrix(input.position, input.yaw);
+                let world = pose_matrix(input.position, input.pitch, input.yaw, input.roll);
                 instances.extend_from_slice(&world);
 
                 if self.sample_palette(input.mesh, input.clips, &input.playback, input.time, dt) {
@@ -907,7 +966,9 @@ mod tests {
             clips: clip_id,
             playback,
             position: [0.0, 0.0, 0.0],
+            pitch: 0.0,
             yaw: 0.0,
+            roll: 0.0,
             time: 20.0,
         };
         let cull = Cull {

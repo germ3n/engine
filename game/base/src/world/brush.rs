@@ -295,6 +295,18 @@ impl BrushMap {
         self.revision
     }
 
+    pub fn hulls(&self) -> Vec<Vec<Vector3>> {
+        let mut out = Vec::with_capacity(self.brushes.len());
+        let mut idx = 0;
+
+        while idx < self.brushes.len() {
+            out.push(vertices(&self.brushes[idx].planes));
+            idx += 1;
+        }
+
+        out
+    }
+
     pub fn add_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
         let Some(brush) = Brush::aabb(min, max, material) else {
             return false;

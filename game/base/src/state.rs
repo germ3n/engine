@@ -1,12 +1,13 @@
 use crate::anim::AnimAssets;
 use crate::console::{ConVar, ConVarValue};
-use crate::entities::{EntityHandle, EntityList};
+use crate::entities::{EntityHandle, EntityList, Player};
 use crate::fs::Fs;
 use crate::input::{binds_path, load_or_defaults, Binds};
 use crate::movement::UserCommand;
 use crate::network::events::{EntityAnimNet, EntityNetworked, NetVar};
 use crate::network::NetSend;
 use crate::network::NetWake;
+use crate::physics::{PhysicsScope, PhysicsWorld};
 use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
 use crate::script::libs::ents::{AnimScope, EntityScope};
@@ -38,6 +39,7 @@ pub struct GameState<In, Out> {
     pub tick_count: u64,
     pub anims: AnimAssets,
     pub sound: Box<SoundWorld>,
+    physics: PhysicsWorld,
     despawned: Vec<EntityHandle>,
     wake: NetWake,
 }
@@ -136,6 +138,7 @@ impl<In, Out> GameState<In, Out> {
             tick_count: 0,
             anims: AnimAssets::new(matches!(realm, Realm::Server)),
             sound,
+            physics: PhysicsWorld::new(),
             despawned: Vec::new(),
             wake,
         }
@@ -147,9 +150,15 @@ impl<In, Out> GameState<In, Out> {
         let entities: *mut EntityList = &mut self.entities;
         let anims: *mut AnimAssets = &mut self.anims;
         let sound: *mut SoundWorld = &mut *self.sound;
+        let physics: *mut PhysicsWorld = if matches!(self.realm, Realm::Server) {
+            &mut self.physics
+        } else {
+            std::ptr::null_mut()
+        };
         let _scope = EntityScope::new(&self.script_engine.entity_access, entities);
         let _anim_scope = AnimScope::new(&self.script_engine.anim_access, anims);
         let _sound_scope = SoundScope::new(&self.script_engine.sound_access, sound);
+        let _physics_scope = PhysicsScope::new(&self.script_engine.physics_access, physics);
 
         if !removed.is_empty() {
             if matches!(self.realm, Realm::Server) {
@@ -184,6 +193,23 @@ impl<In, Out> GameState<In, Out> {
         self.with_entities(|engine| {
             engine.run_usermessage(hash, cur_time, frame_time, tick_count, args);
         });
+    }
+
+    pub fn step_physics(&mut self, players: &[EntityHandle]) {
+        if !matches!(self.realm, Realm::Server) {
+            return;
+        }
+
+        let gravity = crate::movement::gravity(&self.cvars);
+        let dt = self.tick_interval;
+        self.physics.step(
+            &mut self.entities,
+            players,
+            dt,
+            gravity,
+            &self.brush_world,
+            &self.voxel_world,
+        );
     }
 
     pub fn think_entities(&mut self) {
@@ -420,11 +446,20 @@ impl<In, Out> GameState<In, Out> {
                 continue;
             }
 
+            let class_hash = entity.class_hash();
             let position = if handle == local {
                 local_pos.unwrap_or(base.position)
             } else {
                 base.position
             };
+            let mut pitch = base.angles.p;
+            let mut roll = base.angles.r;
+
+            if class_hash == Player::CLASS_HASH {
+                pitch = 0.0;
+                roll = 0.0;
+            }
+
             let time = if handle == local {
                 local_time
             } else {
@@ -435,7 +470,9 @@ impl<In, Out> GameState<In, Out> {
                 clips: base.anim.clips,
                 playback: base.anim,
                 position: [position.x as f32, position.y as f32, position.z as f32],
+                pitch,
                 yaw: base.angles.y,
+                roll,
                 time,
             });
         }

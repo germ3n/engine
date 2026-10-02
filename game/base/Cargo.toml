@@ -33,6 +33,7 @@ lewton = "0.10"
 gltf = { version = "1.4", default-features = false, features = ["names", "utils"] }
 png = "0.17"
 jpeg-decoder = { version = "0.3", default-features = false }
+rapier3d = "0.36.0"
 
 [build-dependencies]
 cc = "1"

@@ -7,8 +7,8 @@ use crate::world::{BrushHit, BrushMap, Face, TraceHit, VoxelWorld};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-const STAND_MINS: Vector3 = Vector3::new(-0.28, -0.28, 0.0);
-const STAND_MAXS: Vector3 = Vector3::new(0.28, 0.28, 1.65);
+pub(crate) const STAND_MINS: Vector3 = Vector3::new(-0.28, -0.28, 0.0);
+pub(crate) const STAND_MAXS: Vector3 = Vector3::new(0.28, 0.28, 1.65);
 const DUCK_MAXS: Vector3 = Vector3::new(0.28, 0.28, 0.9);
 const SKIN: f64 = 0.002;
 const STEP_HEIGHT: f64 = 0.45;

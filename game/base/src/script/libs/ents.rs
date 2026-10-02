@@ -1,6 +1,7 @@
 use crate::entities::{EntityHandle, EntityList, Player, ScriptedEntity};
 use crate::movement::UserCommand;
 use crate::network::events::{EntityNetworked, NetValue, NetVar};
+use crate::physics::{box_from_bounds, fallback_box, PhysicsAccess, PhysicsWorld};
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use mlua::{Error, Function, Lua, Result, Table, Value};
@@ -100,6 +101,12 @@ fn entities(access: &AtomicPtr<EntityList>) -> Result<&mut EntityList> {
         .ok_or_else(|| Error::RuntimeError("entity list is not available".to_string()))
 }
 
+fn physics(access: &AtomicPtr<PhysicsWorld>) -> Option<&mut PhysicsWorld> {
+    let ptr = access.load(Ordering::Relaxed);
+
+    unsafe { ptr.as_mut() }
+}
+
 fn invalid(raw: u32) -> Error {
     Error::RuntimeError(format!("invalid entity {raw}"))
 }
@@ -118,7 +125,12 @@ where
         .unwrap_or_else(|err| panic!("[ents] Failed setting {name}: {err}"));
 }
 
-fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> Table {
+fn build_native(
+    lua: &Lua,
+    access: &EntityAccess,
+    anim_access: &AnimAccess,
+    physics_access: &PhysicsAccess,
+) -> Table {
     let native = lua
         .create_table()
         .expect("Failed to create ents native table");
@@ -137,8 +149,18 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
+    let bodies = physics_access.clone();
     add_native(lua, &native, "remove", move |_, raw: u32| {
-        Ok(entities(&shared)?.remove(EntityHandle(raw)))
+        let handle = EntityHandle(raw);
+        let removed = entities(&shared)?.remove(handle);
+
+        if removed {
+            if let Some(world) = physics(&bodies) {
+                world.forget(handle);
+            }
+        }
+
+        Ok(removed)
     });
 
     let shared = access.clone();
@@ -230,16 +252,20 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
+    let bodies = physics_access.clone();
     add_native(
         lua,
         &native,
         "set_pos",
         move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
             let list = entities(&shared)?;
-            let entity = list
-                .get_mut(EntityHandle(raw))
-                .ok_or_else(|| invalid(raw))?;
+            let handle = EntityHandle(raw);
+            let entity = list.get_mut(handle).ok_or_else(|| invalid(raw))?;
             entity.base_mut().position = Vector3::new(x, y, z);
+
+            if let Some(world) = physics(&bodies) {
+                world.teleport_position(handle, x, y, z);
+            }
 
             Ok(())
         },
@@ -255,16 +281,21 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
+    let bodies = physics_access.clone();
     add_native(
         lua,
         &native,
         "set_angles",
         move |_, (raw, p, y, r): (u32, f32, f32, f32)| {
             let list = entities(&shared)?;
-            let entity = list
-                .get_mut(EntityHandle(raw))
-                .ok_or_else(|| invalid(raw))?;
-            entity.base_mut().angles = Angle3::new(p, y, r);
+            let handle = EntityHandle(raw);
+            let entity = list.get_mut(handle).ok_or_else(|| invalid(raw))?;
+            let angles = Angle3::new(p, y, r);
+            entity.base_mut().angles = angles;
+
+            if let Some(world) = physics(&bodies) {
+                world.teleport_angles(handle, angles);
+            }
 
             Ok(())
         },
@@ -280,18 +311,99 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     });
 
     let shared = access.clone();
+    let bodies = physics_access.clone();
     add_native(
         lua,
         &native,
         "set_velocity",
         move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
             let list = entities(&shared)?;
-            let entity = list
-                .get_mut(EntityHandle(raw))
-                .ok_or_else(|| invalid(raw))?;
-            entity.base_mut().velocity = Vector3::new(x, y, z);
+            let handle = EntityHandle(raw);
+            let entity = list.get_mut(handle).ok_or_else(|| invalid(raw))?;
+            let velocity = Vector3::new(x, y, z);
+            entity.base_mut().velocity = velocity;
+
+            if let Some(world) = physics(&bodies) {
+                world.teleport_velocity(handle, velocity);
+            }
 
             Ok(())
+        },
+    );
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    let bodies = physics_access.clone();
+    add_native(lua, &native, "enable_physics", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let handle = EntityHandle(raw);
+        let (position, angles, velocity, mesh, class_hash) = {
+            let entity = list.get(handle).ok_or_else(|| invalid(raw))?;
+            let base = entity.base();
+
+            (
+                base.position,
+                base.angles,
+                base.velocity,
+                base.anim.mesh,
+                entity.class_hash(),
+            )
+        };
+
+        if class_hash == Player::CLASS_HASH {
+            return Ok(false);
+        }
+
+        let (center, half) = match anims(&anims_access)?.mesh_bounds(mesh) {
+            Some((min, max)) => box_from_bounds(min, max),
+            None => fallback_box(),
+        };
+        let Some(world) = physics(&bodies) else {
+            return Ok(false);
+        };
+
+        Ok(world.enable_box(handle, position, angles, velocity, center, half))
+    });
+
+    let bodies = physics_access.clone();
+    let ents_access = access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_mass",
+        move |_, (raw, mass): (u32, f64)| {
+            let handle = EntityHandle(raw);
+
+            if entities(&ents_access)?.get(handle).is_none() {
+                return Err(invalid(raw));
+            }
+
+            let Some(world) = physics(&bodies) else {
+                return Ok(false);
+            };
+
+            Ok(world.set_mass(handle, mass as f32))
+        },
+    );
+
+    let bodies = physics_access.clone();
+    let ents_access = access.clone();
+    add_native(
+        lua,
+        &native,
+        "apply_impulse",
+        move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
+            let handle = EntityHandle(raw);
+
+            if entities(&ents_access)?.get(handle).is_none() {
+                return Err(invalid(raw));
+            }
+
+            let Some(world) = physics(&bodies) else {
+                return Ok(false);
+            };
+
+            Ok(world.apply_impulse(handle, Vector3::new(x, y, z)))
         },
     );
 
@@ -389,9 +501,14 @@ fn build_native(lua: &Lua, access: &EntityAccess, anim_access: &AnimAccess) -> T
     native
 }
 
-pub fn register_ents_lib(lua: &Lua, access: EntityAccess, anim_access: AnimAccess) {
+pub fn register_ents_lib(
+    lua: &Lua,
+    access: EntityAccess,
+    anim_access: AnimAccess,
+    physics_access: PhysicsAccess,
+) {
     let install: Function = crate::script::eval(lua, "ents.lua", "lua/libs/ents.luac");
-    let native = build_native(lua, &access, &anim_access);
+    let native = build_native(lua, &access, &anim_access, &physics_access);
     let exports: Table = install
         .call(native)
         .unwrap_or_else(|err| panic!("Failed to install ents lib: {err}"));
