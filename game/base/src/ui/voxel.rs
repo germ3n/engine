@@ -9,6 +9,7 @@ pub struct SceneView {
     pub far: f32,
     pub tangents: Option<[f32; 4]>,
     pub scale: f32,
+    pub time: f32,
 }
 
 pub struct FlyCamera {
@@ -74,6 +75,7 @@ impl FlyCamera {
             far: (scale * 4000.0).max(200.0),
             tangents: None,
             scale: scale.max(0.001),
+            time: 0.0,
         }
     }
 

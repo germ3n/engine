@@ -1,9 +1,17 @@
 mod brush;
+mod bspvis;
+mod material;
+pub mod surface;
 mod voxel;
 
 use std::path::PathBuf;
 
 pub use brush::{compile_map, BrushHit, BrushMap, CompiledMap};
+pub use material::image_rgba;
+pub use surface::{
+    push_shaded_tri, DrawMesh, MapGraphics, SurfaceRange, CUBEMAP_NONE, MATERIAL_NONE, PASS_OPAQUE,
+    STRIDE,
+};
 pub use voxel::{find_voxel_file, Block, BlockPos, ChunkUpdate, Face, TraceHit, VoxelWorld};
 
 pub(crate) fn content_dirs() -> Vec<PathBuf> {

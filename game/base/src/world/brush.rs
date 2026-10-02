@@ -1,3 +1,10 @@
+use super::material::MaterialBank;
+use super::material::FileSource;
+use super::surface::{
+    push_vertex, tri_normal, tri_tangent, MapGraphics, SurfaceRange, MATERIAL_NONE, PASS_OPAQUE,
+    STRIDE,
+};
+use super::DrawMesh;
 use crate::script::libs::vector3::Vector3;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,7 +17,8 @@ const LENGTH_EPS: f64 = 1e-8;
 const RAY_EPS: f64 = 1e-8;
 const AREA_EPS: f64 = 1e-10;
 const COMPILED_MAGIC: &[u8; 4] = b"CMAP";
-const COMPILED_VERSION: u32 = 1;
+const COMPILED_VERSION: u32 = 2;
+const COMPILED_VERSION_V1: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrushPlane {
@@ -31,6 +39,13 @@ struct Plane {
     normal: Vector3,
     distance: f64,
     material: u16,
+    tex: u16,
+    axis_u: Vector3,
+    axis_v: Vector3,
+    shift_u: f64,
+    shift_v: f64,
+    scale_u: f64,
+    scale_v: f64,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
@@ -39,6 +54,36 @@ pub struct CompiledFace {
     pub normal: Vector3,
     pub distance: f64,
     pub material: u16,
+    pub axis_u: Vector3,
+    pub axis_v: Vector3,
+    pub shift_u: f64,
+    pub shift_v: f64,
+    pub scale_u: f64,
+    pub scale_v: f64,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+struct CompiledFaceV1 {
+    texture: String,
+    normal: Vector3,
+    distance: f64,
+    material: u16,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+struct CompiledBrushV1 {
+    faces: Vec<CompiledFaceV1>,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+struct CompiledEntityV1 {
+    keys: Vec<CompiledPair>,
+    brushes: Vec<CompiledBrushV1>,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+struct CompiledMapV1 {
+    entities: Vec<CompiledEntityV1>,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
@@ -66,6 +111,12 @@ pub struct CompiledMap {
 struct SourceFace {
     texture: String,
     plane: Plane,
+    axis_u: Vector3,
+    axis_v: Vector3,
+    shift_u: f64,
+    shift_v: f64,
+    scale_u: f64,
+    scale_v: f64,
 }
 
 struct SourceBrush {
@@ -81,6 +132,15 @@ struct Poly {
     normal: Vector3,
     points: Vec<Vector3>,
     material: u16,
+    tex: u16,
+    axis_u: Vector3,
+    axis_v: Vector3,
+    shift_u: f64,
+    shift_v: f64,
+    scale_u: f64,
+    scale_v: f64,
+    width: f64,
+    height: f64,
 }
 
 pub struct Brush {
@@ -273,6 +333,8 @@ pub struct BrushMap {
     revision: u64,
     grid: BrushGrid,
     mesh_cache: Option<Vec<f32>>,
+    ranges: Vec<SurfaceRange>,
+    graphics: MapGraphics,
 }
 
 impl BrushMap {
@@ -284,6 +346,8 @@ impl BrushMap {
             revision: 0,
             grid: BrushGrid::new(),
             mesh_cache: None,
+            ranges: Vec::new(),
+            graphics: MapGraphics::plain(),
         }
     }
 
@@ -355,7 +419,7 @@ impl BrushMap {
                 let bytes =
                     std::fs::read(&path).map_err(|err| format!("map {}: {err}", path.display()))?;
 
-                return self.install_bsp(&bytes);
+                return self.install_bsp(&bytes, &path);
             }
 
             let compiled_path = if is_compiled(&path) {
@@ -385,8 +449,8 @@ impl BrushMap {
         Ok(())
     }
 
-    fn install_bsp(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let mut loaded = brush_map_from_bsp(bytes)?;
+    fn install_bsp(&mut self, bytes: &[u8], path: &Path) -> Result<(), String> {
+        let mut loaded = brush_map_from_bsp(bytes, path)?;
         loaded.revision = self.revision.wrapping_add(loaded.revision).wrapping_add(1);
         *self = loaded;
 
@@ -434,6 +498,8 @@ impl BrushMap {
         self.bounds.clear();
         self.spawns.clear();
         self.mesh_cache = None;
+        self.ranges.clear();
+        self.graphics = MapGraphics::plain();
         self.grid.clear();
         self.touch();
     }
@@ -446,12 +512,23 @@ impl BrushMap {
         self.mesh_at(Vector3::new(0.0, 0.0, 0.0))
     }
 
-    pub fn mesh_at(&self, origin: Vector3) -> Vec<f32> {
+    pub fn graphics(&self) -> &MapGraphics {
+        &self.graphics
+    }
+
+    pub fn draw_at(&self, origin: Vector3) -> DrawMesh {
         if let Some(cache) = &self.mesh_cache {
-            return shift_cached(cache, origin);
+            return DrawMesh {
+                vertices: shift_cached(cache, origin),
+                ranges: self.ranges.clone(),
+            };
         }
 
-        self.build_mesh(None, origin)
+        self.build_draw(None, origin)
+    }
+
+    pub fn mesh_at(&self, origin: Vector3) -> Vec<f32> {
+        self.draw_at(origin).vertices
     }
 
     pub fn mesh_highlight(&self, selected: usize) -> Vec<f32> {
@@ -463,7 +540,13 @@ impl BrushMap {
     }
 
     fn build_mesh(&self, selected: Option<usize>, origin: Vector3) -> Vec<f32> {
+        self.build_draw(selected, origin).vertices
+    }
+
+    fn build_draw(&self, selected: Option<usize>, origin: Vector3) -> DrawMesh {
         let mut vertices = Vec::new();
+        let mut ranges: Vec<SurfaceRange> = Vec::new();
+        let mut current: Option<(u16, u8, u32)> = None;
 
         for (idx, brush) in self.brushes.iter().enumerate() {
             for poly in polygons(brush) {
@@ -471,15 +554,55 @@ impl BrushMap {
                     continue;
                 }
 
-                if selected == Some(idx) {
-                    push_poly_color(&mut vertices, &poly, [1.0, 0.86, 0.28], origin);
+                let pass = PASS_OPAQUE;
+                let material = if selected == Some(idx) {
+                    MATERIAL_NONE
                 } else {
-                    push_poly(&mut vertices, &poly, origin);
+                    poly.tex
+                };
+                let start = (vertices.len() / STRIDE) as u32;
+
+                let (width, height) = self
+                    .graphics
+                    .materials
+                    .get(poly.tex as usize)
+                    .map(|material| (material.width.max(1) as f64, material.height.max(1) as f64))
+                    .unwrap_or((1.0, 1.0));
+
+                if selected == Some(idx) {
+                    push_poly_color(&mut vertices, &poly, [1.0, 0.86, 0.28], origin, width, height);
+                } else {
+                    push_poly(&mut vertices, &poly, origin, width, height);
                 }
+
+                let count = (vertices.len() / STRIDE) as u32 - start;
+
+                if count == 0 {
+                    continue;
+                }
+
+                if let Some((have, have_pass, first)) = current {
+                    if have == material && have_pass == pass {
+                        ranges.last_mut().unwrap().count += count;
+
+                        continue;
+                    }
+
+                    let _ = first;
+                }
+
+                ranges.push(SurfaceRange {
+                    first: start,
+                    count,
+                    material,
+                    cubemap: super::surface::CUBEMAP_NONE,
+                    pass,
+                });
+                current = Some((material, pass, start));
             }
         }
 
-        vertices
+        DrawMesh { vertices, ranges }
     }
 
     pub fn trace(&self, start: Vector3, end: Vector3) -> Option<BrushHit> {
@@ -773,6 +896,12 @@ fn compile_source(entities: &[SourceEntity]) -> CompiledMap {
                     normal: face.plane.normal,
                     distance: face.plane.distance,
                     material: face.plane.material,
+                    axis_u: face.axis_u,
+                    axis_v: face.axis_v,
+                    shift_u: face.shift_u,
+                    shift_v: face.shift_v,
+                    scale_u: face.scale_u,
+                    scale_v: face.scale_v,
                 });
             }
 
@@ -802,6 +931,13 @@ fn decode_compiled(bytes: &[u8]) -> Result<CompiledMap, String> {
 
     let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
 
+    if version == COMPILED_VERSION_V1 {
+        let legacy: CompiledMapV1 =
+            wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))?;
+
+        return Ok(upgrade_compiled(legacy));
+    }
+
     if version != COMPILED_VERSION {
         return Err(format!("compiled map version {version} is unsupported"));
     }
@@ -809,8 +945,46 @@ fn decode_compiled(bytes: &[u8]) -> Result<CompiledMap, String> {
     wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))
 }
 
+fn upgrade_compiled(legacy: CompiledMapV1) -> CompiledMap {
+    let mut entities = Vec::with_capacity(legacy.entities.len());
+
+    for entity in legacy.entities {
+        let mut brushes = Vec::with_capacity(entity.brushes.len());
+
+        for brush in entity.brushes {
+            let mut faces = Vec::with_capacity(brush.faces.len());
+
+            for face in brush.faces {
+                let (axis_u, axis_v) = basis(face.normal);
+                faces.push(CompiledFace {
+                    texture: face.texture,
+                    normal: face.normal,
+                    distance: face.distance,
+                    material: face.material,
+                    axis_u,
+                    axis_v,
+                    shift_u: 0.0,
+                    shift_v: 0.0,
+                    scale_u: 1.0,
+                    scale_v: 1.0,
+                });
+            }
+
+            brushes.push(CompiledBrush { faces });
+        }
+
+        entities.push(CompiledEntity {
+            keys: entity.keys,
+            brushes,
+        });
+    }
+
+    CompiledMap { entities }
+}
+
 fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
     let mut map = BrushMap::new();
+    let mut bank = MaterialBank::new(FileSource::game());
 
     for entity in compiled.entities {
         if let Some(origin) = player_start(&entity) {
@@ -821,10 +995,16 @@ fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
             let mut planes = Vec::with_capacity(brush.faces.len());
 
             for face in brush.faces {
-                let Some(plane) = Plane::new(face.normal, face.distance, face.material) else {
+                let Some(mut plane) = Plane::new(face.normal, face.distance, face.material) else {
                     return Err("compiled face is invalid".to_string());
                 };
-
+                plane.tex = bank.load(&face.texture);
+                plane.axis_u = face.axis_u;
+                plane.axis_v = face.axis_v;
+                plane.shift_u = face.shift_u;
+                plane.shift_v = face.shift_v;
+                plane.scale_u = face.scale_u;
+                plane.scale_v = face.scale_v;
                 planes.push(plane);
             }
 
@@ -838,12 +1018,13 @@ fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
         }
     }
 
+    map.graphics.materials = bank.into_materials();
     map.finalize();
 
     Ok(map)
 }
 
-fn brush_map_from_bsp(bytes: &[u8]) -> Result<BrushMap, String> {
+fn brush_map_from_bsp(bytes: &[u8], path: &Path) -> Result<BrushMap, String> {
     let bsp = vbsp::Bsp::read(bytes).map_err(|err| format!("bsp: {err}"))?;
     let mut map = BrushMap::new();
     let solid = vbsp::data::BrushFlags::SOLID
@@ -946,44 +1127,14 @@ fn brush_map_from_bsp(bytes: &[u8]) -> Result<BrushMap, String> {
         }
     }
 
-    let mut mesh = Vec::new();
-
-    if let Some(model) = bsp.models().next() {
-        for face in model.faces() {
-            if !face.is_visible() {
-                continue;
-            }
-
-            let material = texture_material(face.texture().name());
-            let [red, green, blue] = material_rgb(material);
-            let normal = face.normal();
-            let shade = 0.42 + 0.58 * ((normal.z as f32 + 1.0) * 0.5).clamp(0.0, 1.0);
-            let shaded = [red * shade, green * shade, blue * shade];
-
-            for tri in face.triangulate() {
-                let a = Vector3::new(tri[0].x as f64, tri[0].y as f64, tri[0].z as f64);
-                let b = Vector3::new(tri[1].x as f64, tri[1].y as f64, tri[1].z as f64);
-                let c = Vector3::new(tri[2].x as f64, tri[2].y as f64, tri[2].z as f64);
-
-                if tri_area(a, b, c) <= AREA_EPS {
-                    continue;
-                }
-
-                push_tri(
-                    &mut mesh,
-                    a,
-                    b,
-                    c,
-                    shaded[0],
-                    shaded[1],
-                    shaded[2],
-                    Vector3::new(0.0, 0.0, 0.0),
-                );
-            }
-        }
-    }
-
-    map.mesh_cache = Some(mesh);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("map");
+    let visual = super::bspvis::build(bytes, stem)?;
+    map.mesh_cache = Some(visual.mesh.vertices);
+    map.ranges = visual.mesh.ranges;
+    map.graphics = visual.graphics;
     map.finalize();
 
     Ok(map)
@@ -1065,11 +1216,18 @@ impl CompiledMap {
         let mut faces = Vec::with_capacity(specs.len());
 
         for (normal, distance) in specs {
+            let (axis_u, axis_v) = quake_axes(normal);
             faces.push(CompiledFace {
                 texture: texture.clone(),
                 normal,
                 distance,
                 material,
+                axis_u,
+                axis_v,
+                shift_u: 0.0,
+                shift_v: 0.0,
+                scale_u: 1.0,
+                scale_v: 1.0,
             });
         }
 
@@ -1200,7 +1358,7 @@ fn map_text(map: &CompiledMap) -> Result<String, String> {
                 let (p0, p1, p2) = face_points(face.normal, face.distance)
                     .ok_or_else(|| "face plane is invalid".to_string())?;
                 out.push_str(&format!(
-                    "( {} {} {} ) ( {} {} {} ) ( {} {} {} ) {} 0 0 0 1 1\n",
+                    "( {} {} {} ) ( {} {} {} ) ( {} {} {} ) {} [ {} {} {} {} ] [ {} {} {} {} ] 0 {} {}\n",
                     format_component(p0.x),
                     format_component(p0.y),
                     format_component(p0.z),
@@ -1211,6 +1369,16 @@ fn map_text(map: &CompiledMap) -> Result<String, String> {
                     format_component(p2.y),
                     format_component(p2.z),
                     face.texture,
+                    format_component(face.axis_u.x),
+                    format_component(face.axis_u.y),
+                    format_component(face.axis_u.z),
+                    format_component(face.shift_u),
+                    format_component(face.axis_v.x),
+                    format_component(face.axis_v.y),
+                    format_component(face.axis_v.z),
+                    format_component(face.shift_v),
+                    format_component(face.scale_u),
+                    format_component(face.scale_v),
                 ));
             }
 
@@ -1321,24 +1489,8 @@ fn parse_source(text: &str) -> Result<Vec<SourceEntity>, String> {
 
 fn parse_map(text: &str) -> Result<BrushMap, String> {
     let entities = parse_source(text)?;
-    let mut map = BrushMap::new();
 
-    for entity in entities {
-        for brush in entity.brushes {
-            let planes = brush.faces.into_iter().map(|face| face.plane).collect();
-            let Some(solid) = Brush::from_planes(planes) else {
-                return Err("brush is not a closed solid".to_string());
-            };
-
-            if !map.push_quiet(solid) {
-                return Err("brush bounds are invalid".to_string());
-            }
-        }
-    }
-
-    map.finalize();
-
-    Ok(map)
+    brush_map_from_compiled(compile_source(&entities))
 }
 
 struct Parser<'a> {
@@ -1406,12 +1558,27 @@ impl<'a> Parser<'a> {
             let p1 = self.point()?;
             let p2 = self.point()?;
             let texture = self.texture()?;
-            self.skip_line();
-            let Some(plane) = plane_from_points(p0, p1, p2, texture_material(&texture)) else {
+            let Some(mut plane) = plane_from_points(p0, p1, p2, texture_material(&texture)) else {
                 return Err(self.err("face points are colinear"));
             };
+            let axes = self.axes(plane.normal)?;
+            plane.axis_u = axes.axis_u;
+            plane.axis_v = axes.axis_v;
+            plane.shift_u = axes.shift_u;
+            plane.shift_v = axes.shift_v;
+            plane.scale_u = axes.scale_u;
+            plane.scale_v = axes.scale_v;
 
-            faces.push(SourceFace { texture, plane });
+            faces.push(SourceFace {
+                texture,
+                plane,
+                axis_u: axes.axis_u,
+                axis_v: axes.axis_v,
+                shift_u: axes.shift_u,
+                shift_v: axes.shift_v,
+                scale_u: axes.scale_u,
+                scale_v: axes.scale_v,
+            });
         }
 
         let planes = faces.iter().map(|face| face.plane).collect();
@@ -1452,6 +1619,68 @@ impl<'a> Parser<'a> {
         }
 
         Ok(self.text[start..self.idx].to_string())
+    }
+
+    fn axes(&mut self, normal: Vector3) -> Result<FaceAxes, String> {
+        self.skip_inline();
+
+        if self.peek() == Some('[') {
+            let axis_u = self.bracket()?;
+            let shift_u = self.number()?;
+            self.skip_inline();
+            self.expect(']')?;
+            self.skip_inline();
+            self.expect('[')?;
+            let axis_v = self.bracket_vec()?;
+            let shift_v = self.number()?;
+            self.skip_inline();
+            self.expect(']')?;
+            let _rotation = self.number().unwrap_or(0.0);
+            let scale_u = nonzero_scale(self.number().unwrap_or(1.0));
+            let scale_v = nonzero_scale(self.number().unwrap_or(1.0));
+            self.skip_line();
+
+            return Ok(FaceAxes {
+                axis_u,
+                axis_v,
+                shift_u,
+                shift_v,
+                scale_u,
+                scale_v,
+            });
+        }
+
+        let shift_u = self.number().unwrap_or(0.0);
+        let shift_v = self.number().unwrap_or(0.0);
+        let rotation = self.number().unwrap_or(0.0);
+        let scale_u = nonzero_scale(self.number().unwrap_or(1.0));
+        let scale_v = nonzero_scale(self.number().unwrap_or(1.0));
+        self.skip_line();
+        let (axis_u, axis_v) = rotate_axes(quake_axes(normal), normal, rotation);
+
+        Ok(FaceAxes {
+            axis_u,
+            axis_v,
+            shift_u,
+            shift_v,
+            scale_u,
+            scale_v,
+        })
+    }
+
+    fn bracket(&mut self) -> Result<Vector3, String> {
+        self.skip_inline();
+        self.expect('[')?;
+
+        self.bracket_vec()
+    }
+
+    fn bracket_vec(&mut self) -> Result<Vector3, String> {
+        let x = self.number()?;
+        let y = self.number()?;
+        let z = self.number()?;
+
+        Ok(Vector3::new(x, y, z))
     }
 
     fn string(&mut self) -> Result<String, String> {
@@ -1611,6 +1840,62 @@ fn plane_from_points(p0: Vector3, p1: Vector3, p2: Vector3, material: u16) -> Op
     Plane::new(normal, distance, material)
 }
 
+struct FaceAxes {
+    axis_u: Vector3,
+    axis_v: Vector3,
+    shift_u: f64,
+    shift_v: f64,
+    scale_u: f64,
+    scale_v: f64,
+}
+
+fn nonzero_scale(scale: f64) -> f64 {
+    if scale.abs() < 1e-8 {
+        return 1.0;
+    }
+
+    scale
+}
+
+fn quake_axes(normal: Vector3) -> (Vector3, Vector3) {
+    let ax = normal.x.abs();
+    let ay = normal.y.abs();
+    let az = normal.z.abs();
+
+    if ax >= ay && ax >= az {
+        return (Vector3::new(0.0, 1.0, 0.0), Vector3::new(0.0, 0.0, -1.0));
+    }
+
+    if ay >= ax && ay >= az {
+        return (Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 0.0, -1.0));
+    }
+
+    (Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, -1.0, 0.0))
+}
+
+fn rotate_axes(axes: (Vector3, Vector3), normal: Vector3, degrees: f64) -> (Vector3, Vector3) {
+    if degrees.abs() < 1e-6 {
+        return axes;
+    }
+
+    let rad = degrees.to_radians();
+    let (s, c) = (rad.sin(), rad.cos());
+    let rotate = |axis: Vector3| {
+        let dot = normal.dot(axis);
+        let parallel = Vector3::new(normal.x * dot, normal.y * dot, normal.z * dot);
+        let flat = Vector3::new(axis.x - parallel.x, axis.y - parallel.y, axis.z - parallel.z);
+        let cross = normal.cross(flat);
+
+        Vector3::new(
+            parallel.x + flat.x * c + cross.x * s,
+            parallel.y + flat.y * c + cross.y * s,
+            parallel.z + flat.z * c + cross.z * s,
+        )
+    };
+
+    (rotate(axes.0), rotate(axes.1))
+}
+
 fn texture_material(name: &str) -> u16 {
     let mut hash = 2166136261u32;
 
@@ -1642,10 +1927,20 @@ impl Plane {
 
         let inv = 1.0 / len;
 
+        let normal = Vector3::new(normal.x * inv, normal.y * inv, normal.z * inv);
+        let (axis_u, axis_v) = basis(normal);
+
         Some(Self {
-            normal: Vector3::new(normal.x * inv, normal.y * inv, normal.z * inv),
+            normal,
             distance: distance * inv,
             material,
+            tex: MATERIAL_NONE,
+            axis_u,
+            axis_v,
+            shift_u: 0.0,
+            shift_v: 0.0,
+            scale_u: 1.0,
+            scale_v: 1.0,
         })
     }
 }
@@ -1780,6 +2075,15 @@ fn polygons(brush: &Brush) -> Vec<Poly> {
             normal: plane.normal,
             points: face,
             material: plane.material,
+            tex: plane.tex,
+            axis_u: plane.axis_u,
+            axis_v: plane.axis_v,
+            shift_u: plane.shift_u,
+            shift_v: plane.shift_v,
+            scale_u: plane.scale_u,
+            scale_v: plane.scale_v,
+            width: 1.0,
+            height: 1.0,
         });
     }
 
@@ -1855,7 +2159,13 @@ fn buried(points: &[Vector3], owner: usize, brushes: &[Brush]) -> bool {
     false
 }
 
-fn push_poly(vertices: &mut Vec<f32>, poly: &Poly, origin: Vector3) {
+fn push_poly(
+    vertices: &mut Vec<f32>,
+    poly: &Poly,
+    origin: Vector3,
+    width: f64,
+    height: f64,
+) {
     let [red, green, blue] = material_rgb(poly.material);
     let shade = 0.42 + 0.58 * ((poly.normal.z as f32 + 1.0) * 0.5);
 
@@ -1866,11 +2176,29 @@ fn push_poly(vertices: &mut Vec<f32>, poly: &Poly, origin: Vector3) {
         green * shade,
         blue * shade,
         origin,
+        width,
+        height,
     );
 }
 
-fn push_poly_color(vertices: &mut Vec<f32>, poly: &Poly, color: [f32; 3], origin: Vector3) {
-    push_fan(vertices, poly, color[0], color[1], color[2], origin);
+fn push_poly_color(
+    vertices: &mut Vec<f32>,
+    poly: &Poly,
+    color: [f32; 3],
+    origin: Vector3,
+    width: f64,
+    height: f64,
+) {
+    push_fan(
+        vertices,
+        poly,
+        color[0],
+        color[1],
+        color[2],
+        origin,
+        width,
+        height,
+    );
 }
 
 fn push_fan(
@@ -1880,6 +2208,8 @@ fn push_fan(
     green: f32,
     blue: f32,
     origin: Vector3,
+    width: f64,
+    height: f64,
 ) {
     let mut idx = 1;
 
@@ -1889,7 +2219,7 @@ fn push_fan(
         let c = poly.points[idx + 1];
 
         if tri_area(a, b, c) > AREA_EPS {
-            push_tri(vertices, a, b, c, red, green, blue, origin);
+            push_tri(vertices, poly, a, b, c, red, green, blue, origin, width, height);
         }
 
         idx += 1;
@@ -1905,6 +2235,7 @@ fn tri_area(a: Vector3, b: Vector3, c: Vector3) -> f64 {
 
 fn push_tri(
     vertices: &mut Vec<f32>,
+    poly: &Poly,
     a: Vector3,
     b: Vector3,
     c: Vector3,
@@ -1912,26 +2243,53 @@ fn push_tri(
     green: f32,
     blue: f32,
     origin: Vector3,
+    width: f64,
+    height: f64,
 ) {
-    push_vert(vertices, a, red, green, blue, origin);
-    push_vert(vertices, b, red, green, blue, origin);
-    push_vert(vertices, c, red, green, blue, origin);
+    let positions = [
+        [(a.x - origin.x) as f32, (a.y - origin.y) as f32, (a.z - origin.z) as f32],
+        [(b.x - origin.x) as f32, (b.y - origin.y) as f32, (b.z - origin.z) as f32],
+        [(c.x - origin.x) as f32, (c.y - origin.y) as f32, (c.z - origin.z) as f32],
+    ];
+    let normal = tri_normal(positions[0], positions[1], positions[2]);
+    let tangent = [
+        poly.axis_u.x as f32,
+        poly.axis_u.y as f32,
+        poly.axis_u.z as f32,
+        1.0,
+    ];
+    let tangent = if tangent[0] == 0.0 && tangent[1] == 0.0 && tangent[2] == 0.0 {
+        tri_tangent(positions[0], positions[1], normal)
+    } else {
+        let unit = super::surface::normalize3([tangent[0], tangent[1], tangent[2]]);
+        [unit[0], unit[1], unit[2], tangent[3]]
+    };
+    let points = [a, b, c];
+    let mut idx = 0;
+
+    while idx < 3 {
+        push_vertex(
+            vertices,
+            positions[idx],
+            normal,
+            tangent,
+            surface_uv(poly, points[idx], width, height),
+            [0.0, 0.0],
+            [red, green, blue],
+            0.0,
+            poly.tex as f32,
+        );
+        idx += 1;
+    }
 }
 
-fn push_vert(
-    vertices: &mut Vec<f32>,
-    position: Vector3,
-    red: f32,
-    green: f32,
-    blue: f32,
-    origin: Vector3,
-) {
-    vertices.push((position.x - origin.x) as f32);
-    vertices.push((position.y - origin.y) as f32);
-    vertices.push((position.z - origin.z) as f32);
-    vertices.push(red);
-    vertices.push(green);
-    vertices.push(blue);
+fn surface_uv(poly: &Poly, point: Vector3, width: f64, height: f64) -> [f32; 2] {
+    let scale_u = if poly.scale_u.abs() < 1e-8 { 1.0 } else { poly.scale_u };
+    let scale_v = if poly.scale_v.abs() < 1e-8 { 1.0 } else { poly.scale_v };
+    let u = (point.dot(poly.axis_u) / scale_u + poly.shift_u) / width.max(1.0);
+    let v = (point.dot(poly.axis_v) / scale_v + poly.shift_v) / height.max(1.0);
+
+    [u as f32, v as f32]
 }
 
 fn shift_cached(cache: &[f32], origin: Vector3) -> Vec<f32> {
@@ -1942,11 +2300,11 @@ fn shift_cached(cache: &[f32], origin: Vector3) -> Vec<f32> {
     let mut out = cache.to_vec();
     let mut idx = 0;
 
-    while idx + 5 < out.len() {
+    while idx + STRIDE <= out.len() {
         out[idx] = (f64::from(out[idx]) - origin.x) as f32;
         out[idx + 1] = (f64::from(out[idx + 1]) - origin.y) as f32;
         out[idx + 2] = (f64::from(out[idx + 2]) - origin.z) as f32;
-        idx += 6;
+        idx += STRIDE;
     }
 
     out
@@ -1976,11 +2334,9 @@ fn expand_brush(brush: &Brush, mins: Vector3, maxs: Vector3) -> Vec<Plane> {
     let mut planes = Vec::with_capacity(brush.planes.len());
 
     for plane in &brush.planes {
-        planes.push(Plane {
-            normal: plane.normal,
-            distance: plane.distance - hull_min_dot(plane.normal, mins, maxs),
-            material: plane.material,
-        });
+        let mut expanded = *plane;
+        expanded.distance -= hull_min_dot(plane.normal, mins, maxs);
+        planes.push(expanded);
     }
 
     planes
@@ -2161,7 +2517,7 @@ mod tests {
         let map = box_map();
         let mesh = map.mesh();
 
-        assert_eq!(mesh.len(), 216);
+        assert_eq!(mesh.len(), 36 * STRIDE);
         assert!(faces_point_outward(&mesh, [0.5, 0.5, 0.5]));
     }
 
@@ -2174,7 +2530,7 @@ mod tests {
         while idx < mesh.len() {
             assert!(mesh[idx] < -99_998.0, "{}", mesh[idx]);
             assert!(mesh[idx] > -100_001.0, "{}", mesh[idx]);
-            idx += 6;
+            idx += STRIDE;
         }
     }
 
@@ -2185,7 +2541,7 @@ mod tests {
         assert!(map.add_box(Vector3::new(1.0, 0.0, 0.0), Vector3::new(2.0, 1.0, 1.0), 1));
         let mesh = map.mesh();
 
-        assert_eq!(mesh.len(), 360);
+        assert_eq!(mesh.len(), 60 * STRIDE);
         let hit = map
             .trace(Vector3::new(-1.0, 0.5, 0.5), Vector3::new(3.0, 0.5, 0.5))
             .unwrap();
@@ -2317,7 +2673,7 @@ mod tests {
         ));
         let mesh = map.mesh();
 
-        assert_eq!(mesh.len(), 144);
+        assert_eq!(mesh.len(), 24 * STRIDE);
         assert!(faces_point_outward(&mesh, [2.0, 1.0, 0.5]));
 
         let hit = map
@@ -2355,7 +2711,7 @@ mod tests {
             4
         ));
         assert_eq!(map.len(), 1);
-        assert_eq!(map.mesh().len(), 216);
+        assert_eq!(map.mesh().len(), 36 * STRIDE);
         assert!(map.load_file("missing_brush_map").is_err());
         assert_eq!(map.len(), 1);
     }
@@ -2384,7 +2740,7 @@ mod tests {
         let mesh = map.mesh();
 
         assert_eq!(map.len(), 1);
-        assert_eq!(mesh.len(), 216);
+        assert_eq!(mesh.len(), 36 * STRIDE);
         assert!(faces_point_outward(&mesh, [0.5, 0.5, 0.5]));
 
         let hit = map
@@ -2471,7 +2827,7 @@ mod tests {
         map.load_file(compiled.to_str().unwrap()).unwrap();
 
         assert_eq!(map.len(), 1);
-        assert_eq!(map.mesh().len(), 216);
+        assert_eq!(map.mesh().len(), 36 * STRIDE);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2504,7 +2860,7 @@ mod tests {
         map.load_file(compiled.to_str().unwrap()).unwrap();
 
         assert_eq!(map.len(), 1);
-        assert_eq!(map.mesh().len(), 216);
+        assert_eq!(map.mesh().len(), 36 * STRIDE);
         assert_eq!(std::fs::read(&source).unwrap(), b"not a map");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2526,7 +2882,7 @@ mod tests {
 "#;
         let map = parse_map(text).unwrap();
 
-        assert_eq!(map.mesh().len(), 216);
+        assert_eq!(map.mesh().len(), 36 * STRIDE);
     }
 
     #[test]
@@ -2695,16 +3051,16 @@ mod tests {
     fn faces_point_outward(mesh: &[f32], center: [f32; 3]) -> bool {
         let mut idx = 0;
 
-        while idx + 18 <= mesh.len() {
+        while idx + STRIDE * 3 <= mesh.len() {
             let ax = mesh[idx];
             let ay = mesh[idx + 1];
             let az = mesh[idx + 2];
-            let bx = mesh[idx + 6];
-            let by = mesh[idx + 7];
-            let bz = mesh[idx + 8];
-            let cx = mesh[idx + 12];
-            let cy = mesh[idx + 13];
-            let cz = mesh[idx + 14];
+            let bx = mesh[idx + STRIDE];
+            let by = mesh[idx + STRIDE + 1];
+            let bz = mesh[idx + STRIDE + 2];
+            let cx = mesh[idx + STRIDE * 2];
+            let cy = mesh[idx + STRIDE * 2 + 1];
+            let cz = mesh[idx + STRIDE * 2 + 2];
             let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
             let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
             let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -2716,7 +3072,7 @@ mod tests {
                 return false;
             }
 
-            idx += 18;
+            idx += STRIDE * 3;
         }
 
         true

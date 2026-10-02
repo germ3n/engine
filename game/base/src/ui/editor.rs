@@ -272,7 +272,16 @@ pub fn run(map_name: &str) {
 
                     let lines = hud_lines(&editor, &aim);
                     window.begin_frame(0.46, 0.62, 0.74);
-                    window.draw_colored_mesh(&picture, picture_revision, &view);
+                    let count = (picture.len() / crate::world::STRIDE) as u32;
+                    let ranges = [crate::world::SurfaceRange {
+                        first: 0,
+                        count,
+                        material: crate::world::MATERIAL_NONE,
+                        cubemap: crate::world::CUBEMAP_NONE,
+                        pass: crate::world::PASS_OPAQUE,
+                    }];
+                    let graphics = crate::world::MapGraphics::plain();
+                    window.draw_colored_mesh(&picture, &ranges, &graphics, picture_revision, &view);
                     draw_hud(&mut window, &lines);
                     window.render_text();
                     window.present();
@@ -1235,8 +1244,8 @@ fn push_ribbon(
     let p1 = shift_point(draw, [b[0] - sx, b[1] - sy, b[2]]);
     let p2 = shift_point(draw, [b[0] + sx, b[1] + sy, b[2]]);
     let p3 = shift_point(draw, [a[0] + sx, a[1] + sy, a[2]]);
-    push_tri(vertices, p0, p1, p2, color);
-    push_tri(vertices, p0, p2, p3, color);
+        crate::world::push_shaded_tri(vertices, p0, p1, p2, color);
+        crate::world::push_shaded_tri(vertices, p0, p2, p3, color);
 }
 
 fn shift_point(draw: Anchor, point: [f32; 3]) -> [f32; 3] {
@@ -1264,24 +1273,9 @@ fn push_box(vertices: &mut Vec<f32>, min: Vector3, max: Vector3, color: [f32; 3]
             );
         }
 
-        push_tri(vertices, corners[0], corners[1], corners[2], tint);
-        push_tri(vertices, corners[0], corners[2], corners[3], tint);
+        crate::world::push_shaded_tri(vertices, corners[0], corners[1], corners[2], tint);
+        crate::world::push_shaded_tri(vertices, corners[0], corners[2], corners[3], tint);
     }
-}
-
-fn push_tri(vertices: &mut Vec<f32>, a: [f32; 3], b: [f32; 3], c: [f32; 3], color: [f32; 3]) {
-    push_vert(vertices, a, color);
-    push_vert(vertices, b, color);
-    push_vert(vertices, c, color);
-}
-
-fn push_vert(vertices: &mut Vec<f32>, position: [f32; 3], color: [f32; 3]) {
-    vertices.push(position[0]);
-    vertices.push(position[1]);
-    vertices.push(position[2]);
-    vertices.push(color[0]);
-    vertices.push(color[1]);
-    vertices.push(color[2]);
 }
 
 fn point_key(point: Vector3) -> String {

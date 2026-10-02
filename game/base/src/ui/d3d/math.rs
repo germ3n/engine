@@ -21,7 +21,7 @@ mod tests {
         let mut front = 0;
         let mut idx = 0;
 
-        while idx + 18 <= mesh.len() {
+        while idx + crate::world::STRIDE <= mesh.len() {
             let a = project(&view_proj, [mesh[idx], mesh[idx + 1], mesh[idx + 2]]);
             let b = project(&view_proj, [mesh[idx + 6], mesh[idx + 7], mesh[idx + 8]]);
             let c = project(&view_proj, [mesh[idx + 12], mesh[idx + 13], mesh[idx + 14]]);
@@ -54,7 +54,7 @@ mod tests {
                 }
             }
 
-            idx += 18;
+            idx += crate::world::STRIDE;
         }
 
         assert!(visible > 0);

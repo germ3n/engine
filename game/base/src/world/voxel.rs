@@ -922,32 +922,9 @@ fn push_block(
             ];
         }
 
-        push_tri(vertices, corners[0], corners[1], corners[2], cr, cg, cb);
-        push_tri(vertices, corners[0], corners[2], corners[3], cr, cg, cb);
+        super::surface::push_shaded_tri(vertices, corners[0], corners[1], corners[2], [cr, cg, cb]);
+        super::surface::push_shaded_tri(vertices, corners[0], corners[2], corners[3], [cr, cg, cb]);
     }
-}
-
-fn push_tri(
-    vertices: &mut Vec<f32>,
-    a: [f32; 3],
-    b: [f32; 3],
-    c: [f32; 3],
-    red: f32,
-    green: f32,
-    blue: f32,
-) {
-    push_vert(vertices, a, red, green, blue);
-    push_vert(vertices, b, red, green, blue);
-    push_vert(vertices, c, red, green, blue);
-}
-
-fn push_vert(vertices: &mut Vec<f32>, position: [f32; 3], red: f32, green: f32, blue: f32) {
-    vertices.push(position[0]);
-    vertices.push(position[1]);
-    vertices.push(position[2]);
-    vertices.push(red);
-    vertices.push(green);
-    vertices.push(blue);
 }
 
 fn block_rgb(id: u16) -> [f32; 3] {
@@ -1401,17 +1378,17 @@ mod tests {
         world.set(BlockPos::new(0, 0, 0), Block(1));
         let mesh = world.mesh();
 
-        assert_eq!(mesh.len(), 36 * 6);
+        assert_eq!(mesh.len(), 36 * crate::world::STRIDE);
         assert!(faces_point_outward(&mesh, 0.5));
 
         world.set(BlockPos::new(1, 0, 0), Block(1));
 
-        assert_eq!(world.mesh().len(), 60 * 6);
+        assert_eq!(world.mesh().len(), 60 * crate::world::STRIDE);
 
         let mut solid = VoxelWorld::new();
         solid.fill(BlockPos::new(0, 0, 0), BlockPos::new(3, 3, 3), Block(1));
 
-        assert_eq!(solid.mesh().len(), 54 * 6 * 6);
+        assert_eq!(solid.mesh().len(), 54 * 6 * crate::world::STRIDE);
     }
 
     #[test]
@@ -1443,16 +1420,18 @@ mod tests {
     fn faces_point_outward(mesh: &[f32], center: f32) -> bool {
         let mut idx = 0;
 
-        while idx + 18 <= mesh.len() {
+        let stride = crate::world::STRIDE;
+
+        while idx + stride * 3 <= mesh.len() {
             let ax = mesh[idx];
             let ay = mesh[idx + 1];
             let az = mesh[idx + 2];
-            let bx = mesh[idx + 6];
-            let by = mesh[idx + 7];
-            let bz = mesh[idx + 8];
-            let cx = mesh[idx + 12];
-            let cy = mesh[idx + 13];
-            let cz = mesh[idx + 14];
+            let bx = mesh[idx + stride];
+            let by = mesh[idx + stride + 1];
+            let bz = mesh[idx + stride + 2];
+            let cx = mesh[idx + stride * 2];
+            let cy = mesh[idx + stride * 2 + 1];
+            let cz = mesh[idx + stride * 2 + 2];
             let nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay);
             let ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
             let nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
@@ -1464,7 +1443,7 @@ mod tests {
                 return false;
             }
 
-            idx += 18;
+            idx += stride * 3;
         }
 
         true

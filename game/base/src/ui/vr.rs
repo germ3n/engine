@@ -263,6 +263,7 @@ impl Headset {
             far: scene.far,
             tangents: Some([left, right, top, bottom]),
             scale: scene.scale,
+            time: scene.time,
         }
     }
 
@@ -702,6 +703,7 @@ mod tests {
             far: 100.0,
             tangents: None,
             scale: 1.0,
+            time: 0.0,
         }
     }
 

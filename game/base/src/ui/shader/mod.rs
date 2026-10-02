@@ -6,36 +6,7 @@ mod cache;
 
 pub use cache::{id_from_bytes, id_from_luid, id_from_text, id_from_u64, Registry};
 
-pub const MESH: &str = r#"
-struct Constants {
-    view_proj: mat4x4<f32>,
-}
-
-var<immediate> constants: Constants;
-
-struct MeshIn {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-}
-
-struct MeshVertOut {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec3<f32>,
-}
-
-@vertex
-fn mesh_vert(input: MeshIn) -> MeshVertOut {
-    var out: MeshVertOut;
-    out.position = constants.view_proj * vec4<f32>(input.position, 1.0);
-    out.color = input.color;
-    return out;
-}
-
-@fragment
-fn mesh_frag(input: MeshVertOut) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.color, 1.0);
-}
-"#;
+pub const MESH: &str = include_str!("../shaders/mesh.wgsl");
 
 pub const COLOR: &str = r#"
 struct Constants {
@@ -144,6 +115,131 @@ fn parse(source: &str) -> Result<(Module, naga::valid::ModuleInfo), String> {
     Ok((module, info))
 }
 
+fn bind_mesh_hlsl(options: &mut back::hlsl::Options, source: &str) {
+    if !source.contains("struct MaterialGpu") {
+        return;
+    }
+
+    options.binding_map.insert(
+        naga::ResourceBinding {
+            group: 0,
+            binding: 0,
+        },
+        bind_target(1),
+    );
+    let mut binding = 2u32;
+
+    while binding <= 9 {
+        options.binding_map.insert(
+            naga::ResourceBinding { group: 0, binding },
+            bind_target(binding - 2),
+        );
+        binding += 1;
+    }
+
+    binding = 0;
+
+    while binding <= 4 {
+        options.binding_map.insert(
+            naga::ResourceBinding { group: 1, binding },
+            bind_target(binding + 8),
+        );
+        binding += 1;
+    }
+
+    options.binding_map.insert(
+        naga::ResourceBinding {
+            group: 1,
+            binding: 5,
+        },
+        bind_target(1),
+    );
+    binding = 0;
+
+    while binding <= 9 {
+        options.binding_map.insert(
+            naga::ResourceBinding { group: 2, binding },
+            bind_target(binding + 16),
+        );
+        binding += 1;
+    }
+}
+
+fn bind_mesh_msl(resources: &mut back::msl::EntryPointResources, source: &str) {
+    if !source.contains("struct MaterialGpu") {
+        return;
+    }
+
+    resources.resources.insert(
+        naga::ResourceBinding {
+            group: 0,
+            binding: 0,
+        },
+        back::msl::BindTarget {
+            buffer: Some(2),
+            ..back::msl::BindTarget::default()
+        },
+    );
+    resources.resources.insert(
+        naga::ResourceBinding {
+            group: 0,
+            binding: 1,
+        },
+        back::msl::BindTarget {
+            sampler: Some(back::msl::BindSamplerTarget::Resource(0)),
+            ..back::msl::BindTarget::default()
+        },
+    );
+    let mut binding = 2u32;
+
+    while binding <= 9 {
+        resources.resources.insert(
+            naga::ResourceBinding { group: 0, binding },
+            back::msl::BindTarget {
+                texture: Some((binding - 2) as u8),
+                ..back::msl::BindTarget::default()
+            },
+        );
+        binding += 1;
+    }
+
+    binding = 0;
+
+    while binding <= 4 {
+        resources.resources.insert(
+            naga::ResourceBinding { group: 1, binding },
+            back::msl::BindTarget {
+                texture: Some((binding + 8) as u8),
+                ..back::msl::BindTarget::default()
+            },
+        );
+        binding += 1;
+    }
+
+    resources.resources.insert(
+        naga::ResourceBinding {
+            group: 1,
+            binding: 5,
+        },
+        back::msl::BindTarget {
+            sampler: Some(back::msl::BindSamplerTarget::Resource(1)),
+            ..back::msl::BindTarget::default()
+        },
+    );
+    binding = 0;
+
+    while binding <= 9 {
+        resources.resources.insert(
+            naga::ResourceBinding { group: 2, binding },
+            back::msl::BindTarget {
+                texture: Some((binding + 16) as u8),
+                ..back::msl::BindTarget::default()
+            },
+        );
+        binding += 1;
+    }
+}
+
 fn bind_target(register: u32) -> back::hlsl::BindTarget {
     back::hlsl::BindTarget {
         space: 0,
@@ -165,9 +261,20 @@ fn fixup_hlsl(source: &str) -> String {
             continue;
         }
 
-        if line.contains("ConstantBuffer<Constants> constants: register(b0);") {
-            out.push_str("cbuffer constants_buf : register(b0) { Constants constants; };\n");
-            continue;
+        if let Some(rest) = line.trim().strip_prefix("ConstantBuffer<") {
+            if let Some((ty, after)) = rest.split_once('>') {
+                let after = after.trim();
+
+                if let Some((name, register)) = after.split_once(':') {
+                    let name = name.trim();
+                    let register = register.trim().trim_end_matches(';');
+                    out.push_str(&format!(
+                        "cbuffer {name}_buf : {register} {{ {ty} {name}; }};\n"
+                    ));
+
+                    continue;
+                }
+            }
         }
 
         if line.contains("static const SamplerState atlas_sampler") {
@@ -212,6 +319,7 @@ pub fn hlsl(source: &str) -> Result<String, String> {
         },
         bind_target(0),
     );
+    bind_mesh_hlsl(&mut options, source);
 
     let pipeline = back::hlsl::PipelineOptions::default();
     let mut out = String::new();
@@ -275,6 +383,7 @@ pub fn msl(source: &str) -> Result<String, String> {
                 ..back::msl::BindTarget::default()
             },
         );
+        bind_mesh_msl(&mut resources, source);
         options
             .per_entry_point_map
             .insert(entry.name.clone(), resources);
@@ -346,7 +455,7 @@ mod tests {
     #[test]
     fn shaders_translate() {
         for (source, vert, frag) in [
-            (MESH, "mesh_vert", "mesh_frag"),
+            (MESH, "vs_main", "fs_main"),
             (COLOR, "color_vert", "color_frag"),
             (TEXT, "text_vert", "text_frag"),
             (UI, "ui_vert", "ui_frag"),
@@ -372,7 +481,11 @@ mod tests {
             assert!(glsl_vert.contains("#version"));
             let (glsl_frag, _) = glsl(source, ShaderStage::Fragment, frag, glsl_version()).unwrap();
             assert!(glsl_frag.contains("#version"));
+
         }
+
+        let (batch, _) = glsl(MESH, ShaderStage::Fragment, "fs_batch", glsl_version()).unwrap();
+        assert!(batch.contains("_group_2_binding_0_fs"), "{batch}");
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]

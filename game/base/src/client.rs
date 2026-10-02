@@ -232,6 +232,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut snapshot_ingress = SnapshotIngress::new();
     let mut tick_ingress = TickIngress::new();
     let mut scene_mesh = Vec::new();
+    let mut scene_ranges = Vec::new();
+    let mut scene_graphics = crate::world::MapGraphics::plain();
     let mut scene_world = u64::MAX;
     let mut scene_brushes = u64::MAX;
     let mut scene_revision = 0u64;
@@ -330,19 +332,54 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         scene_anchor = Anchor::new(camera.x, camera.y, camera.z);
                     }
 
+                    if scene_brushes != brush_revision {
+                        scene_graphics = game.brush_world.graphics().clone();
+                    }
+
                     if scene_world != world_revision || scene_brushes != brush_revision || camera_moved
                     {
                         let origin = scene_anchor.to_vec();
                         scene_mesh = game.voxel_world.mesh_at(origin);
-                        scene_mesh.extend(game.brush_world.mesh_at(origin));
+                        let brush = game.brush_world.draw_at(origin);
+                        let base = (scene_mesh.len() / crate::world::STRIDE) as u32;
+                        scene_ranges.clear();
+
+                        if base > 0 {
+                            scene_ranges.push(crate::world::SurfaceRange {
+                                first: 0,
+                                count: base,
+                                material: crate::world::MATERIAL_NONE,
+                                cubemap: crate::world::CUBEMAP_NONE,
+                                pass: crate::world::PASS_OPAQUE,
+                            });
+                        }
+
+                        for range in brush.ranges {
+                            scene_ranges.push(crate::world::SurfaceRange {
+                                first: range.first + base,
+                                count: range.count,
+                                material: range.material,
+                                cubemap: range.cubemap,
+                                pass: range.pass,
+                            });
+                        }
+
+                        scene_mesh.extend(brush.vertices);
                         scene_world = world_revision;
                         scene_brushes = brush_revision;
                         scene_revision = scene_revision.wrapping_add(1);
                     }
 
                     client_window.begin_frame(0.53, 0.71, 0.85);
-                    let scene = camera.scene_at(aspect, game.voxel_world.scale() as f32, scene_anchor);
-                    client_window.draw_colored_mesh(&scene_mesh, scene_revision, &scene);
+                    let mut scene = camera.scene_at(aspect, game.voxel_world.scale() as f32, scene_anchor);
+                    scene.time = accumulated_time as f32;
+                    client_window.draw_colored_mesh(
+                        &scene_mesh,
+                        &scene_ranges,
+                        &scene_graphics,
+                        scene_revision,
+                        &scene,
+                    );
                     let skin_alpha = if game.tick_interval > 0.0 {
                         (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
                     } else {

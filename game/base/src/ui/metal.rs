@@ -32,6 +32,7 @@ pub struct MetalWindow {
     queue: CommandQueue,
     layer: MetalLayer,
     mesh_pipeline: RenderPipelineState,
+    mesh_blend: RenderPipelineState,
     color_pipeline: RenderPipelineState,
     text_pipeline: RenderPipelineState,
     skin_pipeline: RenderPipelineState,
@@ -41,6 +42,22 @@ pub struct MetalWindow {
     depth: Option<Texture>,
     depth_size: (u64, u64),
     mesh: Option<Buffer>,
+    ranges: Vec<crate::world::SurfaceRange>,
+    cpu: Vec<f32>,
+    eye: [f32; 3],
+    time: f32,
+    far: f32,
+    materials: Vec<MetalMaterial>,
+    lightmaps: Vec<Texture>,
+    cubemaps: Vec<Texture>,
+    sky: Option<Texture>,
+    wrap_sampler: SamplerState,
+    clamp_sampler: SamplerState,
+    white: Texture,
+    flat: Texture,
+    white_cube: Texture,
+    scene: Texture,
+    graphics_key: u64,
     mesh_vertices: u64,
     mesh_revision: u64,
     mesh_ready: bool,
@@ -104,6 +121,7 @@ impl MetalWindow {
             .map_err(|err| format!("fs_main: {err}"))?;
 
         let mesh_pipeline = pipeline(&device, &mesh_vert, &mesh_frag, &mesh_vertex_desc(), false)?;
+        let mesh_blend = pipeline(&device, &mesh_vert, &mesh_frag, &mesh_vertex_desc(), true)?;
         let color_pipeline = pipeline(
             &device,
             &color_vert,
@@ -130,7 +148,7 @@ impl MetalWindow {
         let layer = MetalLayer::new();
         layer.set_device(&device);
         layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-        layer.set_framebuffer_only(true);
+        layer.set_framebuffer_only(false);
         layer.set_presents_with_transaction(false);
         layer.set_maximum_drawable_count(3);
         #[cfg(target_os = "macos")]
@@ -149,6 +167,15 @@ impl MetalWindow {
             .initial_cache_size((512, 512))
             .build();
         let atlas = atlas_texture(&device, 512, 512);
+        let wrap_sampler = metal_sampler(&device, MTLSamplerAddressMode::Repeat);
+        let clamp_sampler = metal_sampler(&device, MTLSamplerAddressMode::ClampToEdge);
+        let white = metal_image(&device, &crate::world::surface::CpuImage::white(), true);
+        let flat = metal_image(&device, &crate::world::surface::CpuImage::flat_normal(), true);
+        let white_cube = metal_cube(
+            &device,
+            &crate::world::surface::CubeImage::solid(crate::world::surface::CpuImage::white()),
+        );
+        let scene = metal_image(&device, &crate::world::surface::CpuImage::white(), false);
 
         Ok(Self {
             width: surface.width,
@@ -158,6 +185,7 @@ impl MetalWindow {
             queue,
             layer,
             mesh_pipeline,
+            mesh_blend,
             color_pipeline,
             text_pipeline,
             skin_pipeline,
@@ -167,6 +195,22 @@ impl MetalWindow {
             depth: None,
             depth_size: (0, 0),
             mesh: None,
+            ranges: Vec::new(),
+            cpu: Vec::new(),
+            eye: [0.0, 0.0, 0.0],
+            time: 0.0,
+            far: 1000.0,
+            materials: Vec::new(),
+            lightmaps: Vec::new(),
+            cubemaps: Vec::new(),
+            sky: None,
+            wrap_sampler,
+            clamp_sampler,
+            white,
+            flat,
+            white_cube,
+            scene,
+            graphics_key: u64::MAX,
             mesh_vertices: 0,
             mesh_revision: 0,
             mesh_ready: false,
@@ -209,22 +253,38 @@ impl Window for MetalWindow {
         self.skin.view = metal_view_proj(view);
     }
 
-    fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
+    fn draw_colored_mesh(
+        &mut self,
+        vertices: &[f32],
+        ranges: &[crate::world::SurfaceRange],
+        graphics: &crate::world::MapGraphics,
+        revision: u64,
+        view: &SceneView,
+    ) {
         if !self.mesh_ready || self.mesh_revision != revision {
-            self.mesh_vertices = (vertices.len() / 6) as u64;
+            self.mesh_vertices = (vertices.len() / crate::world::STRIDE) as u64;
             self.mesh_revision = revision;
             self.mesh_ready = true;
             self.mesh = shared_buffer(&self.device, float_bytes(vertices));
+            self.ranges = ranges.to_vec();
+            self.cpu = vertices.to_vec();
+            self.sync_graphics(graphics);
         }
 
         self.view_proj = metal_view_proj(view);
+        self.eye = view.eye;
+        self.time = view.time;
+        self.far = view.far;
         self.eye_views = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
 
         if let Some(eyes) = self.eye_views {
             self.view_proj = metal_view_proj(&eyes.views[0]);
+            self.eye = eyes.views[0].eye;
+            self.time = eyes.views[0].time;
+            self.far = eyes.views[0].far;
         }
 
-        self.draw_mesh = self.mesh_vertices > 0;
+        self.draw_mesh = self.mesh_vertices > 0 || self.sky.is_some();
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
@@ -337,6 +397,7 @@ impl Window for MetalWindow {
 
         self.render_headset();
         self.ensure_depth(width, height);
+        self.ensure_scene(width, height);
         objc::rc::autoreleasepool(|| {
             let Some(drawable) = self.layer.next_drawable() else {
                 return;
@@ -362,7 +423,7 @@ impl Window for MetalWindow {
             let depth_attachment = pass.depth_attachment().unwrap();
             depth_attachment.set_texture(Some(depth));
             depth_attachment.set_load_action(MTLLoadAction::Clear);
-            depth_attachment.set_store_action(MTLStoreAction::DontCare);
+            depth_attachment.set_store_action(MTLStoreAction::Store);
             depth_attachment.set_clear_depth(1.0);
             pass.set_depth_attachment(Some(depth_attachment));
 
@@ -371,19 +432,25 @@ impl Window for MetalWindow {
             let resolution = [width as f32, height as f32, 0.0, 0.0];
 
             if self.draw_mesh {
-                if let Some(mesh) = self.mesh.as_ref() {
-                    encoder.set_render_pipeline_state(&self.mesh_pipeline);
-                    encoder.set_depth_stencil_state(&self.depth_write);
-                    encoder.set_cull_mode(MTLCullMode::Back);
-                    encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
-                    encoder.set_vertex_buffer(0, Some(mesh), 0);
-                    encoder.set_vertex_bytes(
-                        1,
-                        std::mem::size_of::<[f32; 16]>() as u64,
-                        self.view_proj.as_ptr() as *const _,
-                    );
-                    encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, self.mesh_vertices);
-                }
+                self.encode_mesh(&encoder, width as f32, height as f32, false);
+            }
+
+            encoder.end_encoding();
+            self.blit_scene(&command, color_texture, width, height);
+            let load = RenderPassDescriptor::new();
+            let load_color = load.color_attachments().object_at(0).unwrap();
+            load_color.set_texture(Some(color_texture));
+            load_color.set_load_action(MTLLoadAction::Load);
+            load_color.set_store_action(MTLStoreAction::Store);
+            let load_depth = load.depth_attachment().unwrap();
+            load_depth.set_texture(Some(depth));
+            load_depth.set_load_action(MTLLoadAction::Load);
+            load_depth.set_store_action(MTLStoreAction::DontCare);
+            load.set_depth_attachment(Some(load_depth));
+            let encoder = command.new_render_command_encoder(load);
+
+            if self.draw_mesh {
+                self.encode_mesh(&encoder, width as f32, height as f32, true);
             }
 
             encode_skin(
@@ -464,7 +531,8 @@ impl MetalWindow {
                 eyes.height,
             )
         };
-        let command = self.queue.new_command_buffer();
+        let queue = self.queue.clone();
+        let command = queue.new_command_buffer();
         objc::rc::autoreleasepool(|| {
             let mut idx = 0;
 
@@ -498,19 +566,8 @@ impl MetalWindow {
                 });
 
                 if self.draw_mesh {
-                    if let Some(mesh) = self.mesh.as_ref() {
-                        encoder.set_render_pipeline_state(&self.mesh_pipeline);
-                        encoder.set_depth_stencil_state(&self.depth_write);
-                        encoder.set_cull_mode(MTLCullMode::Back);
-                        encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
-                        encoder.set_vertex_buffer(0, Some(mesh), 0);
-                        encoder.set_vertex_bytes(
-                            1,
-                            std::mem::size_of::<[f32; 16]>() as u64,
-                            matrix.as_ptr() as *const _,
-                        );
-                        encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, self.mesh_vertices);
-                    }
+                    self.encode_mesh(&encoder, width as f32, height as f32, false);
+                    self.encode_mesh(&encoder, width as f32, height as f32, true);
                 }
 
                 encode_skin(
@@ -926,11 +983,359 @@ fn set_skin_layout(
     layout.set_step_function(step);
 }
 
+struct MetalMaterial {
+    gpu: crate::world::surface::MaterialGpu,
+    base: Texture,
+    base2: Texture,
+    bump: Texture,
+    bump2: Texture,
+    detail: Texture,
+    blend: Texture,
+    mask: Texture,
+}
+
+impl MetalWindow {
+    fn sync_graphics(&mut self, graphics: &crate::world::MapGraphics) {
+        let mut key = graphics.materials.len() as u64;
+        key = key.wrapping_mul(131).wrapping_add(graphics.lightmaps[0].width as u64);
+        key = key.wrapping_mul(131).wrapping_add(graphics.lightmaps[0].bytes.len() as u64);
+        key = key.wrapping_mul(131).wrapping_add(graphics.cubemaps.len() as u64);
+        key = key.wrapping_mul(131).wrapping_add(u64::from(graphics.sky.is_some()));
+        let sample = graphics.lightmaps[0].bytes.len().min(64);
+        let mut idx = 0;
+
+        while idx + 4 <= sample {
+            let chunk = u32::from_le_bytes([
+                graphics.lightmaps[0].bytes[idx],
+                graphics.lightmaps[0].bytes[idx + 1],
+                graphics.lightmaps[0].bytes[idx + 2],
+                graphics.lightmaps[0].bytes[idx + 3],
+            ]);
+            key = key.wrapping_mul(131).wrapping_add(chunk as u64);
+            idx += 4;
+        }
+
+        if self.graphics_key == key {
+            return;
+        }
+
+        self.graphics_key = key;
+        self.materials.clear();
+        let mut idx = 0;
+
+        while idx < graphics.materials.len() {
+            let material = &graphics.materials[idx];
+            self.materials.push(MetalMaterial {
+                gpu: material.gpu,
+                base: metal_image(&self.device, &material.base, true),
+                base2: metal_image(&self.device, &material.base2, true),
+                bump: metal_image(&self.device, &material.bump, true),
+                bump2: metal_image(&self.device, &material.bump2, true),
+                detail: metal_image(&self.device, &material.detail, true),
+                blend: metal_image(&self.device, &material.blend, true),
+                mask: metal_image(&self.device, &material.mask, true),
+            });
+            idx += 1;
+        }
+
+        self.lightmaps.clear();
+        idx = 0;
+
+        while idx < 4 {
+            self.lightmaps
+                .push(metal_image(&self.device, &graphics.lightmaps[idx], false));
+            idx += 1;
+        }
+
+        self.cubemaps.clear();
+        idx = 0;
+
+        while idx < graphics.cubemaps.len() {
+            self.cubemaps.push(metal_cube(&self.device, &graphics.cubemaps[idx]));
+            idx += 1;
+        }
+
+        self.sky = graphics.sky.as_ref().map(|sky| metal_cube(&self.device, sky));
+    }
+
+    fn encode_mesh(
+        &self,
+        encoder: &RenderCommandEncoderRef,
+        width: f32,
+        height: f32,
+        translucent: bool,
+    ) {
+        let Some(mesh) = self.mesh.as_ref() else {
+            return;
+        };
+        encoder.set_cull_mode(MTLCullMode::Back);
+        encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
+        encoder.set_vertex_buffer(0, Some(mesh), 0);
+        encoder.set_fragment_sampler_state(0, Some(&self.wrap_sampler));
+        encoder.set_fragment_sampler_state(1, Some(&self.clamp_sampler));
+        let mut view = crate::world::surface::view_constants(
+            self.view_proj,
+            self.eye,
+            self.time,
+            [width, height, 0.0, 0.0],
+        );
+
+        if !translucent {
+            if let Some(sky) = &self.sky {
+                view[22] = 1.0;
+                encoder.set_render_pipeline_state(&self.mesh_pipeline);
+                encoder.set_depth_stencil_state(&self.depth_off);
+                encoder.set_cull_mode(MTLCullMode::None);
+                let verts = crate::world::surface::sky_vertices(self.eye, self.far * 0.25);
+                let buffer = shared_buffer(&self.device, float_bytes(&verts));
+                encoder.set_vertex_buffer(0, buffer.as_deref(), 0);
+                encoder.set_vertex_bytes(1, 96, view.as_ptr() as *const _);
+                encoder.set_fragment_bytes(1, 96, view.as_ptr() as *const _);
+                let gpu = crate::world::surface::MaterialGpu::unlit();
+                encoder.set_fragment_bytes(2, 96, gpu_ptr(&gpu));
+                bind_metal_slots(
+                    encoder,
+                    &self.white,
+                    &self.white,
+                    &self.flat,
+                    &self.flat,
+                    &self.white,
+                    &self.white,
+                    &self.white,
+                    sky,
+                    self.lightmaps.get(0).unwrap_or(&self.white),
+                    self.lightmaps.get(1).unwrap_or(&self.white),
+                    self.lightmaps.get(2).unwrap_or(&self.white),
+                    self.lightmaps.get(3).unwrap_or(&self.white),
+                    &self.scene,
+                );
+                encoder.draw_primitives(
+                    MTLPrimitiveType::Triangle,
+                    0,
+                    (verts.len() / crate::world::STRIDE) as u64,
+                );
+                encoder.set_vertex_buffer(0, Some(mesh), 0);
+                encoder.set_cull_mode(MTLCullMode::Back);
+                view[22] = 0.0;
+            }
+        }
+
+        let order = crate::world::surface::ordered_ranges(&self.cpu, &self.ranges, self.eye);
+        let mut idx = 0;
+
+        while idx < order.len() {
+            let range = self.ranges[order[idx]];
+            let blend = range.pass >= crate::world::surface::PASS_BLEND;
+
+            if blend != translucent {
+                idx += 1;
+
+                continue;
+            }
+
+            encoder.set_vertex_bytes(1, 96, view.as_ptr() as *const _);
+            encoder.set_fragment_bytes(1, 96, view.as_ptr() as *const _);
+            let material = self.materials.get(range.material as usize);
+            let gpu = material
+                .map(|item| item.gpu)
+                .unwrap_or_else(crate::world::surface::MaterialGpu::shaded);
+            encoder.set_fragment_bytes(2, 96, gpu_ptr(&gpu));
+            let env = self
+                .cubemaps
+                .get(range.cubemap as usize)
+                .unwrap_or(&self.white_cube);
+            bind_metal_slots(
+                encoder,
+                material.map(|item| &item.base).unwrap_or(&self.white),
+                material.map(|item| &item.base2).unwrap_or(&self.white),
+                material.map(|item| &item.bump).unwrap_or(&self.flat),
+                material.map(|item| &item.bump2).unwrap_or(&self.flat),
+                material.map(|item| &item.detail).unwrap_or(&self.white),
+                material.map(|item| &item.blend).unwrap_or(&self.white),
+                material.map(|item| &item.mask).unwrap_or(&self.white),
+                env,
+                self.lightmaps.get(0).unwrap_or(&self.white),
+                self.lightmaps.get(1).unwrap_or(&self.white),
+                self.lightmaps.get(2).unwrap_or(&self.white),
+                self.lightmaps.get(3).unwrap_or(&self.white),
+                &self.scene,
+            );
+
+            if range.pass == crate::world::surface::PASS_DECAL || blend {
+                encoder.set_render_pipeline_state(&self.mesh_blend);
+                encoder.set_depth_stencil_state(&self.depth_off);
+            } else {
+                encoder.set_render_pipeline_state(&self.mesh_pipeline);
+                encoder.set_depth_stencil_state(&self.depth_write);
+            }
+
+            encoder.draw_primitives(MTLPrimitiveType::Triangle, range.first as u64, range.count as u64);
+            idx += 1;
+        }
+    }
+
+    fn ensure_scene(&mut self, width: u64, height: u64) {
+        if self.scene.width() == width && self.scene.height() == height {
+            return;
+        }
+
+        let image = crate::world::surface::CpuImage::solid(width as u32, height as u32, [255, 255, 255, 255]);
+        self.scene = metal_image(&self.device, &image, false);
+    }
+
+    fn blit_scene(&self, command: &CommandBufferRef, color: &TextureRef, width: u64, height: u64) {
+        if self.scene.width() != width || self.scene.height() != height {
+            return;
+        }
+
+        let blit = command.new_blit_command_encoder();
+        blit.copy_from_texture(
+            color,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+            MTLSize {
+                width,
+                height,
+                depth: 1,
+            },
+            &self.scene,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+        );
+        blit.end_encoding();
+    }
+}
+
+fn gpu_ptr(gpu: &crate::world::surface::MaterialGpu) -> *const std::ffi::c_void {
+    gpu as *const crate::world::surface::MaterialGpu as *const std::ffi::c_void
+}
+
+fn bind_metal_slots(
+    encoder: &RenderCommandEncoderRef,
+    base: &TextureRef,
+    base2: &TextureRef,
+    bump: &TextureRef,
+    bump2: &TextureRef,
+    detail: &TextureRef,
+    blend: &TextureRef,
+    mask: &TextureRef,
+    env: &TextureRef,
+    light0: &TextureRef,
+    light1: &TextureRef,
+    light2: &TextureRef,
+    light3: &TextureRef,
+    scene: &TextureRef,
+) {
+    let slots: [&TextureRef; 13] = [
+        base, base2, bump, bump2, detail, blend, mask, env, light0, light1, light2, light3, scene,
+    ];
+    let mut idx = 0;
+
+    while idx < slots.len() {
+        encoder.set_fragment_texture(idx as u64, Some(slots[idx]));
+        idx += 1;
+    }
+}
+
+fn metal_sampler(device: &Device, address: MTLSamplerAddressMode) -> SamplerState {
+    let desc = SamplerDescriptor::new();
+    desc.set_min_filter(MTLSamplerMinMagFilter::Linear);
+    desc.set_mag_filter(MTLSamplerMinMagFilter::Linear);
+    desc.set_address_mode_s(address);
+    desc.set_address_mode_t(address);
+    desc.set_address_mode_r(address);
+
+    device.new_sampler(&desc)
+}
+
+fn metal_image(device: &Device, image: &crate::world::surface::CpuImage, repeat: bool) -> Texture {
+    let desc = TextureDescriptor::new();
+    desc.set_texture_type(MTLTextureType::D2);
+    desc.set_pixel_format(metal_format(image.format));
+    desc.set_width(image.width as u64);
+    desc.set_height(image.height as u64);
+    desc.set_usage(MTLTextureUsage::ShaderRead);
+    desc.set_storage_mode(MTLStorageMode::Shared);
+    let texture = device.new_texture(&desc);
+    texture.replace_region(
+        MTLRegion::new_2d(0, 0, image.width as u64, image.height as u64),
+        0,
+        image.bytes.as_ptr() as *const _,
+        metal_pitch(image),
+    );
+    let _ = repeat;
+
+    texture
+}
+
+fn metal_cube(device: &Device, image: &crate::world::surface::CubeImage) -> Texture {
+    let face = &image.faces[0];
+    let desc = TextureDescriptor::new();
+    desc.set_texture_type(MTLTextureType::Cube);
+    desc.set_pixel_format(metal_format(face.format));
+    desc.set_width(face.width as u64);
+    desc.set_height(face.height as u64);
+    desc.set_usage(MTLTextureUsage::ShaderRead);
+    desc.set_storage_mode(MTLStorageMode::Shared);
+    let texture = device.new_texture(&desc);
+    let mut idx = 0;
+
+    while idx < 6 {
+        let face = &image.faces[idx];
+        texture.replace_region_in_slice(
+            MTLRegion::new_2d(0, 0, face.width as u64, face.height as u64),
+            0,
+            idx as u64,
+            face.bytes.as_ptr() as *const _,
+            metal_pitch(face),
+            metal_pitch(face) * face.height as u64,
+        );
+        idx += 1;
+    }
+
+    texture
+}
+
+fn metal_format(format: crate::world::surface::PixelFormat) -> MTLPixelFormat {
+    match format {
+        crate::world::surface::PixelFormat::Bc1 => MTLPixelFormat::BC1_RGBA,
+        crate::world::surface::PixelFormat::Bc2 => MTLPixelFormat::BC2_RGBA,
+        crate::world::surface::PixelFormat::Bc3 => MTLPixelFormat::BC3_RGBA,
+        crate::world::surface::PixelFormat::Bc5 => MTLPixelFormat::BC5_RGUnorm,
+        crate::world::surface::PixelFormat::Bc7 => MTLPixelFormat::BC7_RGBAUnorm,
+        crate::world::surface::PixelFormat::Rgba8 | crate::world::surface::PixelFormat::Rgba16f => {
+            MTLPixelFormat::RGBA8Unorm
+        }
+    }
+}
+
+fn metal_pitch(image: &crate::world::surface::CpuImage) -> u64 {
+    match image.format {
+        crate::world::surface::PixelFormat::Bc1 | crate::world::surface::PixelFormat::Bc5 => {
+            (image.width.max(4) / 4) as u64 * 8
+        }
+        crate::world::surface::PixelFormat::Bc2
+        | crate::world::surface::PixelFormat::Bc3
+        | crate::world::surface::PixelFormat::Bc7 => (image.width.max(4) / 4) as u64 * 16,
+        crate::world::surface::PixelFormat::Rgba8 | crate::world::surface::PixelFormat::Rgba16f => {
+            image.width as u64 * 4
+        }
+    }
+}
+
 fn mesh_vertex_desc() -> &'static VertexDescriptorRef {
     let desc = VertexDescriptor::new();
     set_attr(desc, 0, MTLVertexFormat::Float3, 0);
     set_attr(desc, 1, MTLVertexFormat::Float3, 12);
-    set_layout(desc, 24);
+    set_attr(desc, 2, MTLVertexFormat::Float4, 24);
+    set_attr(desc, 3, MTLVertexFormat::Float2, 40);
+    set_attr(desc, 4, MTLVertexFormat::Float2, 48);
+    set_attr(desc, 5, MTLVertexFormat::Float3, 56);
+    set_attr(desc, 6, MTLVertexFormat::Float, 68);
+    set_attr(desc, 7, MTLVertexFormat::Float, 72);
+    set_layout(desc, (crate::world::STRIDE * 4) as u64);
 
     desc
 }

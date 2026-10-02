@@ -627,7 +627,15 @@ impl D3D12Window {
             if draw_mesh {
                 if let Some(buffer) = mesh.as_ref() {
                     let matrix = view_proj(&frame.views[idx]);
-                    self.draw(buffer, 24, vertices, &pso, &root, &matrix, false);
+                    self.draw(
+                        buffer,
+                        (crate::world::STRIDE * 4) as u32,
+                        vertices,
+                        &pso,
+                        &root,
+                        &matrix,
+                        false,
+                    );
                 }
             }
 
@@ -757,7 +765,7 @@ impl D3D12Window {
             if let Some(mesh) = self.mesh.as_ref() {
                 self.draw(
                     mesh,
-                    24,
+                    (crate::world::STRIDE * 4) as u32,
                     self.mesh_vertices,
                     &self.mesh_pso,
                     &self.plain_root,
@@ -869,7 +877,15 @@ impl Window for D3D12Window {
         self.draw_mesh = false;
     }
 
-    fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
+    fn draw_colored_mesh(
+        &mut self,
+        vertices: &[f32],
+        ranges: &[crate::world::SurfaceRange],
+        graphics: &crate::world::MapGraphics,
+        revision: u64,
+        view: &SceneView,
+    ) {
+        let _ = (ranges, graphics);
         self.view = view_proj(view);
         self.eye_views = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
 
@@ -889,7 +905,7 @@ impl Window for D3D12Window {
                 self.mesh_revision = revision;
                 self.mesh_ready = true;
             } else if self.upload_mesh(vertices).is_ok() {
-                self.mesh_vertices = (vertices.len() / 6) as u32;
+                self.mesh_vertices = (vertices.len() / crate::world::STRIDE) as u32;
                 self.mesh_revision = revision;
                 self.mesh_ready = true;
             }
@@ -1482,10 +1498,16 @@ fn element(name: PCSTR, index: u32, format: DXGI_FORMAT, offset: u32) -> D3D12_I
     }
 }
 
-fn mesh_elements() -> [D3D12_INPUT_ELEMENT_DESC; 2] {
+fn mesh_elements() -> [D3D12_INPUT_ELEMENT_DESC; 8] {
     [
         element(s!("LOC"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0),
         element(s!("LOC"), 1, DXGI_FORMAT_R32G32B32_FLOAT, 12),
+        element(s!("LOC"), 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 24),
+        element(s!("LOC"), 3, DXGI_FORMAT_R32G32_FLOAT, 40),
+        element(s!("LOC"), 4, DXGI_FORMAT_R32G32_FLOAT, 48),
+        element(s!("LOC"), 5, DXGI_FORMAT_R32G32B32_FLOAT, 56),
+        element(s!("LOC"), 6, DXGI_FORMAT_R32_FLOAT, 68),
+        element(s!("LOC"), 7, DXGI_FORMAT_R32_FLOAT, 72),
     ]
 }
 

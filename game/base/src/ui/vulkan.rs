@@ -25,7 +25,7 @@ pub struct VulkanWindow {
     height: u32,
     ui: Vec<f32>,
     text: TextFrame,
-    view: [f32; 16],
+    view: [f32; 24],
     clear: [f32; 4],
     mesh_vertices: u32,
     mesh_revision: u64,
@@ -81,7 +81,7 @@ fn build_window(entry: ash::Entry, surface: &Surface) -> Result<VulkanWindow, St
         height,
         ui: Vec::new(),
         text,
-        view: [0.0; 16],
+        view: [0.0; 24],
         clear: [0.0, 0.0, 0.0, 1.0],
         mesh_vertices: 0,
         mesh_revision: 0,
@@ -127,13 +127,26 @@ impl Window for VulkanWindow {
         self.draw_mesh = false;
     }
 
-    fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
+    fn draw_colored_mesh(
+        &mut self,
+        vertices: &[f32],
+        ranges: &[crate::world::SurfaceRange],
+        graphics: &crate::world::MapGraphics,
+        revision: u64,
+        view: &SceneView,
+    ) {
+        let _ = (ranges, graphics);
         self.eye_views = vr::connect(&mut self.vr, &mut self.vr_failed, self.vr_enable, view);
         let scene = match &self.eye_views {
             Some(eyes) => eyes.views[0],
             None => *view,
         };
-        self.view = vr::view_proj(&scene, true);
+        self.view = crate::world::surface::view_constants(
+            vr::view_proj(&scene, true),
+            scene.eye,
+            scene.time,
+            [self.width as f32, self.height as f32, 0.0, 0.0],
+        );
 
         if !self.mesh_ready || self.mesh_revision != revision {
             if vertices.is_empty() {
@@ -141,7 +154,7 @@ impl Window for VulkanWindow {
                 self.mesh_revision = revision;
                 self.mesh_ready = true;
             } else if self.upload_mesh(vertices).is_ok() {
-                self.mesh_vertices = (vertices.len() / 6) as u32;
+                self.mesh_vertices = (vertices.len() / crate::world::STRIDE) as u32;
                 self.mesh_revision = revision;
                 self.mesh_ready = true;
             }
@@ -314,7 +327,12 @@ impl VulkanWindow {
         let mut idx = 0;
 
         while idx < 2 {
-            let matrix = vr::view_proj(&frame.views[idx], true);
+            let matrix = crate::world::surface::view_constants(
+                vr::view_proj(&frame.views[idx], true),
+                frame.views[idx].eye,
+                frame.views[idx].time,
+                [eyes.width as f32, eyes.height as f32, 0.0, 0.0],
+            );
             let extent = vk::Extent2D {
                 width: eyes.width,
                 height: eyes.height,
@@ -798,10 +816,15 @@ impl Pipelines {
             vk::Format::R8G8B8A8_UNORM,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         )?;
-        let mesh_layout = layout(&gpu.device, 64, &[])?;
-        let color_layout = layout(&gpu.device, 16, &[])?;
+        let mesh_layout = layout(
+            &gpu.device,
+            96,
+            &[],
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        )?;
+        let color_layout = layout(&gpu.device, 16, &[], vk::ShaderStageFlags::VERTEX)?;
         let text_sets = [descriptor_layout(&gpu.device)?];
-        let text_layout = layout(&gpu.device, 16, &text_sets)?;
+        let text_layout = layout(&gpu.device, 16, &text_sets, vk::ShaderStageFlags::VERTEX)?;
         let mesh_src = crate::ui::shaders::Program::Mesh.wgsl();
         let color_src = crate::ui::shaders::Program::Color.wgsl();
         let text_src = crate::ui::shaders::Program::Text.wgsl();
@@ -826,7 +849,7 @@ impl Pipelines {
             c"vs_main",
             c"fs_main",
             &mesh_attrs(),
-            24,
+            (crate::world::STRIDE * 4) as u32,
             true,
             false,
             true,
@@ -840,7 +863,7 @@ impl Pipelines {
             c"vs_main",
             c"fs_main",
             &mesh_attrs(),
-            24,
+            (crate::world::STRIDE * 4) as u32,
             true,
             false,
             true,
@@ -1350,7 +1373,7 @@ fn draw_mesh(
     layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     buffer: vk::Buffer,
-    matrix: &[f32; 16],
+    matrix: &[f32; 24],
     count: u32,
 ) {
     unsafe {
@@ -1738,9 +1761,10 @@ fn layout(
     device: &ash::Device,
     push_size: u32,
     sets: &[vk::DescriptorSetLayout],
+    stages: vk::ShaderStageFlags,
 ) -> Result<vk::PipelineLayout, String> {
     let push = vk::PushConstantRange::default()
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .stage_flags(stages)
         .offset(0)
         .size(push_size);
     let info = vk::PipelineLayoutCreateInfo::default()
@@ -2023,18 +2047,24 @@ fn grow(current: u64, needed: u64) -> u64 {
     size
 }
 
-fn mesh_attrs() -> [vk::VertexInputAttributeDescription; 2] {
+fn mesh_attrs() -> [vk::VertexInputAttributeDescription; 8] {
+    let attr = |location, format, offset| {
+        vk::VertexInputAttributeDescription::default()
+            .location(location)
+            .binding(0)
+            .format(format)
+            .offset(offset)
+    };
+
     [
-        vk::VertexInputAttributeDescription::default()
-            .location(0)
-            .binding(0)
-            .format(vk::Format::R32G32B32_SFLOAT)
-            .offset(0),
-        vk::VertexInputAttributeDescription::default()
-            .location(1)
-            .binding(0)
-            .format(vk::Format::R32G32B32_SFLOAT)
-            .offset(12),
+        attr(0, vk::Format::R32G32B32_SFLOAT, 0),
+        attr(1, vk::Format::R32G32B32_SFLOAT, 12),
+        attr(2, vk::Format::R32G32B32A32_SFLOAT, 24),
+        attr(3, vk::Format::R32G32_SFLOAT, 40),
+        attr(4, vk::Format::R32G32_SFLOAT, 48),
+        attr(5, vk::Format::R32G32B32_SFLOAT, 56),
+        attr(6, vk::Format::R32_SFLOAT, 68),
+        attr(7, vk::Format::R32_SFLOAT, 72),
     ]
 }
 
@@ -2300,7 +2330,7 @@ mod tests {
         let mut front = 0;
         let mut idx = 0;
 
-        while idx + 18 <= mesh.len() {
+        while idx + crate::world::STRIDE <= mesh.len() {
             let a = project(&view_proj, [mesh[idx], mesh[idx + 1], mesh[idx + 2]]);
             let b = project(&view_proj, [mesh[idx + 6], mesh[idx + 7], mesh[idx + 8]]);
             let c = project(&view_proj, [mesh[idx + 12], mesh[idx + 13], mesh[idx + 14]]);
@@ -2333,7 +2363,7 @@ mod tests {
                 }
             }
 
-            idx += 18;
+            idx += crate::world::STRIDE;
         }
 
         assert!(visible > 0);

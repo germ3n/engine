@@ -139,9 +139,16 @@ impl Window for GfxWindow {
         each_window!(self, |window| window.begin_frame(red, green, blue))
     }
 
-    fn draw_colored_mesh(&mut self, vertices: &[f32], revision: u64, view: &SceneView) {
+    fn draw_colored_mesh(
+        &mut self,
+        vertices: &[f32],
+        ranges: &[crate::world::SurfaceRange],
+        graphics: &crate::world::MapGraphics,
+        revision: u64,
+        view: &SceneView,
+    ) {
         each_window!(self, |window| window
-            .draw_colored_mesh(vertices, revision, view))
+            .draw_colored_mesh(vertices, ranges, graphics, revision, view))
     }
 
     fn draw_skinned(&mut self, batch: &SkinBatch, view: &SceneView) {
