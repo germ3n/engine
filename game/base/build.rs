@@ -298,6 +298,9 @@ fn write_base_pak() {
         ("shaders/skinned.wgsl", "src/ui/shaders/skinned.wgsl"),
         ("models/test.mdl", "models/test.mdl"),
         ("models/test.anm", "models/test.anm"),
+        ("models/test.gltf", "models/test.gltf"),
+        ("models/test.bin", "models/test.bin"),
+        ("models/test.png", "models/test.png"),
         ("sound/mannequin/wave.wav", "sound/mannequin/wave.wav"),
     ];
     let lua = [

@@ -2504,6 +2504,29 @@ mod tests {
     }
 
     #[test]
+    fn shipped_crate_uses_the_checker_texture() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/test.gltf");
+        let bytes = std::fs::read(&path).unwrap();
+        let dir = path.parent().unwrap().to_path_buf();
+        let loaded = load_bytes(&bytes, &mut |uri| {
+            std::fs::read(dir.join(uri)).map_err(|err| err.to_string())
+        })
+        .unwrap();
+
+        assert_eq!(loaded.mesh.bones[0].name, "crate");
+        assert_eq!(loaded.mesh.albedo_w, 64);
+        assert_eq!(loaded.mesh.albedo_h, 64);
+        assert_eq!(&loaded.mesh.albedo[..4], &[255, 255, 255, 255]);
+        assert_eq!(&loaded.mesh.albedo[(4 * 64 + 4) * 4..][..4], &[32, 96, 200, 255]);
+        assert_eq!(loaded.clips.sequences[0].name, "spin");
+        assert!(near(loaded.clips.sequences[0].duration, 2.0));
+        let (pos, rot) = bind_pose(&loaded.mesh);
+        let point = skinned(&loaded.mesh, 0, &pos, &rot);
+
+        assert!(point[2] >= -0.01 && point[2] <= 1.01);
+    }
+
+    #[test]
     fn external_buffer_uses_the_callback() {
         let bin = f32s(&[0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0]);
         let json = format!(
