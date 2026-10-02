@@ -54,3 +54,31 @@ pub fn Networkable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     gen.into()
 }
+
+#[proc_macro_attribute]
+pub fn document(attr: TokenStream, item: TokenStream) -> TokenStream
+{
+    let attr = proc_macro2::TokenStream::from(attr);
+    let item = proc_macro2::TokenStream::from(item);
+    let fallback = syn::parse2::<syn::ItemFn>(item.clone())
+        .ok()
+        .map(|func| func.sig.ident.to_string());
+
+    match wiki::parse_document(attr, fallback.as_deref(), "<macro>")
+    {
+        Ok(_) => quote! {
+            #[allow(dead_code)]
+            #item
+        },
+        Err(err) =>
+        {
+            let message = err.to_string();
+
+            quote! {
+                compile_error!(#message);
+                #item
+            }
+        }
+    }
+    .into()
+}

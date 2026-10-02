@@ -20,6 +20,66 @@ local TAG_VECTOR3 = 5;
 local TAG_ANGLE3 = 6;
 local TAG_ENTITY = 7;
 
+--[=[document
+kind = "library",
+name = "ents",
+realm = "shared",
+summary = "Creates, finds, and removes entities.",
+]=]
+--[=[document
+kind = "class",
+name = "Entity",
+realm = "shared",
+summary = "A scripted or native entity. Call methods with a colon. Hooks are functions on the entity table.",
+]=]
+--[=[document
+parent = "Entity",
+name = "initialize",
+kind = "hook",
+realm = "shared",
+summary = "Called after the entity is created. On the server this is ents.create. On the client this is the networked spawn.",
+returns = { ty = "nil", desc = "" },
+example = "function ENT:initialize()\nend",
+]=]
+--[=[document
+parent = "Entity",
+name = "on_spawn",
+kind = "hook",
+realm = "shared",
+summary = "Called when the entity becomes spawned, after Entity:spawn on the server and after the client receives the spawn.",
+returns = { ty = "nil", desc = "" },
+see_also = "Entity:spawn",
+]=]
+--[=[document
+parent = "Entity",
+name = "think",
+kind = "hook",
+realm = "shared",
+summary = "Called while the entity is spawned and engine.curtime has reached the time passed to set_next_think.",
+returns = { ty = "nil", desc = "" },
+see_also = "Entity:set_next_think",
+]=]
+--[=[document
+parent = "Entity",
+name = "predicted_think",
+kind = "hook",
+realm = "shared",
+summary = "Called on the server and during client prediction with the command being simulated.",
+params = {
+    cmd = { ty = "table", desc = "Fields: tick, buttons, wish (Vector3), view (Angle3)." },
+},
+returns = { ty = "nil", desc = "" },
+see_also = "engine.first_time_predicted",
+]=]
+--[=[document
+parent = "Entity",
+name = "on_remove",
+kind = "hook",
+realm = "shared",
+summary = "Called once when the entity is removed.",
+returns = { ty = "nil", desc = "" },
+see_also = "Entity:remove",
+]=]
 return function(native)
     ents = {};
     ents._storage = ents._storage or {};
@@ -952,22 +1012,58 @@ return function(native)
         end
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "index",
+    realm = "shared",
+    summary = "Slot of this entity in the entity list.",
+    returns = { ty = "number", desc = "Index used by ents.get_by_index." },
+    ]=]
     function meta:index()
         return self._index;
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "handle",
+    realm = "shared",
+    summary = "Returns the entity handle userdata.",
+    returns = { ty = "EntityHandle", desc = "Handle with index, generation, raw, and is_null." },
+    ]=]
     function meta:handle()
         return native_handle(self._handle);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "get_class",
+    realm = "shared",
+    summary = "Class name this entity was created as.",
+    returns = { ty = "string", desc = "Registered class name." },
+    ]=]
     function meta:get_class()
         return self._class;
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "is_valid",
+    realm = "shared",
+    summary = "False after the entity has been removed.",
+    returns = { ty = "boolean", desc = "True while the entity is still in the list." },
+    ]=]
     function meta:is_valid()
         return not self._removed;
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "spawn",
+    realm = "shared",
+    summary = "Marks the entity spawned and calls on_spawn. Does nothing if it is already spawned or removed.",
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:on_spawn, ents.create",
+    ]=]
     function meta:spawn()
         if self._spawned or self._removed then
             return;
@@ -998,6 +1094,14 @@ return function(native)
         end
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "remove",
+    realm = "shared",
+    summary = "Calls on_remove and deletes the entity. A second call does nothing.",
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:on_remove, ents.remove",
+    ]=]
     function meta:remove()
         if self._removed then
             return;
@@ -1008,34 +1112,115 @@ return function(native)
         unlink(self);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "get_pos",
+    realm = "shared",
+    summary = "World position.",
+    returns = { ty = "Vector3", desc = "Current position." },
+    see_also = "Entity:set_pos",
+    ]=]
     function meta:get_pos()
         return vector_type(native_get_pos(self._handle));
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_pos",
+    realm = "shared",
+    summary = "Sets the world position.",
+    params = {
+        pos = { ty = "Vector3", desc = "New position." },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ent:set_pos(Vector3(0, 0, 64))",
+    see_also = "Entity:get_pos",
+    ]=]
     function meta:set_pos(pos)
         native_set_pos(self._handle, pos.x, pos.y, pos.z);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "get_angles",
+    realm = "shared",
+    summary = "World angles.",
+    returns = { ty = "Angle3", desc = "Pitch, yaw, and roll." },
+    see_also = "Entity:set_angles",
+    ]=]
     function meta:get_angles()
         return angle_type(native_get_angles(self._handle));
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_angles",
+    realm = "shared",
+    summary = "Sets the world angles.",
+    params = {
+        angles = { ty = "Angle3", desc = "New pitch, yaw, and roll." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:get_angles",
+    ]=]
     function meta:set_angles(angles)
         native_set_angles(self._handle, angles.p, angles.y, angles.r);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "get_velocity",
+    realm = "shared",
+    summary = "Velocity in units per second.",
+    returns = { ty = "Vector3", desc = "Current velocity." },
+    see_also = "Entity:set_velocity",
+    ]=]
     function meta:get_velocity()
         return vector_type(native_get_velocity(self._handle));
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_velocity",
+    realm = "shared",
+    summary = "Sets the velocity.",
+    params = {
+        velocity = { ty = "Vector3", desc = "New velocity." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:get_velocity",
+    ]=]
     function meta:set_velocity(velocity)
         native_set_velocity(self._handle, velocity.x, velocity.y, velocity.z);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_next_think",
+    realm = "shared",
+    summary = "Schedules the next think call.",
+    params = {
+        time = { ty = "number", desc = "engine.curtime at which think should run." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:think",
+    ]=]
     function meta:set_next_think(time)
         self._next_think = time;
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "get_networked",
+    realm = "shared",
+    summary = "Reads a networked value stored on the entity.",
+    params = {
+        key = { ty = "string", desc = "Value name." },
+        fallback = { ty = "any", desc = "Returned when the key has not been set.", optional = true },
+    },
+    returns = { ty = "any", desc = "The stored value, or fallback." },
+    see_also = "Entity:set_networked",
+    ]=]
     function meta:get_networked(key, fallback)
         local value = self._networked[key];
 
@@ -1046,6 +1231,18 @@ return function(native)
         return value;
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_owner",
+    realm = "server",
+    summary = "Sets the entity that owns this one. Owned entities are predicted with their owner.",
+    params = {
+        owner = { ty = "Entity", desc = "New owner, or nil to clear it.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    panics = "Errors on the client.",
+    see_also = "Entity:get_owner",
+    ]=]
     function meta:set_owner(owner)
         if CLIENT then
             error("set_owner is server only", 2);
@@ -1064,6 +1261,14 @@ return function(native)
         attach_owned(self, owner_raw);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "get_owner",
+    realm = "shared",
+    summary = "Entity that owns this one.",
+    returns = { ty = "Entity", desc = "The owner, or nil." },
+    see_also = "Entity:set_owner",
+    ]=]
     function meta:get_owner()
         if self._owner == 0 then
             return nil;
@@ -1072,6 +1277,20 @@ return function(native)
         return wrap(self._owner);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_networked",
+    realm = "server",
+    summary = "Stores a value and, on the server, marks it for replication. A client call only updates the local copy.",
+    params = {
+        key = { ty = "string", desc = "Value name." },
+        value = { ty = "any", desc = "nil, boolean, number, string, Entity, Vector3, or Angle3." },
+        predicted = { ty = "boolean", desc = "When true, prediction keeps this key on the client.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    panics = "Errors if the key is not a string or the value type cannot be networked.",
+    see_also = "Entity:get_networked, Entity:set_interpolated",
+    ]=]
     function meta:set_networked(key, value, predicted)
         if type(key) ~= "string" then
             error("networked key must be a string", 2);
@@ -1120,6 +1339,19 @@ return function(native)
         keys[key] = true;
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_interpolated",
+    realm = "shared",
+    summary = "Turns interpolation on or off for a networked key. Turning it off drops that key's sample history.",
+    params = {
+        key = { ty = "string", desc = "Networked value name." },
+        enabled = { ty = "boolean", desc = "Defaults to true.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    panics = "Errors if the key is not a string.",
+    see_also = "Entity:set_networked",
+    ]=]
     function meta:set_interpolated(key, enabled)
         if type(key) ~= "string" then
             error("interpolated key must be a string", 2);
@@ -1149,22 +1381,82 @@ return function(native)
         end
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_model",
+    realm = "shared",
+    summary = "Sets the mesh and animation clip file.",
+    params = {
+        mesh = { ty = "string", desc = "Model path, such as models/test.mdl." },
+        clips = { ty = "string", desc = "Animation path, such as models/test.anm. Defaults to an empty string.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ent:set_model(\"models/test.mdl\", \"models/test.anm\")",
+    see_also = "Entity:set_sequence",
+    ]=]
     function meta:set_model(mesh, clips)
         native_set_model(self._handle, mesh, clips or "");
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "set_sequence",
+    realm = "shared",
+    summary = "Plays a sequence from the entity's animation file.",
+    params = {
+        name = { ty = "string", desc = "Sequence name." },
+        rate = { ty = "number", desc = "Playback rate. Defaults to 1.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ent:set_sequence(\"idle\")",
+    see_also = "Entity:set_model, Entity:play_gesture",
+    ]=]
     function meta:set_sequence(name, rate)
         native_set_sequence(self._handle, name, rate or 1);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "play_gesture",
+    realm = "shared",
+    summary = "Plays a gesture on top of the current sequence.",
+    params = {
+        name = { ty = "string", desc = "Gesture name." },
+        rate = { ty = "number", desc = "Playback rate. Defaults to 1.", optional = true },
+        weight = { ty = "number", desc = "Blend weight. Defaults to 1.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:stop_gesture, Entity:set_sequence",
+    ]=]
     function meta:play_gesture(name, rate, weight)
         native_play_gesture(self._handle, name, rate or 1, weight or 1);
     end
 
+    --[=[document
+    parent = "Entity",
+    name = "stop_gesture",
+    realm = "shared",
+    summary = "Stops the gesture started by play_gesture.",
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:play_gesture",
+    ]=]
     function meta:stop_gesture()
         native_stop_gesture(self._handle);
     end
 
+    --[=[document
+    parent = "ents",
+    name = "create",
+    realm = "server",
+    summary = "Creates a scripted entity and calls initialize.",
+    params = {
+        class = { ty = "string", desc = "Class passed to scripted_ents.register." },
+    },
+    returns = { ty = "Entity", desc = "The new entity, or nil if the list could not spawn it." },
+    example = "local ent = ents.create(\"sent_blaster\")\nent:spawn()",
+    panics = "Errors on the client, if the class is not registered, or if the class is a native class.",
+    see_also = "Entity:spawn, Entity:initialize, scripted_ents.register",
+    ]=]
     function ents.create(class)
         if CLIENT then
             error("create is server only", 2);
@@ -1192,6 +1484,17 @@ return function(native)
         return ent;
     end
 
+    --[=[document
+    parent = "ents",
+    name = "get_by_index",
+    realm = "shared",
+    summary = "Finds an entity by its list index.",
+    params = {
+        index = { ty = "number", desc = "Index from Entity:index." },
+    },
+    returns = { ty = "Entity", desc = "The entity, or nil." },
+    see_also = "Entity:index",
+    ]=]
     function ents.get_by_index(index)
         local ent = storage[index];
 
@@ -1208,6 +1511,13 @@ return function(native)
         return wrap(raw);
     end
 
+    --[=[document
+    parent = "ents",
+    name = "get_all",
+    realm = "shared",
+    summary = "Every scripted entity currently in the list.",
+    returns = { ty = "table", desc = "Array of Entity. Native entities without a scripted class are left out." },
+    ]=]
     function ents.get_all()
         local revision = native_revision();
 
@@ -1234,6 +1544,16 @@ return function(native)
         return out;
     end
 
+    --[=[document
+    parent = "ents",
+    name = "get",
+    realm = "shared",
+    summary = "Resolves an entity from a table, a numeric handle, or a value with a raw method.",
+    params = {
+        value = { ty = "any", desc = "Entity table, numeric handle, or userdata with raw()." },
+    },
+    returns = { ty = "Entity", desc = "The entity, or nil if it is missing or already removed." },
+    ]=]
     function ents.get(value)
         if type(value) == "table" then
             if value._removed then
@@ -1254,6 +1574,17 @@ return function(native)
         return nil;
     end
 
+    --[=[document
+    parent = "ents",
+    name = "remove",
+    realm = "shared",
+    summary = "Resolves an entity and removes it.",
+    params = {
+        value = { ty = "any", desc = "Same values ents.get accepts." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "ents.get, Entity:remove",
+    ]=]
     function ents.remove(value)
         local ent = ents.get(value);
 
@@ -1264,6 +1595,17 @@ return function(native)
         ent:remove();
     end
 
+    --[=[document
+    parent = "ents",
+    name = "get_by_class",
+    realm = "shared",
+    summary = "Scripted entities whose class name matches.",
+    params = {
+        class = { ty = "string", desc = "Class name." },
+    },
+    returns = { ty = "table", desc = "Array of Entity." },
+    see_also = "ents.find_by_class, ents.get_all",
+    ]=]
     function ents.get_by_class(class)
         local list = ents.get_all();
         local out = {};
@@ -1281,10 +1623,29 @@ return function(native)
         return out;
     end
 
+    --[=[document
+    parent = "ents",
+    name = "find_by_class",
+    realm = "shared",
+    summary = "Alias of ents.get_by_class.",
+    params = {
+        class = { ty = "string", desc = "Class name." },
+    },
+    returns = { ty = "table", desc = "Array of Entity." },
+    see_also = "ents.get_by_class",
+    ]=]
     function ents.find_by_class(class)
         return ents.get_by_class(class);
     end
 
+    --[=[document
+    parent = "ents",
+    name = "get_count",
+    realm = "shared",
+    summary = "Number of entities in the list, including ones ents.get_all skips.",
+    returns = { ty = "number", desc = "Entity count." },
+    see_also = "ents.get_all",
+    ]=]
     function ents.get_count()
         return native_count();
     end

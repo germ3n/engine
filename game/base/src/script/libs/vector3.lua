@@ -1,3 +1,41 @@
+--[=[document
+kind = "class",
+name = "Vector3",
+realm = "shared",
+summary = "Position or direction of three floats. Omitted constructor components are 0.",
+params = {
+    x = { ty = "number", desc = "X component.", optional = true },
+    y = { ty = "number", desc = "Y component.", optional = true },
+    z = { ty = "number", desc = "Z component.", optional = true },
+},
+returns = { ty = "Vector3", desc = "The new vector." },
+example = "local pos = Vector3(0, 0, 64)",
+note = "Operators: + - * / unary minus, ==, and tostring. Multiplication and division take a number or another Vector3.",
+]=]
+--[=[document
+parent = "Vector3",
+name = "x",
+kind = "field",
+realm = "shared",
+summary = "X component.",
+returns = { ty = "number", desc = "The x value." },
+]=]
+--[=[document
+parent = "Vector3",
+name = "y",
+kind = "field",
+realm = "shared",
+summary = "Y component.",
+returns = { ty = "number", desc = "The y value." },
+]=]
+--[=[document
+parent = "Vector3",
+name = "z",
+kind = "field",
+realm = "shared",
+summary = "Z component.",
+returns = { ty = "number", desc = "The z value." },
+]=]
 local ffi = require("ffi")
 
 ffi.cdef[[
@@ -48,6 +86,16 @@ local Vector3Meta = {
 }
 
 Vector3Meta.__index = {
+    --[=[document
+    parent = "Vector3",
+    name = "add_inplace",
+    realm = "shared",
+    summary = "Adds another vector into this one.",
+    params = {
+        other = { ty = "Vector3", desc = "Vector to add." },
+    },
+    returns = { ty = "Vector3", desc = "This vector." },
+    ]=]
     add_inplace = function(self, other)
         self.x = self.x + other.x
         self.y = self.y + other.y
@@ -55,6 +103,16 @@ Vector3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "sub_inplace",
+    realm = "shared",
+    summary = "Subtracts another vector from this one.",
+    params = {
+        other = { ty = "Vector3", desc = "Vector to subtract." },
+    },
+    returns = { ty = "Vector3", desc = "This vector." },
+    ]=]
     sub_inplace = function(self, other)
         self.x = self.x - other.x
         self.y = self.y - other.y
@@ -62,6 +120,16 @@ Vector3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "mul_inplace",
+    realm = "shared",
+    summary = "Multiplies this vector in place.",
+    params = {
+        val = { ty = "any", desc = "A number, or another Vector3 multiplied per component." },
+    },
+    returns = { ty = "Vector3", desc = "This vector." },
+    ]=]
     mul_inplace = function(self, val)
         if type(val) == "number" then
             self.x = self.x * val
@@ -75,10 +143,30 @@ Vector3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "dot",
+    realm = "shared",
+    summary = "Dot product with another vector.",
+    params = {
+        other = { ty = "Vector3", desc = "The other vector." },
+    },
+    returns = { ty = "number", desc = "x*ox + y*oy + z*oz." },
+    ]=]
     dot = function(self, other)
         return self.x * other.x + self.y * other.y + self.z * other.z
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "cross",
+    realm = "shared",
+    summary = "Cross product with another vector.",
+    params = {
+        other = { ty = "Vector3", desc = "The other vector." },
+    },
+    returns = { ty = "Vector3", desc = "A new perpendicular vector." },
+    ]=]
     cross = function(self, other)
         return Vector3Ctor(
             self.y * other.z - self.z * other.y,
@@ -87,14 +175,35 @@ Vector3Meta.__index = {
         )
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "len_sq",
+    realm = "shared",
+    summary = "Squared length.",
+    returns = { ty = "number", desc = "x*x + y*y + z*z." },
+    ]=]
     len_sq = function(self)
         return self.x * self.x + self.y * self.y + self.z * self.z
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "len",
+    realm = "shared",
+    summary = "Length.",
+    returns = { ty = "number", desc = "Square root of the squared length." },
+    ]=]
     len = function(self)
         return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "normalize",
+    realm = "shared",
+    summary = "Returns a unit vector. A zero vector is returned unchanged.",
+    returns = { ty = "Vector3", desc = "A new vector." },
+    ]=]
     normalize = function(self)
         local len = self:len()
         if len > 0 then
@@ -104,6 +213,13 @@ Vector3Meta.__index = {
         return Vector3Ctor(self.x, self.y, self.z)
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "normalize_inplace",
+    realm = "shared",
+    summary = "Scales this vector to unit length. A zero vector is left unchanged.",
+    returns = { ty = "Vector3", desc = "This vector." },
+    ]=]
     normalize_inplace = function(self)
         local len = self:len()
         if len > 0 then
@@ -115,6 +231,18 @@ Vector3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Vector3",
+    name = "sum_all",
+    kind = "function",
+    realm = "shared",
+    summary = "Adds every vector in a list.",
+    params = {
+        vectors = { ty = "table", desc = "Array of Vector3 values." },
+    },
+    returns = { ty = "Vector3", desc = "The sum, or the zero vector when the list is empty." },
+    example = "local sum = Vector3.sum_all({ Vector3(1, 0, 0), Vector3(0, 2, 0) })",
+    ]=]
     sum_all = function(vectors)
         local out = Vector3Ctor(0, 0, 0)
         for idx = 1, #vectors do

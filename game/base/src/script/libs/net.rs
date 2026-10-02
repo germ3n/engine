@@ -1,6 +1,36 @@
 use crate::network::usermessage::{hash_usermessage_name, UserMsgWriter};
 use mlua::Lua;
+use r#macro::document;
 use std::sync::mpsc::Sender;
+
+#[document(
+    parent = "net",
+    name = "writer",
+    realm = "shared",
+    summary = "Creates a usermessage writer.",
+    params = {
+        capacity = { ty = "number", desc = "Optional byte capacity.", optional = true },
+    },
+    returns = { ty = "UserMsgWriter", desc = "Writer passed to net.send. Methods: write_u8, write_i8, write_u16, write_i16, write_u32, write_i32, write_u64, write_i64, write_f32, write_f64." },
+    example = "local writer = net.writer()\nwriter:write_u8(1)\nnet.send(\"hit\", writer)",
+    see_also = "net.send",
+)]
+fn net_writer() {}
+
+#[document(
+    parent = "net",
+    name = "send",
+    realm = "shared",
+    summary = "Sends a usermessage to the other side of the connection.",
+    params = {
+        name = { ty = "string", desc = "Message name. The receiver looks it up with net.hash." },
+        writer = { ty = "UserMsgWriter", desc = "Bytes from net.writer." },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "net.send(\"hit\", net.writer())",
+    see_also = "net.writer, net.hash",
+)]
+fn net_send() {}
 
 pub fn register_net_lib(lua: &Lua, usermsg_sender: Sender<(u32, Vec<u8>)>) {
     let net_table: mlua::Table = lua

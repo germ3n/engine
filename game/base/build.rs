@@ -1,4 +1,5 @@
 fn main() {
+    write_wiki();
     stage_steam();
     compile_bundled_lua();
     write_base_pak();
@@ -213,6 +214,32 @@ fn collect_lua(dir: &std::path::Path, relative: &str, out: &mut Vec<String>) {
         } else if name.ends_with(".lua") {
             out.push(child);
         }
+    }
+}
+
+fn write_wiki() {
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let src = manifest_dir.join("src");
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("src/script/libs/engine.rs").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("src/script/libs/net.rs").display()
+    );
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let target_dir = out_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| manifest_dir.join("../../target"));
+    let dest = target_dir.join("wiki/index.html");
+
+    if let Err(err) = wiki::generate(&src, &dest) {
+        panic!("wiki: {err}");
     }
 }
 

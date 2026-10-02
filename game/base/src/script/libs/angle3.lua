@@ -1,3 +1,41 @@
+--[=[document
+kind = "class",
+name = "Angle3",
+realm = "shared",
+summary = "Pitch, yaw, and roll in degrees. Omitted constructor components are 0.",
+params = {
+    p = { ty = "number", desc = "Pitch.", optional = true },
+    y = { ty = "number", desc = "Yaw.", optional = true },
+    r = { ty = "number", desc = "Roll.", optional = true },
+},
+returns = { ty = "Angle3", desc = "The new angle." },
+example = "local ang = Angle3(0, 90, 0)",
+note = "Operators match Vector3: + - * / unary minus, ==, and tostring. Multiplication and division take a number or another Angle3. normalize wraps each component into (-180, 180].",
+]=]
+--[=[document
+parent = "Angle3",
+name = "p",
+kind = "field",
+realm = "shared",
+summary = "Pitch, in degrees.",
+returns = { ty = "number", desc = "The pitch." },
+]=]
+--[=[document
+parent = "Angle3",
+name = "y",
+kind = "field",
+realm = "shared",
+summary = "Yaw, in degrees.",
+returns = { ty = "number", desc = "The yaw." },
+]=]
+--[=[document
+parent = "Angle3",
+name = "r",
+kind = "field",
+realm = "shared",
+summary = "Roll, in degrees.",
+returns = { ty = "number", desc = "The roll." },
+]=]
 local ffi = require("ffi")
 
 ffi.cdef[[
@@ -48,6 +86,16 @@ local Angle3Meta = {
 }
 
 Angle3Meta.__index = {
+    --[=[document
+    parent = "Angle3",
+    name = "add_inplace",
+    realm = "shared",
+    summary = "Adds another angle into this one.",
+    params = {
+        other = { ty = "Angle3", desc = "Angle to add." },
+    },
+    returns = { ty = "Angle3", desc = "This angle." },
+    ]=]
     add_inplace = function(self, other)
         self.p = self.p + other.p
         self.y = self.y + other.y
@@ -55,6 +103,16 @@ Angle3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Angle3",
+    name = "sub_inplace",
+    realm = "shared",
+    summary = "Subtracts another angle from this one.",
+    params = {
+        other = { ty = "Angle3", desc = "Angle to subtract." },
+    },
+    returns = { ty = "Angle3", desc = "This angle." },
+    ]=]
     sub_inplace = function(self, other)
         self.p = self.p - other.p
         self.y = self.y - other.y
@@ -62,6 +120,16 @@ Angle3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Angle3",
+    name = "mul_inplace",
+    realm = "shared",
+    summary = "Multiplies this angle in place.",
+    params = {
+        val = { ty = "any", desc = "A number, or another Angle3 multiplied per component." },
+    },
+    returns = { ty = "Angle3", desc = "This angle." },
+    ]=]
     mul_inplace = function(self, val)
         if type(val) == "number" then
             self.p = self.p * val
@@ -75,6 +143,13 @@ Angle3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Angle3",
+    name = "normalize",
+    realm = "shared",
+    summary = "Wraps each component into the range (-180, 180].",
+    returns = { ty = "Angle3", desc = "A new angle." },
+    ]=]
     normalize = function(self)
         return Angle3Ctor(
             (self.p + 180.0) % 360.0 - 180.0,
@@ -83,6 +158,13 @@ Angle3Meta.__index = {
         )
     end,
 
+    --[=[document
+    parent = "Angle3",
+    name = "normalize_inplace",
+    realm = "shared",
+    summary = "Wraps each component of this angle into the range (-180, 180].",
+    returns = { ty = "Angle3", desc = "This angle." },
+    ]=]
     normalize_inplace = function(self)
         self.p = (self.p + 180.0) % 360.0 - 180.0
         self.y = (self.y + 180.0) % 360.0 - 180.0
@@ -90,6 +172,18 @@ Angle3Meta.__index = {
         return self
     end,
 
+    --[=[document
+    parent = "Angle3",
+    name = "sum_all",
+    kind = "function",
+    realm = "shared",
+    summary = "Adds every angle in a list.",
+    params = {
+        angles = { ty = "table", desc = "Array of Angle3 values." },
+    },
+    returns = { ty = "Angle3", desc = "The sum, or the zero angle when the list is empty." },
+    example = "local sum = Angle3.sum_all({ Angle3(0, 90, 0), Angle3(10, 0, 0) })",
+    ]=]
     sum_all = function(angles)
         local out = Angle3Ctor(0, 0, 0)
         for idx = 1, #angles do

@@ -1,3 +1,9 @@
+--[=[document
+kind = "library",
+name = "scripted_ents",
+realm = "shared",
+summary = "Registers entity class tables and resolves inheritance. Every class except base_entity sets ENT.base.",
+]=]
 scripted_ents = {};
 scripted_ents._storage = scripted_ents._storage or {};
 scripted_ents._resolved = scripted_ents._resolved or {};
@@ -85,6 +91,20 @@ local function flatten_tree(class, done)
     end
 end
 
+--[=[document
+parent = "scripted_ents",
+name = "register",
+realm = "shared",
+summary = "Stores an entity class table. The class is flattened, including its base, when something asks for it.",
+params = {
+    ENT = { ty = "table", desc = "Class table. Set ENT.base to the parent class name." },
+    class = { ty = "string", desc = "Class name. base_entity is the root and has no base." },
+},
+returns = { ty = "nil", desc = "" },
+example = "scripted_ents.register({\n    base = \"base_entity\",\n    initialize = function(self) end,\n}, \"sent_box\")",
+panics = "Errors if the arguments are wrong, the class is already registered, the name hash collides, or a base is missing.",
+see_also = "ents.create, scripted_ents.get",
+]=]
 function scripted_ents.register(ENT, class)
     if type(ENT) ~= "table" or type(class) ~= "string" or class == "" then
         error("scripted_ents.register expects (table, string)", 2);
@@ -131,6 +151,17 @@ function scripted_ents.register(ENT, class)
     flatten_tree(class, {});
 end
 
+--[=[document
+parent = "scripted_ents",
+name = "get_stored",
+realm = "shared",
+summary = "The class table as it was registered, without inherited keys.",
+params = {
+    class = { ty = "string", desc = "Class name." },
+},
+returns = { ty = "table", desc = "A table with def and base, or nil if the class is not registered." },
+see_also = "scripted_ents.get",
+]=]
 function scripted_ents.get_stored(class)
     local raw = storage[class];
 
@@ -141,6 +172,17 @@ function scripted_ents.get_stored(class)
     return { def = raw, base = raw.base };
 end
 
+--[=[document
+parent = "scripted_ents",
+name = "is_based_on",
+realm = "shared",
+summary = "Walks the base chain and reports whether class derives from base.",
+params = {
+    class = { ty = "string", desc = "Class to test." },
+    base = { ty = "string", desc = "Ancestor class, or the class itself." },
+},
+returns = { ty = "boolean", desc = "True if class is base or inherits from it." },
+]=]
 function scripted_ents.is_based_on(class, base)
     local current = class;
 
@@ -161,6 +203,17 @@ function scripted_ents.is_based_on(class, base)
     return false;
 end
 
+--[=[document
+parent = "scripted_ents",
+name = "get",
+realm = "shared",
+summary = "Returns the class table with inherited keys copied in from its bases.",
+params = {
+    class = { ty = "string", desc = "Class name." },
+},
+returns = { ty = "table", desc = "The flattened class, or nil if it is not registered." },
+see_also = "scripted_ents.get_stored, scripted_ents.register",
+]=]
 function scripted_ents.get(class)
     local out = resolved[class];
 
@@ -175,6 +228,14 @@ function scripted_ents.get(class)
     return flatten(class, {});
 end
 
+--[=[document
+parent = "scripted_ents",
+name = "get_list",
+realm = "shared",
+summary = "Every registered class, flattened.",
+returns = { ty = "table", desc = "Map of class name to the table from scripted_ents.get." },
+see_also = "scripted_ents.get",
+]=]
 function scripted_ents.get_list()
     local out = {};
 
