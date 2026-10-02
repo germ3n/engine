@@ -29,13 +29,13 @@ pub enum NetValue {
     Entity(EntityHandle),
 }
 
-#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
 pub struct NetVar {
     pub key: String,
     pub value: NetValue,
 }
 
-#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
 pub struct EntityNetworked {
     pub handle: EntityHandle,
     pub vars: Vec<NetVar>,

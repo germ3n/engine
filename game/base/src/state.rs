@@ -187,8 +187,8 @@ impl<In, Out> GameState<In, Out> {
         std::mem::take(&mut self.despawned)
     }
 
-    pub fn net_spawn(&mut self, handle: EntityHandle, vars: &[NetVar]) -> bool {
-        self.with_entities(|engine| engine.net_spawn(handle, vars))
+    pub fn net_spawn(&mut self, handle: EntityHandle, vars: &[NetVar], time: f64) -> bool {
+        self.with_entities(|engine| engine.net_spawn(handle, vars, Some(time)))
     }
 
     pub fn collect_networked(&mut self) -> Vec<EntityNetworked> {
@@ -199,8 +199,12 @@ impl<In, Out> GameState<In, Out> {
         self.with_entities(|engine| engine.networked_state(handle))
     }
 
-    pub fn apply_networked(&mut self, entities: &[EntityNetworked]) {
-        self.with_entities(|engine| engine.apply_networked(entities));
+    pub fn apply_networked(&mut self, entities: &[EntityNetworked], time: f64) {
+        self.with_entities(|engine| engine.apply_networked(entities, Some(time)));
+    }
+
+    pub fn present_networked(&mut self, time: f64) {
+        self.with_entities(|engine| engine.present_networked(time));
     }
 
     pub fn run_predicted(&mut self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {

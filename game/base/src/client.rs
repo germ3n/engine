@@ -1061,6 +1061,8 @@ fn present_remotes(
         movement::forget_old_poses(samples, render_time);
     }
 
+    game.present_networked(render_time);
+
     let mut idx = 0;
 
     while idx < visual.len() {
@@ -1205,6 +1207,7 @@ fn apply_server_event(
                 game.entities.insert_at(handle, Box::new(player));
             } else if !spawn_scripted(
                 game,
+                now,
                 handle,
                 class_hash,
                 position,
@@ -1240,7 +1243,7 @@ fn apply_server_event(
             }
         }
         ServerToClient::NetworkedUpdate { entities } => {
-            game.apply_networked(&entities);
+            game.apply_networked(&entities, now);
         }
         ServerToClient::PredictedState {
             tick: _,
@@ -2025,13 +2028,17 @@ fn apply_spawn(
         game.entities.insert_at(entity.handle, Box::new(player));
 
         if !vars.is_empty() {
-            game.apply_networked(&[EntityNetworked {
-                handle: entity.handle,
-                vars: vars.to_vec(),
-            }]);
+            game.apply_networked(
+                &[EntityNetworked {
+                    handle: entity.handle,
+                    vars: vars.to_vec(),
+                }],
+                now,
+            );
         }
     } else if !spawn_scripted(
         game,
+        now,
         entity.handle,
         entity.class_hash,
         entity.position,
@@ -2059,6 +2066,7 @@ fn apply_spawn(
 
 fn spawn_scripted(
     game: &mut GameState<FromServer, ClientToServer>,
+    now: f64,
     handle: EntityHandle,
     class_hash: u32,
     position: Vector3,
@@ -2078,7 +2086,7 @@ fn spawn_scripted(
         return false;
     }
 
-    if game.net_spawn(handle, vars) {
+    if game.net_spawn(handle, vars, now) {
         return true;
     }
 

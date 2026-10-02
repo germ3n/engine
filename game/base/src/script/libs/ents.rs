@@ -17,13 +17,13 @@ const TAG_STRING: u8 = 4;
 const TAG_VECTOR3: u8 = 5;
 const TAG_ANGLE3: u8 = 6;
 const TAG_ENTITY: u8 = 7;
-const VAR_STRIDE: usize = 5;
 
 pub const ENTS_THINK: &str = "EntsThink";
 pub const ENTS_REMOVED: &str = "EntsRemoved";
 pub const ENTS_NET_SPAWN: &str = "EntsNetSpawn";
 pub const ENTS_COLLECT_NETWORKED: &str = "EntsCollectNetworked";
 pub const ENTS_APPLY_NETWORKED: &str = "EntsApplyNetworked";
+pub const ENTS_PRESENT: &str = "EntsPresent";
 pub const ENTS_NETWORKED_STATE: &str = "EntsNetworkedState";
 pub const ENTS_PREDICTED: &str = "EntsPredicted";
 pub const ENTS_PREDICTED_STATE: &str = "EntsPredictedState";
@@ -245,6 +245,7 @@ pub fn register_ents_lib(lua: &Lua, access: EntityAccess) {
         ("net_spawn", ENTS_NET_SPAWN),
         ("collect_networked", ENTS_COLLECT_NETWORKED),
         ("apply_networked", ENTS_APPLY_NETWORKED),
+        ("present_interpolated", ENTS_PRESENT),
         ("networked_state", ENTS_NETWORKED_STATE),
         ("predicted", ENTS_PREDICTED),
         ("predicted_state", ENTS_PREDICTED_STATE),
@@ -261,143 +262,229 @@ pub fn register_ents_lib(lua: &Lua, access: EntityAccess) {
     }
 }
 
-fn number(value: &Value) -> f64 {
-    match value {
-        Value::Integer(value) => *value as f64,
-        Value::Number(value) => *value,
-        _ => 0.0,
+fn truncated() -> Error {
+    Error::RuntimeError("truncated netvar blob".to_string())
+}
+
+fn too_long() -> Error {
+    Error::RuntimeError("netvar string is too long".to_string())
+}
+
+struct Blob<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Blob<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self.at.checked_add(n).ok_or_else(truncated)?;
+
+        if end > self.bytes.len() {
+            return Err(truncated());
+        }
+
+        let out = &self.bytes[self.at..end];
+        self.at = end;
+
+        Ok(out)
+    }
+
+    fn u8(&mut self) -> Result<u8> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16> {
+        let bytes = self.take(2)?;
+
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn u32(&mut self) -> Result<u32> {
+        let bytes = self.take(4)?;
+
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn i32(&mut self) -> Result<i32> {
+        let bytes = self.take(4)?;
+
+        Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn f32(&mut self) -> Result<f32> {
+        let bytes = self.take(4)?;
+
+        Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn f64(&mut self) -> Result<f64> {
+        let bytes = self.take(8)?;
+
+        Ok(f64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn text(&mut self) -> Result<String> {
+        let n = self.u16()? as usize;
+        let bytes = self.take(n)?;
+
+        String::from_utf8(bytes.to_vec())
+            .map_err(|_| Error::RuntimeError("netvar string is not utf-8".to_string()))
     }
 }
 
-fn decode_value(flat: &Table, at: usize) -> Result<NetValue> {
-    let tag: u8 = flat.raw_get(at + 1)?;
-    let first: Value = flat.raw_get(at + 2)?;
+fn write_str(out: &mut Vec<u8>, text: &str) -> Result<()> {
+    let n = text.len();
+
+    if n > u16::MAX as usize {
+        return Err(too_long());
+    }
+
+    out.extend_from_slice(&(n as u16).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+
+    Ok(())
+}
+
+fn write_value(out: &mut Vec<u8>, value: &NetValue) -> Result<()> {
+    match value {
+        NetValue::Nil => out.push(TAG_NIL),
+        NetValue::Bool(value) => {
+            out.push(TAG_BOOL);
+            out.push(u8::from(*value));
+        }
+        NetValue::Int(value) => {
+            out.push(TAG_INT);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        NetValue::Float(value) => {
+            out.push(TAG_FLOAT);
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        NetValue::String(value) => {
+            out.push(TAG_STRING);
+            write_str(out, value)?;
+        }
+        NetValue::Vector3(value) => {
+            out.push(TAG_VECTOR3);
+            out.extend_from_slice(&value.x.to_le_bytes());
+            out.extend_from_slice(&value.y.to_le_bytes());
+            out.extend_from_slice(&value.z.to_le_bytes());
+        }
+        NetValue::Angle3(value) => {
+            out.push(TAG_ANGLE3);
+            out.extend_from_slice(&value.p.to_le_bytes());
+            out.extend_from_slice(&value.y.to_le_bytes());
+            out.extend_from_slice(&value.r.to_le_bytes());
+        }
+        NetValue::Entity(handle) => {
+            out.push(TAG_ENTITY);
+            out.extend_from_slice(&handle.0.to_le_bytes());
+        }
+    }
+
+    Ok(())
+}
+
+fn write_var(out: &mut Vec<u8>, var: &NetVar) -> Result<()> {
+    write_str(out, &var.key)?;
+    write_value(out, &var.value)
+}
+
+fn read_value(blob: &mut Blob<'_>) -> Result<NetValue> {
+    let tag = blob.u8()?;
 
     let value = match tag {
-        TAG_BOOL => NetValue::Bool(matches!(first, Value::Boolean(true))),
-        TAG_INT => NetValue::Int(number(&first) as i32),
-        TAG_FLOAT => NetValue::Float(number(&first)),
-        TAG_STRING => match first {
-            Value::String(text) => NetValue::String(text.to_str()?.to_string()),
-            _ => NetValue::Nil,
-        },
-        TAG_VECTOR3 => {
-            let y: Value = flat.raw_get(at + 3)?;
-            let z: Value = flat.raw_get(at + 4)?;
-
-            NetValue::Vector3(Vector3::new(number(&first), number(&y), number(&z)))
-        }
-        TAG_ANGLE3 => {
-            let y: Value = flat.raw_get(at + 3)?;
-            let r: Value = flat.raw_get(at + 4)?;
-
-            NetValue::Angle3(Angle3::new(
-                number(&first) as f32,
-                number(&y) as f32,
-                number(&r) as f32,
-            ))
-        }
-        TAG_ENTITY => NetValue::Entity(EntityHandle(number(&first) as u32)),
-        _ => NetValue::Nil,
+        TAG_NIL => NetValue::Nil,
+        TAG_BOOL => NetValue::Bool(blob.u8()? != 0),
+        TAG_INT => NetValue::Int(blob.i32()?),
+        TAG_FLOAT => NetValue::Float(blob.f64()?),
+        TAG_STRING => NetValue::String(blob.text()?),
+        TAG_VECTOR3 => NetValue::Vector3(Vector3::new(blob.f64()?, blob.f64()?, blob.f64()?)),
+        TAG_ANGLE3 => NetValue::Angle3(Angle3::new(blob.f32()?, blob.f32()?, blob.f32()?)),
+        TAG_ENTITY => NetValue::Entity(EntityHandle(blob.u32()?)),
+        _ => return Err(Error::RuntimeError("bad netvar tag".to_string())),
     };
 
     Ok(value)
 }
 
-fn decode_flat(flat: &Table, len: usize) -> Result<Vec<EntityNetworked>> {
+fn decode_entities(bytes: &[u8]) -> Result<Vec<EntityNetworked>> {
+    let mut blob = Blob { bytes, at: 0 };
     let mut out = Vec::new();
-    let mut at = 1;
 
-    while at < len {
-        let raw: u32 = flat.raw_get(at)?;
-        let count: usize = flat.raw_get(at + 1)?;
-        at += 2;
+    while blob.at < bytes.len() {
+        let handle = EntityHandle(blob.u32()?);
+        let count = blob.u16()? as usize;
         let mut vars = Vec::with_capacity(count);
 
         for _ in 0..count {
-            let key: String = flat.raw_get(at)?;
-            let value = decode_value(flat, at)?;
-            vars.push(NetVar { key, value });
-            at += VAR_STRIDE;
+            vars.push(NetVar {
+                key: blob.text()?,
+                value: read_value(&mut blob)?,
+            });
         }
 
-        out.push(EntityNetworked {
-            handle: EntityHandle(raw),
-            vars,
-        });
+        out.push(EntityNetworked { handle, vars });
     }
 
     Ok(out)
 }
 
-fn encode_vars(lua: &Lua, flat: &Table, mut at: usize, vars: &[NetVar]) -> Result<usize> {
-    for var in vars {
-        flat.raw_set(at, lua.create_string(&var.key)?)?;
-
-        match &var.value {
-            NetValue::Nil => {
-                flat.raw_set(at + 1, TAG_NIL)?;
-            }
-            NetValue::Bool(value) => {
-                flat.raw_set(at + 1, TAG_BOOL)?;
-                flat.raw_set(at + 2, *value)?;
-            }
-            NetValue::Int(value) => {
-                flat.raw_set(at + 1, TAG_INT)?;
-                flat.raw_set(at + 2, *value)?;
-            }
-            NetValue::Float(value) => {
-                flat.raw_set(at + 1, TAG_FLOAT)?;
-                flat.raw_set(at + 2, *value)?;
-            }
-            NetValue::String(value) => {
-                flat.raw_set(at + 1, TAG_STRING)?;
-                flat.raw_set(at + 2, lua.create_string(value)?)?;
-            }
-            NetValue::Vector3(value) => {
-                flat.raw_set(at + 1, TAG_VECTOR3)?;
-                flat.raw_set(at + 2, value.x)?;
-                flat.raw_set(at + 3, value.y)?;
-                flat.raw_set(at + 4, value.z)?;
-            }
-            NetValue::Angle3(value) => {
-                flat.raw_set(at + 1, TAG_ANGLE3)?;
-                flat.raw_set(at + 2, value.p)?;
-                flat.raw_set(at + 3, value.y)?;
-                flat.raw_set(at + 4, value.r)?;
-            }
-            NetValue::Entity(handle) => {
-                flat.raw_set(at + 1, TAG_ENTITY)?;
-                flat.raw_set(at + 2, handle.0)?;
-            }
-        }
-
-        at += VAR_STRIDE;
-    }
-
-    Ok(at)
-}
-
-fn encode_flat(lua: &Lua, entities: &[EntityNetworked]) -> Result<(Table, usize)> {
-    let flat = lua.create_table()?;
-    let mut at = 1;
+fn encode_entities(entities: &[EntityNetworked]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
 
     for entity in entities {
-        flat.raw_set(at, entity.handle.0)?;
-        flat.raw_set(at + 1, entity.vars.len())?;
-        at = encode_vars(lua, &flat, at + 2, &entity.vars)?;
+        if entity.vars.len() > u16::MAX as usize {
+            return Err(too_long());
+        }
+
+        out.extend_from_slice(&entity.handle.0.to_le_bytes());
+        out.extend_from_slice(&(entity.vars.len() as u16).to_le_bytes());
+
+        for var in &entity.vars {
+            write_var(&mut out, var)?;
+        }
     }
 
-    Ok((flat, at))
+    Ok(out)
 }
 
-fn call_flat(lua: &Lua, name: &str, args: impl mlua::IntoLuaMulti) -> Result<Vec<EntityNetworked>> {
-    let function: Function = lua.named_registry_value(name)?;
-    let (flat, len): (Option<Table>, Option<usize>) = function.call(args)?;
+fn encode_var_list(vars: &[NetVar]) -> Result<Vec<u8>> {
+    if vars.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    match (flat, len) {
-        (Some(flat), Some(len)) => decode_flat(&flat, len),
-        _ => Ok(Vec::new()),
+    if vars.len() > u16::MAX as usize {
+        return Err(too_long());
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&(vars.len() as u16).to_le_bytes());
+
+    for var in vars {
+        write_var(&mut out, var)?;
+    }
+
+    Ok(out)
+}
+
+fn lua_blob(lua: &Lua, bytes: Vec<u8>) -> Result<Value> {
+    if bytes.is_empty() {
+        return Ok(Value::Nil);
+    }
+
+    Ok(Value::String(lua.create_string(bytes)?))
+}
+
+fn call_blob(lua: &Lua, name: &str, args: impl mlua::IntoLuaMulti) -> Result<Vec<EntityNetworked>> {
+    let function: Function = lua.named_registry_value(name)?;
+    let blob: Option<mlua::LuaString> = function.call(args)?;
+
+    match blob {
+        Some(blob) => decode_entities(&blob.as_bytes()),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -420,27 +507,36 @@ pub fn removed(lua: &Lua, handles: &[(EntityHandle, bool)]) -> Result<()> {
     function.call((list, handles.len()))
 }
 
-pub fn net_spawn(lua: &Lua, handle: EntityHandle, vars: &[NetVar]) -> Result<bool> {
+pub fn net_spawn(lua: &Lua, handle: EntityHandle, vars: &[NetVar], time: Option<f64>) -> Result<bool> {
     let function: Function = lua.named_registry_value(ENTS_NET_SPAWN)?;
-    let flat = lua.create_table()?;
-    let len = encode_vars(lua, &flat, 1, vars)?;
+    let blob = lua_blob(lua, encode_var_list(vars)?)?;
 
-    function.call((handle.0, flat, vars.len(), len))
+    function.call((handle.0, blob, time))
 }
 
 pub fn collect_networked(lua: &Lua) -> Result<Vec<EntityNetworked>> {
-    call_flat(lua, ENTS_COLLECT_NETWORKED, ())
+    call_blob(lua, ENTS_COLLECT_NETWORKED, ())
 }
 
 pub fn networked_state(lua: &Lua, handle: Option<EntityHandle>) -> Result<Vec<EntityNetworked>> {
-    call_flat(lua, ENTS_NETWORKED_STATE, handle.map(|handle| handle.0))
+    call_blob(lua, ENTS_NETWORKED_STATE, handle.map(|handle| handle.0))
 }
 
-pub fn apply_networked(lua: &Lua, entities: &[EntityNetworked]) -> Result<(usize, usize)> {
+pub fn apply_networked(
+    lua: &Lua,
+    entities: &[EntityNetworked],
+    time: Option<f64>,
+) -> Result<(usize, usize)> {
     let function: Function = lua.named_registry_value(ENTS_APPLY_NETWORKED)?;
-    let (flat, len) = encode_flat(lua, entities)?;
+    let blob = lua_blob(lua, encode_entities(entities)?)?;
 
-    function.call((flat, len))
+    function.call((blob, time))
+}
+
+pub fn present_interpolated(lua: &Lua, time: f64) -> Result<()> {
+    let function: Function = lua.named_registry_value(ENTS_PRESENT)?;
+
+    function.call(time)
 }
 
 pub fn predicted(lua: &Lua, handle: EntityHandle, cmd: &UserCommand, first_time: bool) -> Result<()> {
@@ -461,14 +557,14 @@ pub fn predicted(lua: &Lua, handle: EntityHandle, cmd: &UserCommand, first_time:
 }
 
 pub fn predicted_state(lua: &Lua, handle: EntityHandle) -> Result<Vec<EntityNetworked>> {
-    call_flat(lua, ENTS_PREDICTED_STATE, handle.0)
+    call_blob(lua, ENTS_PREDICTED_STATE, handle.0)
 }
 
 pub fn begin_reconcile(lua: &Lua, entities: &[EntityNetworked]) -> Result<()> {
     let function: Function = lua.named_registry_value(ENTS_BEGIN_RECONCILE)?;
-    let (flat, len) = encode_flat(lua, entities)?;
+    let blob = lua_blob(lua, encode_entities(entities)?)?;
 
-    function.call((flat, len))
+    function.call(blob)
 }
 
 pub fn end_reconcile(lua: &Lua) -> Result<usize> {
@@ -487,4 +583,441 @@ pub fn set_local(lua: &Lua, handle: EntityHandle) -> Result<()> {
     let function: Function = lua.named_registry_value(ENTS_SET_LOCAL)?;
 
     function.call(handle.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_networked, collect_networked, decode_entities, encode_entities, present_interpolated,
+        set_local,
+    };
+    use crate::console::{ConVar, ConVarValue};
+    use crate::entities::{EntityHandle, EntityList};
+    use crate::network::events::{EntityNetworked, NetValue, NetVar};
+    use crate::script::libs::angle3::Angle3;
+    use crate::script::libs::vector3::Vector3;
+    use crate::script::{Realm, ScriptEngine};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    fn value<'a>(vars: &'a [NetVar], key: &str) -> &'a NetValue {
+        &vars
+            .iter()
+            .find(|var| var.key == key)
+            .unwrap_or_else(|| panic!("missing {key}"))
+            .value
+    }
+
+    #[test]
+    fn netvar_blob_roundtrip() {
+        let entities = vec![EntityNetworked {
+            handle: EntityHandle(0x8000_0001),
+            vars: vec![
+                NetVar {
+                    key: "ammo".to_string(),
+                    value: NetValue::Int(-3),
+                },
+                NetVar {
+                    key: "on".to_string(),
+                    value: NetValue::Bool(false),
+                },
+                NetVar {
+                    key: "rate".to_string(),
+                    value: NetValue::Float(0.25),
+                },
+                NetVar {
+                    key: "name".to_string(),
+                    value: NetValue::String("blaster".to_string()),
+                },
+                NetVar {
+                    key: "note".to_string(),
+                    value: NetValue::String(String::new()),
+                },
+                NetVar {
+                    key: "pos".to_string(),
+                    value: NetValue::Vector3(Vector3::new(1.0, 2.0, 3.0)),
+                },
+                NetVar {
+                    key: "ang".to_string(),
+                    value: NetValue::Angle3(Angle3::new(10.0, 20.0, 30.0)),
+                },
+                NetVar {
+                    key: "buddy".to_string(),
+                    value: NetValue::Entity(EntityHandle(2097152)),
+                },
+                NetVar {
+                    key: "gone".to_string(),
+                    value: NetValue::Nil,
+                },
+            ],
+        }];
+        let bytes = encode_entities(&entities).unwrap();
+        assert_eq!(decode_entities(&bytes).unwrap(), entities);
+        assert!(decode_entities(&[0, 1]).is_err());
+    }
+
+    #[test]
+    fn netvar_blob_crosses_lua() {
+        if crate::fs::try_global().is_none() {
+            let fs = crate::fs::Fs::boot().expect("fs boot");
+            crate::fs::set_global(Arc::new(fs));
+        }
+
+        let mut cvars = HashMap::new();
+        cvars.insert(
+            "sv_gravity".to_string(),
+            Arc::new(ConVar::new(
+                "sv_gravity",
+                ConVarValue::Float(24.0),
+                "World gravity",
+                Some(false),
+                Some(true),
+            )),
+        );
+        let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
+        let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
+        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars), binds, pads);
+        let mut list = EntityList::new();
+        let _scope = super::EntityScope::new(&engine.entity_access, &mut list);
+        let (raw, buddy): (f64, f64) = engine
+            .lua
+            .load(
+                r#"
+                local buddy = ents.create("base_entity");
+                buddy:spawn();
+                local ent = ents.create("base_entity");
+                ent:spawn();
+                ent:set_networked("ammo", 10);
+                ent:set_networked("neg", -3);
+                ent:set_networked("on", false);
+                ent:set_networked("rate", 0.25);
+                ent:set_networked("name", "blaster");
+                ent:set_networked("note", "");
+                ent:set_networked("pos", Vector3(1, 2, 3));
+                ent:set_networked("ang", Angle3(10, 20, 30));
+                ent:set_networked("gone", 1);
+                ent:set_networked("gone", nil);
+                ent:set_networked("buddy", buddy);
+                test_ent = ent;
+                test_buddy = buddy;
+                return ent._handle, buddy._handle;
+                "#,
+            )
+            .set_name("setup.lua")
+            .eval()
+            .unwrap();
+        let collected = collect_networked(&engine.lua).unwrap();
+        assert!(collect_networked(&engine.lua).unwrap().is_empty());
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].handle, EntityHandle(raw as u32));
+        let vars = &collected[0].vars;
+        assert_eq!(value(vars, "ammo"), &NetValue::Int(10));
+        assert_eq!(value(vars, "neg"), &NetValue::Int(-3));
+        assert_eq!(value(vars, "on"), &NetValue::Bool(false));
+        assert_eq!(value(vars, "rate"), &NetValue::Float(0.25));
+        assert_eq!(value(vars, "name"), &NetValue::String("blaster".to_string()));
+        assert_eq!(value(vars, "note"), &NetValue::String(String::new()));
+        assert_eq!(value(vars, "pos"), &NetValue::Vector3(Vector3::new(1.0, 2.0, 3.0)));
+        assert_eq!(value(vars, "ang"), &NetValue::Angle3(Angle3::new(10.0, 20.0, 30.0)));
+        assert_eq!(value(vars, "buddy"), &NetValue::Entity(EntityHandle(buddy as u32)));
+        assert_eq!(value(vars, "gone"), &NetValue::Nil);
+
+        let copy_raw: f64 = engine
+            .lua
+            .load(
+                r#"
+                test_copy = ents.create("base_entity");
+                test_copy:spawn();
+                return test_copy._handle;
+                "#,
+            )
+            .eval()
+            .unwrap();
+        let mut copied = collected[0].clone();
+        copied.handle = EntityHandle(copy_raw as u32);
+        let (skipped, missing) = apply_networked(&engine.lua, &[copied], None).unwrap();
+        assert_eq!((skipped, missing), (0, 0));
+        let (ammo, neg, on, rate, name, note, x, y, z, p, yaw, roll, gone, buddy_back): (
+            f64,
+            f64,
+            bool,
+            f64,
+            String,
+            String,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            f64,
+            String,
+            f64,
+        ) = engine
+            .lua
+            .load(
+                r#"
+                local ent = test_copy;
+                local pos = ent:get_networked("pos");
+                local ang = ent:get_networked("ang");
+                local buddy = ent:get_networked("buddy");
+                return ent:get_networked("ammo"),
+                    ent:get_networked("neg"),
+                    ent:get_networked("on", true),
+                    ent:get_networked("rate"),
+                    ent:get_networked("name"),
+                    ent:get_networked("note"),
+                    tonumber(pos.x), tonumber(pos.y), tonumber(pos.z),
+                    tonumber(ang.p), tonumber(ang.y), tonumber(ang.r),
+                    ent:get_networked("gone", "missing"),
+                    buddy._handle;
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(ammo, 10.0);
+        assert_eq!(neg, -3.0);
+        assert!(!on);
+        assert_eq!(rate, 0.25);
+        assert_eq!(name, "blaster");
+        assert_eq!(note, "");
+        assert_eq!((x, y, z), (1.0, 2.0, 3.0));
+        assert_eq!((p, yaw, roll), (10.0, 20.0, 30.0));
+        assert_eq!(gone, "missing");
+        assert_eq!(buddy_back, buddy);
+
+        engine
+            .lua
+            .load(r#"test_ent:set_networked("ammo", 10, true);"#)
+            .exec()
+            .unwrap();
+        set_local(&engine.lua, EntityHandle(raw as u32)).unwrap();
+        let (skipped, missing) = apply_networked(
+            &engine.lua,
+            &[EntityNetworked {
+                handle: EntityHandle(raw as u32),
+                vars: vec![
+                    NetVar {
+                        key: "ammo".to_string(),
+                        value: NetValue::Int(99),
+                    },
+                    NetVar {
+                        key: "name".to_string(),
+                        value: NetValue::String("changed".to_string()),
+                    },
+                ],
+            }],
+            None,
+        )
+        .unwrap();
+        assert_eq!((skipped, missing), (1, 0));
+        let (ammo, name): (f64, String) = engine
+            .lua
+            .load(r#"return test_ent:get_networked("ammo"), test_ent:get_networked("name")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(ammo, 10.0);
+        assert_eq!(name, "changed");
+
+        let class_hash: f64 = engine
+            .lua
+            .load(r#"return scripted_ents.get("base_entity").class_hash"#)
+            .eval()
+            .unwrap();
+        let mut spawned = crate::entities::ScriptedEntity::new(class_hash as u32);
+        spawned.spawned = true;
+        let handle = list.spawn(Box::new(spawned)).unwrap();
+        let known = super::net_spawn(
+            &engine.lua,
+            handle,
+            &[
+                NetVar {
+                    key: "ammo".to_string(),
+                    value: NetValue::Int(7),
+                },
+                NetVar {
+                    key: "name".to_string(),
+                    value: NetValue::String("spawned".to_string()),
+                },
+            ],
+            None,
+        )
+        .unwrap();
+        assert!(known);
+        let (ammo, name): (f64, String) = engine
+            .lua
+            .load(&format!(
+                r#"
+                local ent = ents.get_by_index({idx})
+                return ent:get_networked("ammo"), ent:get_networked("name")
+                "#,
+                idx = handle.index()
+            ))
+            .eval()
+            .unwrap();
+        assert_eq!(ammo, 7.0);
+        assert_eq!(name, "spawned");
+    }
+
+    #[test]
+    fn interpolated_netvars_blend_between_samples() {
+        if crate::fs::try_global().is_none() {
+            let fs = crate::fs::Fs::boot().expect("fs boot");
+            crate::fs::set_global(Arc::new(fs));
+        }
+
+        let mut cvars = HashMap::new();
+        cvars.insert(
+            "sv_gravity".to_string(),
+            Arc::new(ConVar::new(
+                "sv_gravity",
+                ConVarValue::Float(24.0),
+                "World gravity",
+                Some(false),
+                Some(true),
+            )),
+        );
+        let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
+        let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
+        let engine = ScriptEngine::new(Realm::Server, 1.0 / 60.0, Arc::new(cvars), binds, pads);
+        let mut list = EntityList::new();
+        let _scope = super::EntityScope::new(&engine.entity_access, &mut list);
+        let raw: f64 = engine
+            .lua
+            .load(
+                r#"
+                scripted_ents.register({
+                    base = "base_entity",
+                    interpolated = { yaw = true, aim = true, label = true },
+                }, "sent_smooth");
+                local ent = ents.create("sent_smooth");
+                ent:spawn();
+                ent:set_interpolated("heat");
+                test_smooth = ent;
+                return ent._handle;
+                "#,
+            )
+            .set_name("interp.lua")
+            .eval()
+            .unwrap();
+        let handle = EntityHandle(raw as u32);
+
+        let apply = |vars: Vec<NetVar>, time: f64| {
+            apply_networked(
+                &engine.lua,
+                &[EntityNetworked {
+                    handle,
+                    vars,
+                }],
+                Some(time),
+            )
+            .unwrap();
+        };
+
+        apply(
+            vec![
+                NetVar {
+                    key: "yaw".to_string(),
+                    value: NetValue::Float(0.0),
+                },
+                NetVar {
+                    key: "heat".to_string(),
+                    value: NetValue::Float(0.0),
+                },
+                NetVar {
+                    key: "aim".to_string(),
+                    value: NetValue::Angle3(Angle3::new(0.0, 350.0, 0.0)),
+                },
+                NetVar {
+                    key: "label".to_string(),
+                    value: NetValue::String("a".to_string()),
+                },
+                NetVar {
+                    key: "count".to_string(),
+                    value: NetValue::Int(1),
+                },
+            ],
+            0.0,
+        );
+        apply(
+            vec![
+                NetVar {
+                    key: "yaw".to_string(),
+                    value: NetValue::Float(10.0),
+                },
+                NetVar {
+                    key: "heat".to_string(),
+                    value: NetValue::Float(10.0),
+                },
+                NetVar {
+                    key: "aim".to_string(),
+                    value: NetValue::Angle3(Angle3::new(0.0, 10.0, 0.0)),
+                },
+                NetVar {
+                    key: "label".to_string(),
+                    value: NetValue::String("b".to_string()),
+                },
+                NetVar {
+                    key: "count".to_string(),
+                    value: NetValue::Int(2),
+                },
+            ],
+            1.0,
+        );
+
+        let (yaw, heat, label, count): (f64, f64, String, f64) = engine
+            .lua
+            .load(
+                r#"
+                local ent = test_smooth;
+                return ent:get_networked("yaw"), ent:get_networked("heat"), ent:get_networked("label"), ent:get_networked("count");
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(yaw, 0.0);
+        assert_eq!(heat, 0.0);
+        assert_eq!(label, "b");
+        assert_eq!(count, 2.0);
+
+        present_interpolated(&engine.lua, 0.5).unwrap();
+        let (yaw, heat, aim_y): (f64, f64, f64) = engine
+            .lua
+            .load(
+                r#"
+                local ent = test_smooth;
+                return ent:get_networked("yaw"), ent:get_networked("heat"), tonumber(ent:get_networked("aim").y);
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(yaw, 5.0);
+        assert_eq!(heat, 5.0);
+        assert_eq!(aim_y, 360.0);
+
+        engine
+            .lua
+            .load(r#"test_smooth:set_interpolated("yaw", false);"#)
+            .exec()
+            .unwrap();
+        apply(
+            vec![NetVar {
+                key: "yaw".to_string(),
+                value: NetValue::Float(40.0),
+            }],
+            2.0,
+        );
+        let yaw: f64 = engine
+            .lua
+            .load(r#"return test_smooth:get_networked("yaw")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(yaw, 40.0);
+        present_interpolated(&engine.lua, 2.0).unwrap();
+        let yaw: f64 = engine
+            .lua
+            .load(r#"return test_smooth:get_networked("yaw")"#)
+            .eval()
+            .unwrap();
+        assert_eq!(yaw, 40.0);
+    }
 }

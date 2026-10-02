@@ -171,12 +171,12 @@ impl ScriptEngine {
         }
     }
 
-    pub fn net_spawn(&self, handle: EntityHandle, vars: &[NetVar]) -> bool {
+    pub fn net_spawn(&self, handle: EntityHandle, vars: &[NetVar], time: Option<f64>) -> bool {
         if !self.has_ents() {
             return false;
         }
 
-        match crate::script::libs::ents::net_spawn(&self.lua, handle, vars) {
+        match crate::script::libs::ents::net_spawn(&self.lua, handle, vars, time) {
             Ok(known) => {
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
@@ -251,12 +251,12 @@ impl ScriptEngine {
         }
     }
 
-    pub fn apply_networked(&self, entities: &[EntityNetworked]) {
+    pub fn apply_networked(&self, entities: &[EntityNetworked], time: Option<f64>) {
         if !self.has_ents() || entities.is_empty() {
             return;
         }
 
-        match crate::script::libs::ents::apply_networked(&self.lua, entities) {
+        match crate::script::libs::ents::apply_networked(&self.lua, entities, time) {
             Ok((skipped, missing)) => {
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
@@ -272,6 +272,16 @@ impl ScriptEngine {
             Err(err) => {
                 log::error!("[LUA ENTS ERROR]: {}", err);
             }
+        }
+    }
+
+    pub fn present_networked(&self, time: f64) {
+        if !self.has_ents() {
+            return;
+        }
+
+        if let Err(err) = crate::script::libs::ents::present_interpolated(&self.lua, time) {
+            log::error!("[LUA ENTS ERROR]: {}", err);
         }
     }
 

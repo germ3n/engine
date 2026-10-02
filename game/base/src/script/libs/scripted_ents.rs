@@ -468,7 +468,7 @@ mod tests {
         let index = handle.index();
         let _scope = EntityScope::new(&net.entity_access, &mut list);
         let vars: &[NetVar] = &[];
-        let spawned_net = ents::net_spawn(&net.lua, handle, vars).expect("net_spawn");
+        let spawned_net = ents::net_spawn(&net.lua, handle, vars, None).expect("net_spawn");
         assert!(spawned_net);
         net.think_entities(1.0, 0.016, 1);
         let (ready, saw, thought, spawned, net_log) =
