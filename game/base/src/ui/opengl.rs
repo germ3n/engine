@@ -528,19 +528,34 @@ struct ColoredMesh {
     ready: bool,
     using_slow: bool,
     batch_ok: bool,
+    fast_ok: bool,
+    fast_current: bool,
     batch_program: glow::Program,
+    fast_program: glow::Program,
     batch_view_vs: [Option<glow::UniformLocation>; 3],
     batch_view_fs: [Option<glow::UniformLocation>; 3],
+    fast_view_vs: [Option<glow::UniformLocation>; 3],
+    fast_view_fs: [Option<glow::UniformLocation>; 3],
     batch_vao: glow::VertexArray,
     batch_vbo: glow::Buffer,
     batch_first: [i32; 3],
     batch_count: [i32; 3],
+    fast_count: i32,
+    fast_chunks: Vec<MeshChunk>,
+    opaque_chunks: Vec<MeshChunk>,
     base_array: [glow::Texture; 2],
     bump_array: [glow::Texture; 2],
     detail_array: [glow::Texture; 2],
     base2_array: [glow::Texture; 2],
     env_array: glow::Texture,
     params_tex: glow::Texture,
+}
+
+struct MeshChunk {
+    first: i32,
+    count: i32,
+    min: [f32; 3],
+    max: [f32; 3],
 }
 
 struct GlMaterial {
@@ -559,10 +574,16 @@ impl ColoredMesh {
         unsafe {
             let program = link_mesh_program(gl, cache, "fs_main");
             let batch_program = link_mesh_program(gl, cache, "fs_batch");
+            let fast_program = link_mesh_program(gl, cache, "fs_fast");
             let batch_ok = gl.get_program_link_status(batch_program);
+            let fast_ok = gl.get_program_link_status(fast_program);
 
             if !batch_ok {
                 log::warn!("[gl] batch link {}", gl.get_program_info_log(batch_program));
+            }
+
+            if !fast_ok {
+                log::warn!("[gl] fast link {}", gl.get_program_info_log(fast_program));
             }
             let vao = gl.create_vertex_array().unwrap();
             let vbo = gl.create_buffer().unwrap();
@@ -623,6 +644,17 @@ impl ColoredMesh {
             let batch_vao = gl.create_vertex_array().unwrap();
             let batch_vbo = gl.create_buffer().unwrap();
             bind_mesh_attribs(gl, batch_vao, batch_vbo);
+            gl.use_program(Some(fast_program));
+            assign_samplers(
+                gl,
+                fast_program,
+                &[
+                    ("_group_2_binding_0_fs", 0),
+                    ("_group_2_binding_1_fs", 1),
+                    ("_group_2_binding_4_fs", 4),
+                    ("_group_1_binding_0_fs", 5),
+                ],
+            );
             gl.use_program(Some(batch_program));
             assign_samplers(
                 gl,
@@ -691,13 +723,21 @@ impl ColoredMesh {
                 ready: false,
                 using_slow: true,
                 batch_ok,
+                fast_ok,
+                fast_current: false,
                 batch_program,
+                fast_program,
                 batch_view_vs: view_locations(gl, batch_program, "vs"),
                 batch_view_fs: view_locations(gl, batch_program, "fs"),
+                fast_view_vs: view_locations(gl, fast_program, "vs"),
+                fast_view_fs: view_locations(gl, fast_program, "fs"),
                 batch_vao,
                 batch_vbo,
                 batch_first: [0; 3],
                 batch_count: [0; 3],
+                fast_count: 0,
+                fast_chunks: Vec::new(),
+                opaque_chunks: Vec::new(),
                 base_array,
                 bump_array,
                 detail_array,
@@ -873,6 +913,7 @@ impl ColoredMesh {
     }
 
     fn rebuild_batch(&mut self, gl: &glow::Context) {
+        let mut fast = Vec::new();
         let mut opaque = Vec::new();
         let mut alpha = Vec::new();
         let mut decal = Vec::new();
@@ -898,7 +939,9 @@ impl ColoredMesh {
             if end <= self.cpu.len() {
                 let verts = &self.cpu[start..end];
 
-                if slot == 0 {
+                if slot == 0 && self.is_fast(range.material) {
+                    fast.extend_from_slice(verts);
+                } else if slot == 0 {
                     opaque.extend_from_slice(verts);
                 } else if slot == 1 {
                     alpha.extend_from_slice(verts);
@@ -910,11 +953,24 @@ impl ColoredMesh {
             idx += 1;
         }
 
-        let mut all = Vec::with_capacity(opaque.len() + alpha.len() + decal.len());
-        self.batch_first[0] = 0;
+        let (fast, fast_chunks) = grid_mesh(&fast);
+        let (opaque, mut opaque_chunks) = grid_mesh(&opaque);
+        let mut all = Vec::with_capacity(fast.len() + opaque.len() + alpha.len() + decal.len());
+        self.fast_count = (fast.len() / crate::world::STRIDE) as i32;
+        self.fast_chunks = fast_chunks;
+        all.extend_from_slice(&fast);
+        self.batch_first[0] = (all.len() / crate::world::STRIDE) as i32;
         self.batch_count[0] = (opaque.len() / crate::world::STRIDE) as i32;
+        let mut chunk = 0;
+
+        while chunk < opaque_chunks.len() {
+            opaque_chunks[chunk].first += self.fast_count;
+            chunk += 1;
+        }
+
+        self.opaque_chunks = opaque_chunks;
         all.extend_from_slice(&opaque);
-        self.batch_first[1] = (all.len() / crate::world::STRIDE) as i32;
+        self.batch_first[1] = (all.len() / crate::world::STRIDE) as i32;    
         self.batch_count[1] = (alpha.len() / crate::world::STRIDE) as i32;
         all.extend_from_slice(&alpha);
         self.batch_first[2] = (all.len() / crate::world::STRIDE) as i32;
@@ -927,8 +983,11 @@ impl ColoredMesh {
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
         }
         log::info!(
-            "[gl] batched {} opaque, {} alpha, {} decals",
+            "[gl] batched {} fast in {} chunks, {} opaque in {} chunks, {} alpha, {} decals",
+            self.fast_count,
+            self.fast_chunks.len(),
             self.batch_count[0],
+            self.opaque_chunks.len(),
             self.batch_count[1],
             self.batch_count[2]
         );
@@ -958,12 +1017,41 @@ impl ColoredMesh {
         flags & blocked == 0
     }
 
+    fn is_fast(&self, material: u16) -> bool {
+        if !self.fast_ok || !self.is_batchable(material) {
+            return false;
+        }
+
+        let Some(item) = self.materials.get(material as usize) else {
+            return false;
+        };
+        let mode = item.gpu.params[0];
+
+        if mode != crate::world::surface::MODE_LIGHT && mode != crate::world::surface::MODE_UNLIT {
+            return false;
+        }
+
+        let flags = item.gpu.detail[3].to_bits();
+        let heavy = crate::world::surface::FLAG_BUMP
+            | crate::world::surface::FLAG_SSBUMP
+            | crate::world::surface::FLAG_DETAIL
+            | crate::world::surface::FLAG_ENV
+            | crate::world::surface::FLAG_BASE2
+            | crate::world::surface::FLAG_SELF
+            | crate::world::surface::FLAG_ALPHA
+            | crate::world::surface::FLAG_PHONG
+            | crate::world::surface::FLAG_MASK;
+
+        flags & heavy == 0
+    }
+
     fn use_slow(&mut self, gl: &glow::Context) {
         if self.using_slow {
             return;
         }
 
         self.using_slow = true;
+        self.fast_current = false;
         unsafe {
             gl.use_program(Some(self.program));
             gl.bind_vertex_array(Some(self.vao));
@@ -978,12 +1066,18 @@ impl ColoredMesh {
         view: &SceneView,
         width: u32,
         height: u32,
+        planes: &[[f32; 4]; 6],
     ) {
         if self.batch_count[slot] <= 0 {
             return;
         }
 
+        if slot == 0 && !any_visible(&self.opaque_chunks, planes) {
+            return;
+        }
+
         self.using_slow = false;
+        self.fast_current = false;
         let pass = if slot == 0 {
             crate::world::surface::PASS_OPAQUE
         } else if slot == 1 {
@@ -1026,9 +1120,49 @@ impl ColoredMesh {
         self.bound = [None; 13];
         self.bind_view(gl, matrix, view, width, height, 0.0);
         self.apply_pass(gl, pass, crate::world::surface::MODE_LIGHT);
+
+        if slot == 0 {
+            draw_visible(gl, &self.opaque_chunks, planes);
+
+            return;
+        }
+
         unsafe {
             gl.draw_arrays(glow::TRIANGLES, self.batch_first[slot], self.batch_count[slot]);
         }
+    }
+
+    fn draw_fast(
+        &mut self,
+        gl: &glow::Context,
+        matrix: &[f32; 16],
+        view: &SceneView,
+        width: u32,
+        height: u32,
+        planes: &[[f32; 4]; 6],
+    ) {
+        if self.fast_count <= 0 || !any_visible(&self.fast_chunks, planes) {
+            return;
+        }
+
+        self.using_slow = false;
+        self.fast_current = true;
+        unsafe {
+            gl.use_program(Some(self.fast_program));
+            gl.bind_vertex_array(Some(self.batch_vao));
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.base_array[0]));
+            gl.active_texture(glow::TEXTURE0 + 1);
+            gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.base_array[1]));
+            gl.active_texture(glow::TEXTURE0 + 4);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.params_tex));
+            gl.active_texture(glow::TEXTURE0 + 5);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.lightmaps[0]));
+        }
+        self.bound = [None; 13];
+        self.bind_view(gl, matrix, view, width, height, 0.0);
+        self.apply_pass(gl, crate::world::surface::PASS_OPAQUE, crate::world::surface::MODE_LIGHT);
+        draw_visible(gl, &self.fast_chunks, planes);
     }
 
     fn clear_graphics(&mut self, gl: &glow::Context) {
@@ -1091,6 +1225,7 @@ impl ColoredMesh {
         }
 
         self.ensure_order(view.eye);
+        let planes = frustum_planes(&matrix);
         self.pass_key = 255;
         let mut copied = false;
         let mut seen = [false; 3];
@@ -1101,7 +1236,11 @@ impl ColoredMesh {
 
             if let Some(slot) = batch_slot(range.pass) {
                 if !seen[slot] {
-                    self.draw_batch(gl, slot, &matrix, view, width, height);
+                    if slot == 0 {
+                        self.draw_fast(gl, &matrix, view, width, height, &planes);
+                    }
+
+                    self.draw_batch(gl, slot, &matrix, view, width, height, &planes);
                     seen[slot] = true;
                 }
 
@@ -1328,7 +1467,9 @@ impl ColoredMesh {
         height: u32,
         sky: f32,
     ) {
-        let (vs, fs) = if self.using_slow {
+        let (vs, fs) = if self.fast_current {
+            (&self.fast_view_vs, &self.fast_view_fs)
+        } else if self.using_slow {
             (&self.view_vs, &self.view_fs)
         } else {
             (&self.batch_view_vs, &self.batch_view_fs)
@@ -2469,6 +2610,143 @@ fn link_skinned_program(gl: &glow::Context, cache: &shader::Registry) -> glow::P
     }
 }
 
+fn grid_cell(x: f32, y: f32, z: f32) -> (i32, i32, i32) {
+    const CELL: f32 = 2048.0;
+
+    ((x / CELL).floor() as i32, (y / CELL).floor() as i32, (z / CELL).floor() as i32)
+}
+
+fn grid_mesh(src: &[f32]) -> (Vec<f32>, Vec<MeshChunk>) {
+    let stride = crate::world::STRIDE;
+    let tri = stride * 3;
+    let mut buckets: HashMap<(i32, i32, i32), Vec<f32>> = HashMap::new();
+    let mut idx = 0;
+
+    while idx + tri <= src.len() {
+        let ax = src[idx];
+        let ay = src[idx + 1];
+        let az = src[idx + 2];
+        let bx = src[idx + stride];
+        let by = src[idx + stride + 1];
+        let bz = src[idx + stride + 2];
+        let cx = src[idx + stride * 2];
+        let cy = src[idx + stride * 2 + 1];
+        let cz = src[idx + stride * 2 + 2];
+        let key = grid_cell((ax + bx + cx) / 3.0, (ay + by + cy) / 3.0, (az + bz + cz) / 3.0);
+        buckets.entry(key).or_default().extend_from_slice(&src[idx..idx + tri]);
+        idx += tri;
+    }
+
+    let mut verts = Vec::with_capacity(src.len());
+    let mut chunks = Vec::with_capacity(buckets.len());
+
+    for bucket in buckets.into_values() {
+        let first = (verts.len() / stride) as i32;
+        let count = (bucket.len() / stride) as i32;
+        let mut min = [f32::MAX; 3];
+        let mut max = [-f32::MAX; 3];
+        let mut vert = 0;
+
+        while vert + 2 < bucket.len() {
+            min[0] = min[0].min(bucket[vert]);
+            min[1] = min[1].min(bucket[vert + 1]);
+            min[2] = min[2].min(bucket[vert + 2]);
+            max[0] = max[0].max(bucket[vert]);
+            max[1] = max[1].max(bucket[vert + 1]);
+            max[2] = max[2].max(bucket[vert + 2]);
+            vert += stride;
+        }
+
+        verts.extend_from_slice(&bucket);
+        chunks.push(MeshChunk { first, count, min, max });
+    }
+
+    (verts, chunks)
+}
+
+fn frustum_planes(matrix: &[f32; 16]) -> [[f32; 4]; 6] {
+    let rows = [0usize, 0, 1, 1, 2, 2];
+    let signs = [1.0f32, -1.0, 1.0, -1.0, 1.0, -1.0];
+    let mut planes = [[0.0; 4]; 6];
+    let mut idx = 0;
+
+    while idx < 6 {
+        let row = rows[idx];
+        let sign = signs[idx];
+        let mut axis = 0;
+
+        while axis < 4 {
+            planes[idx][axis] = matrix[axis * 4 + 3] + sign * matrix[axis * 4 + row];
+            axis += 1;
+        }
+
+        let len = (planes[idx][0] * planes[idx][0]
+            + planes[idx][1] * planes[idx][1]
+            + planes[idx][2] * planes[idx][2])
+            .sqrt();
+
+        if len > 1e-8 {
+            planes[idx][0] /= len;
+            planes[idx][1] /= len;
+            planes[idx][2] /= len;
+            planes[idx][3] /= len;
+        }
+
+        idx += 1;
+    }
+
+    planes
+}
+
+fn chunk_visible(min: [f32; 3], max: [f32; 3], planes: &[[f32; 4]; 6]) -> bool {
+    let mut idx = 0;
+
+    while idx < 6 {
+        let plane = planes[idx];
+        let x = if plane[0] >= 0.0 { max[0] } else { min[0] };
+        let y = if plane[1] >= 0.0 { max[1] } else { min[1] };
+        let z = if plane[2] >= 0.0 { max[2] } else { min[2] };
+
+        if x * plane[0] + y * plane[1] + z * plane[2] + plane[3] < 0.0 {
+            return false;
+        }
+
+        idx += 1;
+    }
+
+    true
+}
+
+fn any_visible(chunks: &[MeshChunk], planes: &[[f32; 4]; 6]) -> bool {
+    let mut idx = 0;
+
+    while idx < chunks.len() {
+        if chunk_visible(chunks[idx].min, chunks[idx].max, planes) {
+            return true;
+        }
+
+        idx += 1;
+    }
+
+    false
+}
+
+fn draw_visible(gl: &glow::Context, chunks: &[MeshChunk], planes: &[[f32; 4]; 6]) {
+    let mut idx = 0;
+
+    while idx < chunks.len() {
+        let chunk = &chunks[idx];
+
+        if chunk_visible(chunk.min, chunk.max, planes) {
+            unsafe {
+                gl.draw_arrays(glow::TRIANGLES, chunk.first, chunk.count);
+            }
+        }
+
+        idx += 1;
+    }
+}
+
 fn gl_view_proj(view: &SceneView) -> [f32; 16] {
     vr::view_proj(view, false)
 }
@@ -2608,6 +2886,15 @@ mod tests {
     use super::*;
     use crate::ui::voxel::FlyCamera;
     use crate::world::{Block, BlockPos, VoxelWorld};
+
+    #[test]
+    fn frustum_drops_a_box_behind_the_camera() {
+        let view = FlyCamera::new().scene(16.0 / 9.0, 1.0);
+        let planes = frustum_planes(&gl_view_proj(&view));
+
+        assert!(chunk_visible([0.0, 40.0, 8.0], [32.0, 80.0, 24.0], &planes));
+        assert!(!chunk_visible([0.0, -4000.0, 8.0], [32.0, -2000.0, 24.0], &planes));
+    }
 
     #[test]
     fn gl_projection_shows_front_faces() {

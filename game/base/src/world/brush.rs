@@ -335,6 +335,7 @@ pub struct BrushMap {
     mesh_cache: Option<Vec<f32>>,
     ranges: Vec<SurfaceRange>,
     graphics: MapGraphics,
+    scale: f64,
 }
 
 impl BrushMap {
@@ -348,7 +349,72 @@ impl BrushMap {
             mesh_cache: None,
             ranges: Vec::new(),
             graphics: MapGraphics::plain(),
+            scale: 1.0,
         }
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub fn set_scale(&mut self, scale: f64) -> bool {
+        let Some(scale) = positive_scale(scale) else {
+            return false;
+        };
+
+        if (scale - self.scale).abs() <= 1e-12 {
+            return true;
+        }
+
+        let ratio = scale / self.scale;
+        self.scale = scale;
+        self.apply_ratio(ratio);
+
+        true
+    }
+
+    fn apply_ratio(&mut self, ratio: f64) {
+        let mut idx = 0;
+
+        while idx < self.brushes.len() {
+            let mut plane = 0;
+
+            while plane < self.brushes[idx].planes.len() {
+                self.brushes[idx].planes[plane].distance *= ratio;
+                self.brushes[idx].planes[plane].scale_u *= ratio;
+                self.brushes[idx].planes[plane].scale_v *= ratio;
+                plane += 1;
+            }
+
+            if let Some(aabb) = brush_aabb(&self.brushes[idx]) {
+                self.bounds[idx] = aabb;
+            }
+
+            idx += 1;
+        }
+
+        idx = 0;
+
+        while idx < self.spawns.len() {
+            self.spawns[idx].x *= ratio;
+            self.spawns[idx].y *= ratio;
+            self.spawns[idx].z *= ratio;
+            idx += 1;
+        }
+
+        if let Some(cache) = &mut self.mesh_cache {
+            let ratio = ratio as f32;
+            let mut vert = 0;
+
+            while vert + 2 < cache.len() {
+                cache[vert] *= ratio;
+                cache[vert + 1] *= ratio;
+                cache[vert + 2] *= ratio;
+                vert += STRIDE;
+            }
+        }
+
+        self.touch();
     }
 
     pub fn len(&self) -> usize {
@@ -2493,6 +2559,14 @@ fn unit(value: Vector3) -> Vector3 {
     Vector3::new(value.x * inv, value.y * inv, value.z * inv)
 }
 
+fn positive_scale(scale: f64) -> Option<f64> {
+    if scale.is_finite() && scale > 0.0 {
+        Some(scale)
+    } else {
+        None
+    }
+}
+
 fn finite(point: Vector3) -> bool {
     point.x.is_finite() && point.y.is_finite() && point.z.is_finite()
 }
@@ -2510,6 +2584,24 @@ mod tests {
         assert!(map.add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), 1));
 
         map
+    }
+
+    #[test]
+    fn set_scale_grows_the_box() {
+        let mut map = box_map();
+        assert!(!map.set_scale(0.0));
+        assert!(map.set_scale(2.0));
+        assert!(near(map.scale(), 2.0));
+        let mesh = map.mesh();
+        let mut max = 0.0f32;
+        let mut idx = 0;
+
+        while idx + 2 < mesh.len() {
+            max = max.max(mesh[idx].abs()).max(mesh[idx + 1].abs()).max(mesh[idx + 2].abs());
+            idx += STRIDE;
+        }
+
+        assert!(near(f64::from(max), 2.0));
     }
 
     #[test]

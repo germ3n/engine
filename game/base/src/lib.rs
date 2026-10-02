@@ -130,7 +130,8 @@ pub fn run() {
         if let Err(err) = server_game.brush_world.load_file(&map_name) {
             log::warn!("[map] {err}");
         } else {
-            log::info!("[map] {map_name}");
+            let _ = server_game.brush_world.set_scale(cmdargs.map_scale);
+            log::info!("[map] {map_name} scale {}", server_game.brush_world.scale());
         }
 
         #[cfg(feature = "client")]
@@ -178,7 +179,8 @@ pub fn run() {
         if let Err(err) = client_game.brush_world.load_file(&map_name) {
             log::warn!("[map] {err}");
         } else {
-            log::info!("[map] {map_name}");
+            let _ = client_game.brush_world.set_scale(cmdargs.map_scale);
+            log::info!("[map] {map_name} scale {}", client_game.brush_world.scale());
         }
         log::info!("Entering Client loop");
         client::client_loop(client_game, shutdown);

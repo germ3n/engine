@@ -284,7 +284,11 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
                 WindowEvent::KeyboardInput(input) => {
                     if let Some(code) = input.key_code {
-                        if code == KeyCode::Escape && input.state == ElementState::Pressed {
+                        if code == KeyCode::BracketLeft && input.state == ElementState::Pressed {
+                            scale_brush_view(&mut game, &mut camera, &mut prediction, 0.5);
+                        } else if code == KeyCode::BracketRight && input.state == ElementState::Pressed {
+                            scale_brush_view(&mut game, &mut camera, &mut prediction, 2.0);
+                        } else if code == KeyCode::Escape && input.state == ElementState::Pressed {
                             captured = false;
                             mouse.clear();
                             host.set_cursor_grabbed(false);
@@ -371,7 +375,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     }
 
                     client_window.begin_frame(0.53, 0.71, 0.85);
-                    let mut scene = camera.scene_at(aspect, game.voxel_world.scale() as f32, scene_anchor);
+                    let draw_scale = (game.voxel_world.scale() as f32).max(game.brush_world.scale() as f32);
+                    let mut scene = camera.scene_at(aspect, draw_scale, scene_anchor);
                     scene.time = accumulated_time as f32;
                     client_window.draw_colored_mesh(
                         &scene_mesh,
@@ -924,6 +929,38 @@ fn body_origin(
     game.entities
         .get(handle)
         .map(|entity| entity.base().position)
+}
+
+fn scale_brush_view(
+    game: &mut GameState<FromServer, ClientToServer>,
+    camera: &mut FlyCamera,
+    prediction: &mut Prediction,
+    ratio: f64,
+) {
+    let next = game.brush_world.scale() * ratio;
+
+    if !game.brush_world.set_scale(next) {
+        return;
+    }
+
+    camera.x *= ratio;
+    camera.y *= ratio;
+    camera.z *= ratio;
+    prediction.scale_span(ratio);
+
+    if !prediction.local.is_null() {
+        if let Some(entity) = game.entities.get_mut(prediction.local) {
+            let base = entity.base_mut();
+            base.position.x *= ratio;
+            base.position.y *= ratio;
+            base.position.z *= ratio;
+            base.velocity.x *= ratio;
+            base.velocity.y *= ratio;
+            base.velocity.z *= ratio;
+        }
+    }
+
+    log::info!("[map] scale {}", game.brush_world.scale());
 }
 
 fn place_camera(camera: &mut FlyCamera, origin: Vector3, look: Angle3, eye: f64) {

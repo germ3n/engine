@@ -29,6 +29,9 @@ pub struct CliArgs {
     #[arg(long, default_value_t = 60)]
     pub tickrate: u32,
 
+    #[arg(long, default_value_t = 1.0)]
+    pub map_scale: f64,
+
     #[arg(long = "connect_lobby", visible_alias = "connect-lobby")]
     pub connect_lobby: Option<u64>,
 
@@ -54,6 +57,7 @@ pub fn get_cmdline_args() -> CliArgs {
             compile_map: false,
             dedicated: false,
             tickrate: 60,
+            map_scale: 1.0,
             connect_lobby: None,
             connect: None,
             fakelag: 0,

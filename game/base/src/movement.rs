@@ -102,6 +102,19 @@ impl Prediction {
         self.span_ready = true;
     }
 
+    pub fn scale_span(&mut self, ratio: f64) {
+        if !self.span_ready {
+            return;
+        }
+
+        self.span_from.x *= ratio;
+        self.span_from.y *= ratio;
+        self.span_from.z *= ratio;
+        self.span_to.x *= ratio;
+        self.span_to.y *= ratio;
+        self.span_to.z *= ratio;
+    }
+
     pub fn snap_view(&mut self, position: Vector3) {
         self.span_from = position;
         self.span_to = position;

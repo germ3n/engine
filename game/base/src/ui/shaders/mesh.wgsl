@@ -413,3 +413,20 @@ fn fs_batch(input: VsOut) -> @location(0) vec4<f32> {
 
     return vec4<f32>(rgb, alpha);
 }
+
+@fragment
+fn fs_fast(input: VsOut) -> @location(0) vec4<f32> {
+    let tint = batch_field(input.material_id, 0);
+    let params = batch_field(input.material_id, 1);
+    let maps = batch_field(input.material_id, 6);
+    let albedo = batch_base(u32(maps.x + 0.5), i32(maps.y + 0.5), input.uv);
+    let mode = u32(params.x + 0.5);
+
+    if (mode == 0u) {
+        return vec4<f32>(albedo.rgb * input.color * tint.rgb, 1.0);
+    }
+
+    let light = textureSample(light0_tex, clamp_samp, input.light_uv).rgb;
+
+    return vec4<f32>(albedo.rgb * input.color * tint.rgb * light, albedo.a * params.w * tint.w);
+}

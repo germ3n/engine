@@ -486,6 +486,8 @@ mod tests {
 
         let (batch, _) = glsl(MESH, ShaderStage::Fragment, "fs_batch", glsl_version()).unwrap();
         assert!(batch.contains("_group_2_binding_0_fs"), "{batch}");
+        let (fast, _) = glsl(MESH, ShaderStage::Fragment, "fs_fast", glsl_version()).unwrap();
+        assert!(fast.contains("_group_2_binding_0_fs"), "{fast}");
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios"))]
