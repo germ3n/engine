@@ -16,7 +16,9 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
+#if !defined( __FreeBSD__ ) && !defined( __DragonFly__ )
 #include <alloca.h>
+#endif
 #endif
 
 #if defined OSX
