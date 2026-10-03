@@ -69,6 +69,28 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha || github.ref }}
 
+      - name: Free disk space
+        shell: bash
+        run: |
+          df -h
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/local/share/powershell /usr/share/swift
+            sudo docker image prune --all --force || true
+            if [ "${{ matrix.kind }}" != "android" ]; then
+              sudo rm -rf /usr/local/lib/android
+            fi
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            sudo rm -rf /Library/Developer/CoreSimulator
+            rm -rf "$HOME/Library/Developer/CoreSimulator"
+            rm -rf "$HOME/Library/Developer/Xcode/DerivedData"
+            rm -rf "$HOME/Library/Developer/Xcode/Archives"
+            rm -rf "$HOME/Library/Developer/Xcode/iOS DeviceSupport"
+            xcrun simctl delete unavailable || true
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            rm -rf "$AGENT_TOOLSDIRECTORY"
+          fi
+          df -h
+
       - name: Download Qwen model
         if: matrix.kind != 'android' && matrix.kind != 'ios'
         shell: bash
@@ -126,7 +148,7 @@ jobs:
         if: matrix.kind != 'android' && matrix.kind != 'ios'
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo test && cargo build --release --bin base --bin editor
+        run: cargo test --release && cargo build --release --bin base --bin editor
 
       - name: Build Android
         if: matrix.kind == 'android'
@@ -256,6 +278,28 @@ jobs:
         with:
           ref: ${{ inputs.commit_sha || github.ref }}
 
+      - name: Free disk space
+        shell: bash
+        run: |
+          df -h
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /usr/local/share/powershell /usr/share/swift
+            sudo docker image prune --all --force || true
+            if [ "${{ matrix.kind }}" != "android" ]; then
+              sudo rm -rf /usr/local/lib/android
+            fi
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            sudo rm -rf /Library/Developer/CoreSimulator
+            rm -rf "$HOME/Library/Developer/CoreSimulator"
+            rm -rf "$HOME/Library/Developer/Xcode/DerivedData"
+            rm -rf "$HOME/Library/Developer/Xcode/Archives"
+            rm -rf "$HOME/Library/Developer/Xcode/iOS DeviceSupport"
+            xcrun simctl delete unavailable || true
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            rm -rf "$AGENT_TOOLSDIRECTORY"
+          fi
+          df -h
+
       - name: Download Qwen model
         if: matrix.kind != 'android' && matrix.kind != 'ios'
         shell: bash
@@ -291,7 +335,7 @@ jobs:
               exit 1
             fi
             export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
-            cargo test
+            cargo test --release
             echo "cargo test finished"
             cargo build --release --bin base --bin editor
             echo "cargo build finished"
@@ -320,7 +364,7 @@ jobs:
               exit 1
             fi
             export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
-            cargo test --ignore-rust-version
+            cargo test --release --ignore-rust-version
             echo "cargo test finished"
             cargo build --release --bin base --bin editor --ignore-rust-version
             echo "cargo build finished"
