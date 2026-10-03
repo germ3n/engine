@@ -272,6 +272,8 @@ jobs:
           run: |
             set -eu
             . "$HOME/.cargo/env"
+            export CC=cc
+            export HOST_CC=cc
             cargo test --bin base --bin editor
             cargo build --release --bin base --bin editor
 
@@ -289,6 +291,8 @@ jobs:
             pkg install -y rust pkgconf gmake
           run: |
             set -eu
+            export CC=cc
+            export HOST_CC=cc
             cargo test --bin base --bin editor --ignore-rust-version
             cargo build --release --bin base --bin editor --ignore-rust-version
 
