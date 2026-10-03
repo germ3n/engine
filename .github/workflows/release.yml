@@ -148,7 +148,11 @@ jobs:
         if: matrix.kind != 'android' && matrix.kind != 'ios'
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo test --release && cargo build --release --bin base --bin editor
+        run: |
+          if [ "${{ matrix.asset_name }}" = "base-linux-arm64" ]; then
+            export CARGO_BUILD_JOBS=1
+          fi
+          cargo test --release && cargo build --release --bin base --bin editor
 
       - name: Build Android
         if: matrix.kind == 'android'
