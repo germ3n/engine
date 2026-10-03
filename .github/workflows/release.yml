@@ -274,6 +274,13 @@ jobs:
             . "$HOME/.cargo/env"
             export CC=cc
             export HOST_CC=cc
+            udev_pc=$(find /usr/local /usr -name 'libudev.pc' 2>/dev/null | head -n 1)
+            if [ -z "$udev_pc" ]; then
+              echo "libudev.pc was not installed"
+              pkg info -l libudev-devd || true
+              exit 1
+            fi
+            export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
             cargo test --bin base --bin editor
             cargo build --release --bin base --bin editor
 
@@ -293,6 +300,13 @@ jobs:
             set -eu
             export CC=cc
             export HOST_CC=cc
+            udev_pc=$(find /usr/local /usr -name 'libudev.pc' 2>/dev/null | head -n 1)
+            if [ -z "$udev_pc" ]; then
+              echo "libudev.pc was not installed"
+              pkg info -l libudev-devd || true
+              exit 1
+            fi
+            export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
             cargo test --bin base --bin editor --ignore-rust-version
             cargo build --release --bin base --bin editor --ignore-rust-version
 
