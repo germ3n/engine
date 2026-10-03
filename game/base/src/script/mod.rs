@@ -262,4 +262,67 @@ mod tests {
         assert!(!pressed_after);
         assert!(still_down);
     }
+
+    #[test]
+    fn webview_message_and_html_hit() {
+        boot_fs();
+        let mut cvars = HashMap::new();
+        cvars.insert(
+            "sv_gravity".to_string(),
+            Arc::new(ConVar::new(
+                "sv_gravity",
+                ConVarValue::Float(24.0),
+                "World gravity",
+                Some(false),
+                Some(true),
+            )),
+        );
+        let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
+        let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
+        let engine = ScriptEngine::new(
+            Realm::Client,
+            1.0 / 60.0,
+            Arc::new(cvars),
+            binds,
+            pads,
+            std::ptr::null_mut(),
+        );
+        engine
+            .lua
+            .load(
+                r#"
+                local page = gui.create("Html")
+                page:set_pos(10, 10)
+                page:set_size(80, 40)
+                assert(gui.hit(20, 20) == page)
+                assert(gui.hit(0, 0) == nil)
+                local view = webview.create(32, 24)
+                view:load_html("<html><body>Hi</body></html>")
+                assert(view:texture() ~= 0)
+                view:on_message(function(text)
+                    _G.web_msg = text
+                end)
+                _G.web_view = view
+                _G.web_id = view:id()
+                "#,
+            )
+            .exec()
+            .unwrap();
+        let id: i64 = engine.lua.load("return _G.web_id").eval().unwrap();
+        engine.webview_debug_message(id, "ping");
+        engine.flush_webviews();
+        let msg: String = engine.lua.load("return _G.web_msg").eval().unwrap();
+        assert_eq!(msg, "ping");
+        let queued = {
+            let queue = engine.render_queue.lock().unwrap();
+            queue.commands.iter().any(|cmd| {
+                matches!(
+                    cmd,
+                    crate::script::engine::DrawCommand::CreateImage { .. }
+                        | crate::script::engine::DrawCommand::UpdateImage { .. }
+                )
+            })
+        };
+        assert!(queued);
+    }
 }

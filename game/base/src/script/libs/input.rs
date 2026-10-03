@@ -18,6 +18,7 @@ pub struct Pointer {
     pub wheel_x: f64,
     pub wheel_y: f64,
     pub block_look: bool,
+    pub captured: bool,
 }
 
 impl Pointer {
@@ -36,6 +37,7 @@ impl Pointer {
             wheel_x: 0.0,
             wheel_y: 0.0,
             block_look: false,
+            captured: false,
         }
     }
 
@@ -275,7 +277,18 @@ pub fn register_input_lib(lua: &Lua, pointer: Arc<Mutex<Pointer>>) {
             })
             .expect("[input] Failed to create block_look function"),
         )
-        .expect("[input] Failed setting block_look function");
+            .expect("[input] Failed setting block_look function");
+
+    let shared = pointer.clone();
+    table
+        .set(
+            "captured",
+            lua.create_function(move |_, ()| {
+                Ok(shared.lock().expect("Couldn't lock pointer").captured)
+            })
+            .expect("[input] Failed to create captured function"),
+        )
+        .expect("[input] Failed setting captured function");
 
     lua.globals().set("input", table).unwrap();
 }

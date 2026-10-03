@@ -36,6 +36,18 @@ fn main() {
         return;
     }
 
+    if target_os == "macos" {
+        println!("cargo:rustc-link-arg=-Wl,-no_compact_unwind");
+        println!("cargo:rerun-if-changed=src/ui/webview_mac.m");
+        cc::Build::new()
+            .file("src/ui/webview_mac.m")
+            .flag("-fobjc-arc")
+            .compile("webview_mac");
+        println!("cargo:rustc-link-lib=framework=WebKit");
+        println!("cargo:rustc-link-lib=framework=AppKit");
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
+    }
+
     cc::Build::new()
         .file("src/ui/vr_openvr.c")
         .compile("vr_openvr");

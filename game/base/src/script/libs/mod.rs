@@ -16,6 +16,7 @@ pub mod scripted_ents;
 pub mod sound;
 pub mod surface;
 pub mod vector3;
+pub mod webview;
 
 pub use ai::register_ai_lib;
 pub use angle3::register_angle3_lib;
@@ -34,3 +35,4 @@ pub use scripted_ents::register_scripted_ents_lib;
 pub use sound::register_sound_lib;
 pub use surface::register_surface_lib;
 pub use vector3::register_vector3_lib;
+pub use webview::register_webview_lib;

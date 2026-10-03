@@ -103,6 +103,10 @@ local function run_line()
 end
 
 frame:set_paint(function(self, x, y, w, h)
+    if open then
+        input.block_look(true);
+    end
+
     layout();
     surface.draw_rect(x, y, w, h, 10, 12, 16, 220);
     local line_h = 18;

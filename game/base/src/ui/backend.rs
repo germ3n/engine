@@ -8,7 +8,7 @@ use crate::ui::voxel::SceneView;
 use crate::ui::vulkan::VulkanWindow;
 use crate::ui::window::Window;
 use crate::ui::Color;
-use crate::world::surface::CpuImage;
+use crate::world::surface::{CpuImage, PixelFormat};
 
 pub struct GfxWindow {
     gpu: Store,
@@ -343,6 +343,16 @@ impl GfxWindow {
         }
     }
 
+    pub fn create_rgba(&mut self, id: u32, width: u32, height: u32, bytes: Vec<u8>) {
+        let Some(image) = rgba_image(width, height, bytes) else {
+            log::warn!("[gfx] image");
+
+            return;
+        };
+
+        self.create_image(id, &image);
+    }
+
     pub fn draw_screen(&mut self, verts: &[f32], texture: u32, sampler: u32) {
         let texture_item = if texture == 0 {
             self.resolve_texture(gfx::TEX_WHITE)
@@ -628,6 +638,27 @@ impl GfxWindow {
         self.gpu.put_mesh(id, item, owned, screen);
     }
 
+    pub fn update_image(&mut self, id: u32, image: &CpuImage) {
+        let Some(slot) = self.gpu.take_texture(id) else {
+            return;
+        };
+        let owned = slot.owned;
+        let builtin = slot.builtin;
+        let material = slot.material;
+        let item = self.with_backend(|window| window.update_texture(slot.item, image));
+        self.gpu.put_texture(id, item, owned, builtin, material);
+    }
+
+    pub fn update_rgba(&mut self, id: u32, width: u32, height: u32, bytes: Vec<u8>) {
+        let Some(image) = rgba_image(width, height, bytes) else {
+            log::warn!("[gfx] image");
+
+            return;
+        };
+
+        self.update_image(id, &image);
+    }
+
     pub fn update_texture(&mut self, id: u32, path: &str) {
         let image = match gfx::image_file(path) {
             Ok(image) => image,
@@ -812,4 +843,26 @@ impl Drop for GfxWindow {
             self.release_mesh(slot);
         }
     }
+}
+
+fn rgba_image(width: u32, height: u32, bytes: Vec<u8>) -> Option<CpuImage> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let need = (width as usize)
+        .checked_mul(height as usize)?
+        .checked_mul(4)?;
+
+    if bytes.len() != need {
+        return None;
+    }
+
+    Some(CpuImage {
+        width,
+        height,
+        format: PixelFormat::Rgba8,
+        bytes,
+        mips: Vec::new(),
+    })
 }

@@ -269,6 +269,7 @@ pub fn client_loop(
 
     host.run(move |event, host, control| {
         control.poll();
+        game.script_engine.pointer.lock().unwrap().captured = captured;
 
         #[cfg(target_os = "android")]
         {
@@ -565,6 +566,7 @@ pub fn client_loop(
                         queue.height = height;
                     }
 
+                    game.script_engine.flush_webviews();
                     let _: () = game.run_hook("MenuPaint", ());
 
                     let draw_commands = {
@@ -685,6 +687,14 @@ pub fn client_loop(
                             DrawCommand::CreateTexture { id, path } => {
                                 client_window.create_texture(id, &path);
                             }
+                            DrawCommand::CreateImage {
+                                id,
+                                width,
+                                height,
+                                bytes,
+                            } => {
+                                client_window.create_rgba(id, width, height, bytes);
+                            }
                             DrawCommand::CreateMaterial { id, name } => {
                                 client_window.create_material(id, &name);
                             }
@@ -731,6 +741,14 @@ pub fn client_loop(
                             }
                             DrawCommand::UpdateTexture { id, path } => {
                                 client_window.update_texture(id, &path);
+                            }
+                            DrawCommand::UpdateImage {
+                                id,
+                                width,
+                                height,
+                                bytes,
+                            } => {
+                                client_window.update_rgba(id, width, height, bytes);
                             }
                             DrawCommand::UpdateTarget { id, width, height } => {
                                 client_window.update_target(id, width, height);

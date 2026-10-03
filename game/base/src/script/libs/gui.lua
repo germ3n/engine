@@ -8,6 +8,11 @@ gui = {};
 
 local stack = {};
 local roots = {};
+local html_list = {};
+local focused_html = nil;
+local html_blocking = false;
+local held_keys = {};
+local key_owner = nil;
 
 local function copy_stack()
     local saved = {};
@@ -322,10 +327,296 @@ function Button:draw_hover(x, y, w, h)
     end
 end
 
+local function origin(panel)
+    local x = panel.x;
+    local y = panel.y;
+    local parent = panel.parent;
+
+    while parent do
+        x = x + parent.x;
+        y = y + parent.y;
+        parent = parent.parent;
+    end
+
+    return x, y;
+end
+
+local image_pipe = nil;
+
+local function image_pipeline()
+    if image_pipe then
+        return image_pipe;
+    end
+
+    local shader = surface.create_shader([[
+struct ScreenUniforms { resolution: vec4<f32> }
+var<immediate> pc: ScreenUniforms;
+@group(0) @binding(0) var image_tex: texture_2d<f32>;
+@group(0) @binding(1) var image_samp: sampler;
+struct VsIn {
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+}
+struct VsOut {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+}
+@vertex
+fn vs_main(vin: VsIn) -> VsOut {
+    var unit = vin.position / pc.resolution.xy;
+    var clip = unit * 2.0 - 1.0;
+    clip.y = -clip.y;
+    var vout: VsOut;
+    vout.clip_position = vec4(clip, 0.0, 1.0);
+    vout.uv = vin.uv;
+    vout.color = vin.color;
+    return vout;
+}
+@fragment
+fn fs_main(vin: VsOut) -> @location(0) vec4<f32> {
+    let sample = textureSample(image_tex, image_samp, vin.uv);
+    return vec4(sample.rgb * vin.color.rgb, sample.a * vin.color.a);
+}
+]]);
+    image_pipe = surface.create_pipeline(shader, "screen");
+
+    return image_pipe;
+end
+
+local function is_text_key(name)
+    if #name == 1 then
+        return true;
+    end
+
+    return name == "space";
+end
+
+local function release_keys()
+    local panel = key_owner or focused_html;
+    local name = next(held_keys);
+
+    while name do
+        local nxt = next(held_keys, name);
+
+        if not input.key_down(name) then
+            if panel and panel.view then
+                panel.view:key(name, false, false);
+            end
+
+            held_keys[name] = nil;
+        end
+
+        name = nxt;
+    end
+
+    if next(held_keys) == nil then
+        key_owner = focused_html;
+    end
+end
+
+local Html = setmetatable({}, { __index = Panel });
+Html.__index = Html;
+
+function Html:ensure()
+    if self.view or self.view_failed then
+        return;
+    end
+
+    local w = math.max(1, math.floor(self.w));
+    local h = math.max(1, math.floor(self.h));
+    self.view = webview.create(w, h);
+
+    if not self.view then
+        self.view_failed = true;
+
+        return;
+    end
+
+    self.down = { false, false, false };
+    html_list[#html_list + 1] = self;
+end
+
+function Html:set_size(w, h)
+    Panel.set_size(self, w, h);
+
+    if self.view then
+        self.view:resize(math.max(1, math.floor(self.w)), math.max(1, math.floor(self.h)));
+    end
+end
+
+function Html:load_html(html)
+    self:ensure();
+
+    if self.view then
+        self.view:load_html(html);
+    end
+end
+
+function Html:load_url(url)
+    self:ensure();
+
+    if self.view then
+        self.view:load_url(url);
+    end
+end
+
+function Html:run_js(code)
+    self:ensure();
+
+    if self.view then
+        self.view:run_js(code);
+    end
+end
+
+function Html:on_message(callback)
+    self:ensure();
+
+    if self.view then
+        self.view:on_message(function(text)
+            callback(self, text);
+        end);
+    end
+end
+
+function Html:draw_self(x, y, w, h)
+    self:ensure();
+
+    if not self.view then
+        return;
+    end
+
+    local tex = self.view:texture();
+
+    if tex ~= 0 then
+        surface.draw_rect(x, y, w, h, 255, 255, 255, 255, tex, image_pipeline(), surface.sampler("clamp"));
+    end
+end
+
+function Html:feed(hovered, mx, my)
+    self:ensure();
+
+    if not self.view then
+        return;
+    end
+
+    local ox, oy = origin(self);
+
+    if hovered then
+        self.view:mouse_move(mx - ox, my - oy);
+    end
+
+    local idx = 1;
+
+    while idx <= 3 do
+        local down = hovered and input.mouse_down(idx);
+        local was = self.down[idx];
+
+        if down and not was then
+            focused_html = self;
+            self.view:focus(true);
+            self.view:mouse_button(idx, true);
+        elseif was and not down then
+            self.view:mouse_button(idx, false);
+        end
+
+        self.down[idx] = down and true or false;
+        idx = idx + 1;
+    end
+
+    if hovered then
+        local wx, wy = input.wheel();
+
+        if wx ~= 0 or wy ~= 0 then
+            self.view:mouse_wheel(wx, wy);
+        end
+    end
+end
+
+function Html:remove()
+    if self.view then
+        local name = next(held_keys);
+
+        while name do
+            local nxt = next(held_keys, name);
+            self.view:key(name, false, false);
+            held_keys[name] = nil;
+            name = nxt;
+        end
+
+        self.view:focus(false);
+        self.view:remove();
+        self.view = nil;
+    end
+
+    local idx = 1;
+
+    while idx <= #html_list do
+        if html_list[idx] == self then
+            table.remove(html_list, idx);
+        else
+            idx = idx + 1;
+        end
+    end
+
+    if focused_html == self then
+        focused_html = nil;
+    end
+
+    if key_owner == self then
+        key_owner = nil;
+    end
+
+    Panel.remove(self);
+end
+
+local function over_html()
+    if input.captured() then
+        return nil;
+    end
+
+    local mx, my = input.cursor();
+    local hit = gui.hit(mx, my);
+
+    if hit and hit.kind == "Html" then
+        return hit;
+    end
+end
+
+local function feed_html()
+    local hovered = over_html();
+
+    if hovered then
+        input.block_look(true);
+        html_blocking = true;
+    elseif html_blocking then
+        input.block_look(false);
+        html_blocking = false;
+    end
+
+    local mx, my = input.cursor();
+    local idx = 1;
+
+    while idx <= #html_list do
+        local panel = html_list[idx];
+
+        if not panel.alive then
+            table.remove(html_list, idx);
+        else
+            panel:feed(panel == hovered, mx, my);
+            idx = idx + 1;
+        end
+    end
+
+    release_keys();
+end
+
 local kinds = {
     Panel = Panel,
     Label = Label,
     Button = Button,
+    Html = Html,
 };
 
 local function blank(kind)
@@ -357,9 +648,9 @@ end
 parent = "gui",
 name = "create",
 realm = "client",
-summary = "Creates a Panel, Label, or Button and adds it to the root list until set_parent.",
+summary = "Creates a Panel, Label, Button, or Html and adds it to the root list until set_parent.",
 params = {
-    kind = { ty = "string", desc = "Panel, Label, or Button." },
+    kind = { ty = "string", desc = "Panel, Label, Button, or Html." },
 },
 returns = { ty = "panel", desc = "The new panel." },
 example = "local frame = gui.create(\"Panel\")",
@@ -369,6 +660,10 @@ function gui.create(kind)
     local class = kinds[kind] or Panel;
     local panel = setmetatable(blank(kind or "Panel"), class);
     roots[#roots + 1] = panel;
+
+    if panel.kind == "Html" then
+        panel:ensure();
+    end
 
     return panel;
 end
@@ -401,6 +696,7 @@ function gui.hit(x, y)
 end
 
 hook.add("MenuPaint", "gui", function()
+    feed_html();
     local idx = 1;
 
     while idx <= #roots do
@@ -417,11 +713,27 @@ hook.add("MenuPaint", "gui", function()
 end);
 
 hook.add("GuiMousePressed", "gui", function(button, x, y)
+    local hit = gui.hit(x, y);
+
+    if hit and hit.kind == "Html" then
+        if input.captured() then
+            return nil;
+        end
+
+        return true;
+    end
+
+    if focused_html and button == 1 then
+        if focused_html.view then
+            focused_html.view:focus(false);
+        end
+
+        focused_html = nil;
+    end
+
     if button ~= 1 then
         return nil;
     end
-
-    local hit = gui.hit(x, y);
 
     if not hit then
         return nil;
@@ -430,6 +742,62 @@ hook.add("GuiMousePressed", "gui", function(button, x, y)
     if hit.click then
         hit.click(hit);
     end
+
+    return true;
+end);
+
+hook.add("GuiKeyPressed", "webview", function(name, repeated)
+    local panel = focused_html;
+
+    if not panel or not panel.view or not panel.alive then
+        return nil;
+    end
+
+    if input.captured() then
+        return nil;
+    end
+
+    if name == "`" then
+        return nil;
+    end
+
+    local command = input.control() or input.super() or input.alt();
+
+    if name == "escape" and not repeated then
+        panel.view:key(name, true, false);
+        held_keys[name] = true;
+        key_owner = panel;
+        panel.view:focus(false);
+        focused_html = nil;
+
+        return true;
+    end
+
+    if command or not is_text_key(name) then
+        panel.view:key(name, true, repeated and true or false);
+        held_keys[name] = true;
+        key_owner = panel;
+    end
+
+    return true;
+end);
+
+hook.add("GuiText", "webview", function(text)
+    local panel = focused_html;
+
+    if not panel or not panel.view or not panel.alive then
+        return nil;
+    end
+
+    if input.captured() or input.control() or input.super() or input.alt() then
+        return nil;
+    end
+
+    if text == "\n" or text == "\r" or text == "\t" then
+        return nil;
+    end
+
+    panel.view:text(text);
 
     return true;
 end);

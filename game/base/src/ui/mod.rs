@@ -14,6 +14,7 @@ pub mod shaders;
 pub mod skin;
 pub mod voxel;
 pub mod vr;
+pub mod webview;
 #[cfg(not(target_os = "ios"))]
 pub mod vulkan;
 pub mod window;

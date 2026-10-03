@@ -183,6 +183,7 @@ pub fn run() {
             );
         });
 
+        crate::ui::webview::prefer_platform();
         let mut client_game = GameState::new(
             Realm::Client,
             client_rx,

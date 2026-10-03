@@ -12,7 +12,7 @@ use crate::script::libs::{
     register_nav_lib,
     register_convar_lib, register_demo_lib, register_engine_lib, register_ents_lib,
     register_input_lib, register_net_lib, register_noise_lib, register_pad_lib,
-    register_scripted_ents_lib, register_sound_lib, register_surface_lib, register_vector3_lib,
+    register_scripted_ents_lib,     register_sound_lib, register_surface_lib, register_vector3_lib, register_webview_lib,
 };
 use crate::sound::SoundAccess;
 use crate::ui::Color;
@@ -62,6 +62,12 @@ pub enum DrawCommand {
     CreateTexture {
         id: u32,
         path: String,
+    },
+    CreateImage {
+        id: u32,
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
     },
     CreateMaterial {
         id: u32,
@@ -115,6 +121,12 @@ pub enum DrawCommand {
         id: u32,
         path: String,
     },
+    UpdateImage {
+        id: u32,
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+    },
     UpdateTarget {
         id: u32,
         width: u32,
@@ -158,6 +170,7 @@ pub struct ScriptEngine {
     pub motion_access: crate::script::libs::engine::MotionAccess,
     pub gen_settings: Arc<Mutex<crate::world::gen::GenSettings>>,
     pub nav_access: crate::script::libs::nav::NavAccess,
+    webviews: Option<Arc<Mutex<crate::ui::webview::Bank>>>,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -207,6 +220,15 @@ impl ScriptEngine {
             height: 0,
         }));
         let pointer = Arc::new(Mutex::new(crate::script::libs::input::Pointer::new()));
+        let webviews = if matches!(realm, Realm::Server) {
+            None
+        } else {
+            let bank = Arc::new(Mutex::new(crate::ui::webview::Bank::open()));
+            register_webview_lib(&lua, bank.clone(), pointer.clone(), render_queue.clone());
+
+            Some(bank)
+        };
+
         if !matches!(realm, Realm::Server) {
             register_surface_lib(&lua, render_queue.clone());
             register_input_lib(&lua, pointer.clone());
@@ -285,8 +307,65 @@ impl ScriptEngine {
             motion_access,
             gen_settings,
             nav_access,
+            webviews,
             usermsg_receiver,
         }
+    }
+
+    pub fn flush_webviews(&self) {
+        let Some(webviews) = &self.webviews else {
+            return;
+        };
+        let (uploads, messages) = webviews.lock().expect("Couldn't lock webview").drain();
+
+        if !uploads.is_empty() {
+            let mut queue = self.render_queue.lock().expect("Couldn't lock render queue");
+
+            for upload in uploads {
+                if !queue.book.live(upload.texture) {
+                    continue;
+                }
+
+                queue.commands.push(DrawCommand::UpdateImage {
+                    id: upload.texture,
+                    width: upload.width,
+                    height: upload.height,
+                    bytes: upload.bytes,
+                });
+            }
+        }
+
+        if messages.is_empty() {
+            return;
+        }
+
+        let Ok(webview) = self.lua.globals().get::<mlua::Table>("webview") else {
+            return;
+        };
+        let Ok(listeners) = webview.get::<mlua::Table>("_listeners") else {
+            return;
+        };
+
+        for (id, text) in messages {
+            let Ok(func) = listeners.get::<mlua::Function>(id as i64) else {
+                continue;
+            };
+
+            if let Err(err) = func.call::<()>(text) {
+                log::warn!("[webview] {err}");
+            }
+        }
+    }
+
+    pub fn webview_debug_message(&self, id: i64, text: &str) {
+        let Some(webviews) = &self.webviews else {
+            return;
+        };
+
+        webviews
+            .lock()
+            .expect("Couldn't lock webview")
+            .debug_message(id as u64, text);
     }
 
     fn has_ents(&self) -> bool {
