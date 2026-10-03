@@ -1368,6 +1368,29 @@ impl D3D11Window {
             idx += 1;
         }
     }
+
+    fn screen_size(&self) -> (f32, f32) {
+        if self.bound_w > 0 && self.bound_h > 0 {
+            return (self.bound_w as f32, self.bound_h as f32);
+        }
+
+        (self.width as f32, self.height as f32)
+    }
+
+    fn apply_dx_scissor(&self, scissor: Option<Scissor>, width: u32, height: u32) {
+        let Some(scissor) = scissor else {
+            return;
+        };
+        let scissor = scissor.clamp(width as i32, height as i32);
+        unsafe {
+            self.context.RSSetScissorRects(Some(&[RECT {
+                left: scissor.x,
+                top: scissor.y,
+                right: scissor.x + scissor.w,
+                bottom: scissor.y + scissor.h,
+            }]));
+        }
+    }
 }
 
 fn dx11_shader(device: &ID3D11Device, wgsl: &str) -> Result<crate::ui::gfx::Dx11Shader, String> {
@@ -1968,29 +1991,6 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
 
     fn target_bound(&self) -> bool {
         self.bound_rtv.is_some()
-    }
-
-    fn screen_size(&self) -> (f32, f32) {
-        if self.bound_w > 0 && self.bound_h > 0 {
-            return (self.bound_w as f32, self.bound_h as f32);
-        }
-
-        (self.width as f32, self.height as f32)
-    }
-
-    fn apply_dx_scissor(&self, scissor: Option<Scissor>, width: u32, height: u32) {
-        let Some(scissor) = scissor else {
-            return;
-        };
-        let scissor = scissor.clamp(width as i32, height as i32);
-        unsafe {
-            self.context.RSSetScissorRects(Some(&[RECT {
-                left: scissor.x,
-                top: scissor.y,
-                right: scissor.x + scissor.w,
-                bottom: scissor.y + scissor.h,
-            }]));
-        }
     }
 
     fn update_buffer(
