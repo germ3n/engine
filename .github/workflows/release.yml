@@ -261,8 +261,8 @@ jobs:
         with:
           usesh: true
           copyback: true
-          mem: '10240'
-          cpu: '3'
+          mem: '8192'
+          cpu: '2'
           envs: RUSTFLAGS
           prepare: |
             set -eu
@@ -274,6 +274,7 @@ jobs:
             . "$HOME/.cargo/env"
             export CC=cc
             export HOST_CC=cc
+            export CARGO_BUILD_JOBS=1
             udev_pc=$(find /usr/local /usr -name 'libudev.pc' 2>/dev/null | head -n 1)
             if [ -z "$udev_pc" ]; then
               echo "libudev.pc was not installed"
@@ -282,7 +283,9 @@ jobs:
             fi
             export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
             cargo test --bin base --bin editor
+            echo "cargo test finished"
             cargo build --release --bin base --bin editor
+            echo "cargo build finished"
 
       - name: Build in DragonFly
         if: matrix.kind == 'dragonfly'
@@ -290,8 +293,8 @@ jobs:
         with:
           usesh: true
           copyback: true
-          mem: '10240'
-          cpu: '3'
+          mem: '8192'
+          cpu: '2'
           envs: RUSTFLAGS
           prepare: |
             set -eu
@@ -300,6 +303,7 @@ jobs:
             set -eu
             export CC=cc
             export HOST_CC=cc
+            export CARGO_BUILD_JOBS=1
             udev_pc=$(find /usr/local /usr -name 'libudev.pc' 2>/dev/null | head -n 1)
             if [ -z "$udev_pc" ]; then
               echo "libudev.pc was not installed"
@@ -308,7 +312,9 @@ jobs:
             fi
             export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
             cargo test --bin base --bin editor --ignore-rust-version
+            echo "cargo test finished"
             cargo build --release --bin base --bin editor --ignore-rust-version
+            echo "cargo build finished"
 
       - name: Determine Release Tag
         id: tag
