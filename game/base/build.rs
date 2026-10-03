@@ -425,12 +425,16 @@ fn write_base_pak() {
     });
     owned.push(("wiki/index.html".to_string(), wiki_bytes));
 
-    let model = manifest_dir.join("../../models/qwen.gguf");
-    println!("cargo:rerun-if-changed={}", model.display());
-    let model_bytes = std::fs::read(&model).unwrap_or_else(|err| {
-        panic!("failed to read {}: {err}", model.display());
-    });
-    owned.push(("models/qwen.gguf".to_string(), model_bytes));
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
+    if target_os != "android" && target_os != "ios" {
+        let model = manifest_dir.join("../../models/qwen.gguf");
+        println!("cargo:rerun-if-changed={}", model.display());
+        let model_bytes = std::fs::read(&model).unwrap_or_else(|err| {
+            panic!("failed to read {}: {err}", model.display());
+        });
+        owned.push(("models/qwen.gguf".to_string(), model_bytes));
+    }
 
     for (name, bytes) in &owned {
         files.push((name.as_str(), bytes.as_slice()));

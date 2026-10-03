@@ -70,6 +70,7 @@ jobs:
           ref: ${{ inputs.commit_sha || github.ref }}
 
       - name: Download Qwen model
+        if: matrix.kind != 'android' && matrix.kind != 'ios'
         shell: bash
         run: |
           mkdir -p models
@@ -256,6 +257,7 @@ jobs:
           ref: ${{ inputs.commit_sha || github.ref }}
 
       - name: Download Qwen model
+        if: matrix.kind != 'android' && matrix.kind != 'ios'
         shell: bash
         run: |
           mkdir -p models

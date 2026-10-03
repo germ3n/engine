@@ -321,7 +321,7 @@ out.append(apache_text())
 out += section("Qwen")
 out += [
     "Source: models/qwen.gguf",
-    "Packed into base.pak as models/qwen.gguf.",
+    "Packed into base.pak as models/qwen.gguf. Android and iOS builds leave it out.",
     "Name: Qwen2.5-0.5B-Instruct, Q4_K_M GGUF",
     "Copyright 2024 Alibaba Cloud",
     "License: Apache License, Version 2.0, reproduced above.",
