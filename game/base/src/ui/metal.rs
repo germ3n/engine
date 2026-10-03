@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::batch::{note_span, Scissor};
 use crate::ui::shader;
 use crate::ui::skin::SkinBatch;
 use crate::ui::voxel::SceneView;
@@ -64,6 +65,8 @@ pub struct MetalWindow {
     view_proj: [f32; 16],
     draw_mesh: bool,
     ui_verts: Vec<f32>,
+    ui_spans: Vec<crate::ui::batch::UiSpan>,
+    scissor: Option<Scissor>,
     text_verts: Vec<f32>,
     glyphs: GlyphBrush<GlyphQuad>,
     atlas: Texture,
@@ -228,6 +231,8 @@ impl MetalWindow {
             view_proj: [0.0; 16],
             draw_mesh: false,
             ui_verts: Vec::new(),
+            ui_spans: Vec::new(),
+            scissor: None,
             text_verts: Vec::new(),
             glyphs,
             atlas,
@@ -263,6 +268,8 @@ impl Window for MetalWindow {
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         self.clear = [red as f64, green as f64, blue as f64, 1.0];
         self.ui_verts.clear();
+        self.ui_spans.clear();
+        self.scissor = None;
         self.user.clear();
         self.bound_color = None;
         self.bound_depth = None;
@@ -309,7 +316,15 @@ impl Window for MetalWindow {
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let before = self.ui_verts.len();
         push_rect(&mut self.ui_verts, x, y, w, h, color.as_rgba_f32());
+        note_span(
+            &mut self.ui_spans,
+            self.scissor,
+            before,
+            self.ui_verts.len(),
+            6,
+        );
     }
 
     fn draw_outlined_rectangle(
@@ -334,6 +349,22 @@ impl Window for MetalWindow {
     }
 
     fn draw_text(&mut self, _font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
+        if self.scissor.is_some() {
+            crate::ui::gfx::BackendGpu::draw_text_user(
+                self,
+                text,
+                x,
+                y,
+                scale,
+                color.as_rgba_f32(),
+                None,
+                None,
+                None,
+            );
+
+            return;
+        }
+
         self.glyphs.queue(
             Section::default()
                 .add_text(
@@ -343,6 +374,10 @@ impl Window for MetalWindow {
                 )
                 .with_screen_position((x, y)),
         );
+    }
+
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>) {
+        self.scissor = rect.map(|rect| Scissor::from_rect(rect[0], rect[1], rect[2], rect[3]));
     }
 
     fn enable_vr(&mut self) {
@@ -483,16 +518,31 @@ impl Window for MetalWindow {
                 &self.depth_write,
                 &self.view_proj,
             );
-            bind_bytes(
-                encoder,
-                &self.device,
-                &self.color_pipeline,
-                &self.depth_off,
-                float_bytes(&self.ui_verts),
-                self.ui_verts.len() / 6,
-                &resolution,
-                None,
-            );
+            let mut span_idx = 0;
+
+            while span_idx < self.ui_spans.len() {
+                let span = self.ui_spans[span_idx];
+                apply_mtl_scissor(&encoder, span.scissor, width, height);
+                let start = span.start as usize * 6;
+                let end = (span.start + span.count) as usize * 6;
+
+                if span.count > 0 && end <= self.ui_verts.len() {
+                    bind_bytes(
+                        &encoder,
+                        &self.device,
+                        &self.color_pipeline,
+                        &self.depth_off,
+                        float_bytes(&self.ui_verts[start..end]),
+                        span.count as usize,
+                        &resolution,
+                        None,
+                    );
+                }
+
+                span_idx += 1;
+            }
+
+            apply_mtl_scissor(&encoder, None, width, height);
             bind_bytes(
                 encoder,
                 &self.device,
@@ -503,7 +553,7 @@ impl Window for MetalWindow {
                 &resolution,
                 Some(&self.atlas),
             );
-            self.encode_user(&encoder);
+            self.encode_user(&encoder, width, height);
 
             encoder.end_encoding();
             command.present_drawable(drawable);
@@ -1585,15 +1635,16 @@ struct MtlUser {
     target_color: Option<Texture>,
     target_depth: Option<Texture>,
     target_size: (u64, u64),
+    scissor: Option<Scissor>,
 }
 
 impl MetalWindow {
-    fn encode_user(&self, encoder: &RenderCommandEncoderRef) {
+    fn encode_user(&self, encoder: &RenderCommandEncoderRef, width: u64, height: u64) {
         let mut idx = 0;
 
         while idx < self.user.len() {
             if self.user[idx].target_color.is_none() {
-                self.encode_one(encoder, &self.user[idx]);
+                self.encode_one(encoder, &self.user[idx], width, height);
             }
 
             idx += 1;
@@ -1631,9 +1682,10 @@ impl MetalWindow {
             }
             let encoder = command.new_render_command_encoder(pass);
             let mut draw = start;
+            let (target_w, target_h) = self.user[start].target_size;
 
             while draw < idx {
-                self.encode_one(&encoder, &self.user[draw]);
+                self.encode_one(&encoder, &self.user[draw], target_w, target_h);
                 draw += 1;
             }
 
@@ -1641,11 +1693,18 @@ impl MetalWindow {
         }
     }
 
-    fn encode_one(&self, encoder: &RenderCommandEncoderRef, draw: &MtlUser) {
+    fn encode_one(
+        &self,
+        encoder: &RenderCommandEncoderRef,
+        draw: &MtlUser,
+        width: u64,
+        height: u64,
+    ) {
         if draw.count == 0 {
             return;
         }
 
+        apply_mtl_scissor(encoder, draw.scissor, width, height);
         encoder.set_render_pipeline_state(&draw.pipeline);
         encoder.set_depth_stencil_state(if draw.depth {
             &self.depth_write
@@ -1712,6 +1771,7 @@ impl MetalWindow {
             target_color: self.bound_color.clone(),
             target_depth: self.bound_depth.clone(),
             target_size: self.bound_size,
+            scissor: self.scissor,
         });
     }
 
@@ -1741,8 +1801,32 @@ impl MetalWindow {
             target_color: self.bound_color.clone(),
             target_depth: self.bound_depth.clone(),
             target_size: self.bound_size,
+            scissor: self.scissor,
         });
     }
+}
+
+fn apply_mtl_scissor(
+    encoder: &RenderCommandEncoderRef,
+    scissor: Option<Scissor>,
+    width: u64,
+    height: u64,
+) {
+    let rect = match scissor {
+        Some(scissor) => scissor.clamp(width as i32, height as i32),
+        None => Scissor {
+            x: 0,
+            y: 0,
+            w: width as i32,
+            h: height as i32,
+        },
+    };
+    encoder.set_scissor_rect(MTLScissorRect {
+        x: rect.x.max(0) as u64,
+        y: rect.y.max(0) as u64,
+        width: rect.w.max(0) as u64,
+        height: rect.h.max(0) as u64,
+    });
 }
 
 fn same_target(left: &MtlUser, right: &MtlUser) -> bool {
@@ -1829,7 +1913,10 @@ fn mtl_sampler(device: &Device, linear: bool, repeat: bool) -> SamplerState {
 
 impl crate::ui::gfx::BackendGpu for MetalWindow {
     fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
-        Ok(crate::ui::gfx::Shader::metal(mtl_shader(&self.device, wgsl)?))
+        Ok(crate::ui::gfx::Shader::metal(mtl_shader(
+            &self.device,
+            wgsl,
+        )?))
     }
 
     fn make_texture(
@@ -1888,11 +1975,13 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
             crate::ui::gfx::MESH_FLOATS as u8
         };
 
-        Ok(crate::ui::gfx::Pipeline::metal(crate::ui::gfx::MtlPipeline {
-            state,
-            stride,
-            depth: !screen,
-        }))
+        Ok(crate::ui::gfx::Pipeline::metal(
+            crate::ui::gfx::MtlPipeline {
+                state,
+                stride,
+                depth: !screen,
+            },
+        ))
     }
 
     fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
@@ -1957,12 +2046,20 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
 
         if !src.is_null() && byte_len <= mesh.buffer.length() as usize {
             unsafe {
-                std::ptr::copy_nonoverlapping(src as *const u8, verts.as_mut_ptr() as *mut u8, byte_len);
+                std::ptr::copy_nonoverlapping(
+                    src as *const u8,
+                    verts.as_mut_ptr() as *mut u8,
+                    byte_len,
+                );
             }
         }
 
-        let texture = texture.and_then(|item| item.as_metal()).map(|item| item.texture.clone());
-        let sampler = sampler.and_then(|item| item.as_metal()).map(|item| item.state.clone());
+        let texture = texture
+            .and_then(|item| item.as_metal())
+            .map(|item| item.texture.clone());
+        let sampler = sampler
+            .and_then(|item| item.as_metal())
+            .map(|item| item.state.clone());
         self.push_user(
             verts,
             &pipeline.state,
@@ -2085,11 +2182,13 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Pipeline::metal(crate::ui::gfx::MtlPipeline {
-            state,
-            stride,
-            depth,
-        }))
+        Some(crate::ui::gfx::Pipeline::metal(
+            crate::ui::gfx::MtlPipeline {
+                state,
+                stride,
+                depth,
+            },
+        ))
     }
 
     fn builtin_texture(&mut self, index: u32) -> Option<crate::ui::gfx::Texture> {
@@ -2111,13 +2210,16 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Sampler::metal(crate::ui::gfx::MtlSampler { state }))
+        Some(crate::ui::gfx::Sampler::metal(crate::ui::gfx::MtlSampler {
+            state,
+        }))
     }
 
     fn material_alias(&self, name: &str) -> Option<crate::ui::gfx::Texture> {
-        self.material_lookup.get(name).cloned().map(|texture| {
-            crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture { texture })
-        })
+        self.material_lookup
+            .get(name)
+            .cloned()
+            .map(|texture| crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture { texture }))
     }
 
     fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {
@@ -2158,8 +2260,12 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
             &buffer.buffer,
             buffer.bytes / (stride * 4).max(1),
             &pipeline.state,
-            texture.and_then(|item| item.as_metal()).map(|item| &item.texture),
-            sampler.and_then(|item| item.as_metal()).map(|item| &item.state),
+            texture
+                .and_then(|item| item.as_metal())
+                .map(|item| &item.texture),
+            sampler
+                .and_then(|item| item.as_metal())
+                .map(|item| &item.state),
             pipeline.depth,
             constants,
             constant_len,
@@ -2190,7 +2296,9 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
             .and_then(|item| item.as_metal())
             .map(|item| item.state.clone())
             .unwrap_or_else(|| self.text_pipeline.clone());
-        let custom = texture.and_then(|item| item.as_metal()).map(|item| item.texture.clone());
+        let custom = texture
+            .and_then(|item| item.as_metal())
+            .map(|item| item.texture.clone());
         let sampler = sampler
             .and_then(|item| item.as_metal())
             .map(|item| item.state.clone())
@@ -2278,11 +2386,7 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
         })
     }
 
-    fn update_mesh(
-        &mut self,
-        mesh: crate::ui::gfx::Mesh,
-        verts: &[f32],
-    ) -> crate::ui::gfx::Mesh {
+    fn update_mesh(&mut self, mesh: crate::ui::gfx::Mesh, verts: &[f32]) -> crate::ui::gfx::Mesh {
         let bytes = float_bytes(verts);
         let Some(mesh) = mesh.into_metal() else {
             return self.make_mesh(verts, false).unwrap_or_else(|_| {

@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::batch::{note_span, Scissor};
 use crate::ui::shader;
 use crate::ui::voxel::SceneView;
 use crate::ui::vr::{self, EyeViews, Headset, VrInput};
@@ -24,6 +25,8 @@ pub struct VulkanWindow {
     width: u32,
     height: u32,
     ui: Vec<f32>,
+    ui_spans: Vec<crate::ui::batch::UiSpan>,
+    scissor: Option<Scissor>,
     text: TextFrame,
     view: [f32; 24],
     clear: [f32; 4],
@@ -94,6 +97,8 @@ fn build_window(entry: ash::Entry, surface: &Surface) -> Result<VulkanWindow, St
         width,
         height,
         ui: Vec::new(),
+        ui_spans: Vec::new(),
+        scissor: None,
         text,
         view: [0.0; 24],
         clear: [0.0, 0.0, 0.0, 1.0],
@@ -191,6 +196,8 @@ impl Window for VulkanWindow {
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
+        self.ui_spans.clear();
+        self.scissor = None;
         self.bound_frame = None;
         self.draw_mesh = false;
     }
@@ -232,7 +239,9 @@ impl Window for VulkanWindow {
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let before = self.ui.len();
         push_rect(&mut self.ui, x, y, w, h, color.as_rgba_f32());
+        note_span(&mut self.ui_spans, self.scissor, before, self.ui.len(), 6);
     }
 
     fn draw_outlined_rectangle(
@@ -244,11 +253,33 @@ impl Window for VulkanWindow {
         thickness: f32,
         color: Color,
     ) {
+        let before = self.ui.len();
         push_outline(&mut self.ui, x, y, w, h, thickness, color.as_rgba_f32());
+        note_span(&mut self.ui_spans, self.scissor, before, self.ui.len(), 6);
     }
 
     fn draw_text(&mut self, _font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
+        if self.scissor.is_some() {
+            crate::ui::gfx::BackendGpu::draw_text_user(
+                self,
+                text,
+                x,
+                y,
+                scale,
+                color.as_rgba_f32(),
+                None,
+                None,
+                None,
+            );
+
+            return;
+        }
+
         self.text.queue(text, x, y, scale, color.as_rgba_f32());
+    }
+
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>) {
+        self.scissor = rect.map(|rect| Scissor::from_rect(rect[0], rect[1], rect[2], rect[3]));
     }
 
     fn render_text(&mut self) {
@@ -438,7 +469,7 @@ impl VulkanWindow {
         &mut self,
         cmd: vk::CommandBuffer,
         image: u32,
-        ui_bytes: usize,
+        _ui_bytes: usize,
         text_bytes: usize,
     ) -> Result<(), String> {
         let extent = self.swap.extent;
@@ -467,19 +498,29 @@ impl VulkanWindow {
         let mut screen = [0.0; 4];
         screen[0] = extent.width as f32;
         screen[1] = extent.height as f32;
-        let ui_count = (ui_bytes / 24) as u32;
+        let mut span_idx = 0;
 
-        if ui_count > 0 {
-            draw_color(
-                &self.gpu.device,
-                cmd,
-                self.pipes.color_layout,
-                self.pipes.color,
-                self.ui_bufs[self.frame_idx % FRAMES].buffer,
-                &screen,
-                ui_count,
-            );
+        while span_idx < self.ui_spans.len() {
+            let span = self.ui_spans[span_idx];
+            set_cmd_scissor(&self.gpu.device, cmd, span.scissor, extent);
+
+            if span.count > 0 {
+                draw_color(
+                    &self.gpu.device,
+                    cmd,
+                    self.pipes.color_layout,
+                    self.pipes.color,
+                    self.ui_bufs[self.frame_idx % FRAMES].buffer,
+                    &screen,
+                    span.count,
+                    span.start,
+                );
+            }
+
+            span_idx += 1;
         }
+
+        set_cmd_scissor(&self.gpu.device, cmd, None, extent);
 
         let text_count = (text_bytes / 32) as u32;
 
@@ -1463,6 +1504,36 @@ fn draw_mesh(
     }
 }
 
+fn set_cmd_scissor(
+    device: &ash::Device,
+    cmd: vk::CommandBuffer,
+    scissor: Option<Scissor>,
+    extent: vk::Extent2D,
+) {
+    let rect = match scissor {
+        Some(scissor) => scissor.clamp(extent.width as i32, extent.height as i32),
+        None => Scissor {
+            x: 0,
+            y: 0,
+            w: extent.width as i32,
+            h: extent.height as i32,
+        },
+    };
+    let scissor = vk::Rect2D {
+        offset: vk::Offset2D {
+            x: rect.x,
+            y: rect.y,
+        },
+        extent: vk::Extent2D {
+            width: rect.w.max(0) as u32,
+            height: rect.h.max(0) as u32,
+        },
+    };
+    unsafe {
+        device.cmd_set_scissor(cmd, 0, &[scissor]);
+    }
+}
+
 fn draw_color(
     device: &ash::Device,
     cmd: vk::CommandBuffer,
@@ -1471,6 +1542,7 @@ fn draw_color(
     buffer: vk::Buffer,
     screen: &[f32; 4],
     count: u32,
+    first: u32,
 ) {
     unsafe {
         device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
@@ -1482,7 +1554,7 @@ fn draw_color(
             bytes_of(screen),
         );
         device.cmd_bind_vertex_buffers(cmd, 0, &[buffer], &[0]);
-        device.cmd_draw(cmd, count, 1, 0, 0);
+        device.cmd_draw(cmd, count, 1, first, 0);
     }
 }
 
@@ -2395,6 +2467,7 @@ struct VkUser {
     constant_bytes: u32,
     target: Option<vk::Framebuffer>,
     target_extent: vk::Extent2D,
+    scissor: Option<Scissor>,
 }
 
 impl VulkanWindow {
@@ -2445,7 +2518,8 @@ impl VulkanWindow {
         let info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(64)
             .pool_sizes(&sizes);
-        let pool = unsafe { self.gpu.device.create_descriptor_pool(&info, None) }.map_err(vk_err)?;
+        let pool =
+            unsafe { self.gpu.device.create_descriptor_pool(&info, None) }.map_err(vk_err)?;
         self.user_pool[slot] = Some(pool);
 
         Ok(())
@@ -2489,10 +2563,10 @@ impl VulkanWindow {
                     0,
                     bytes_of(&draw.constants[..words]),
                 );
-                    self.gpu
-                        .device
-                        .cmd_bind_vertex_buffers(cmd, 0, &[draw.buffer.handle()], &[0]);
-                let _ = extent;
+                self.gpu
+                    .device
+                    .cmd_bind_vertex_buffers(cmd, 0, &[draw.buffer.handle()], &[0]);
+                set_cmd_scissor(&self.gpu.device, cmd, draw.scissor, extent);
                 self.gpu.device.cmd_draw(cmd, draw.count, 1, 0, 0);
             }
             idx += 1;
@@ -2554,6 +2628,7 @@ impl VulkanWindow {
                     self.gpu
                         .device
                         .cmd_bind_vertex_buffers(cmd, 0, &[item.buffer.handle()], &[0]);
+                    set_cmd_scissor(&self.gpu.device, cmd, item.scissor, extent);
                     self.gpu.device.cmd_draw(cmd, item.count, 1, 0, 0);
                 }
                 draw += 1;
@@ -2589,7 +2664,10 @@ impl VulkanWindow {
             vk::Extent2D { width, height },
         )?;
 
-        frames.into_iter().next().ok_or_else(|| "framebuffer".to_string())
+        frames
+            .into_iter()
+            .next()
+            .ok_or_else(|| "framebuffer".to_string())
     }
 
     fn user_sampler(&mut self, repeat: bool) -> Result<vk::Sampler, String> {
@@ -2612,8 +2690,7 @@ impl VulkanWindow {
             .address_mode_u(address)
             .address_mode_v(address)
             .address_mode_w(address);
-        let sampler =
-            unsafe { self.gpu.device.create_sampler(&info, None) }.map_err(vk_err)?;
+        let sampler = unsafe { self.gpu.device.create_sampler(&info, None) }.map_err(vk_err)?;
 
         if repeat {
             self.wrap_sampler = Some(sampler);
@@ -2622,6 +2699,17 @@ impl VulkanWindow {
         }
 
         Ok(sampler)
+    }
+
+    fn screen_size(&self) -> (f32, f32) {
+        if self.bound_frame.is_some() {
+            return (
+                self.bound_extent.width as f32,
+                self.bound_extent.height as f32,
+            );
+        }
+
+        (self.width as f32, self.height as f32)
     }
 
     fn push_user(
@@ -2652,6 +2740,7 @@ impl VulkanWindow {
             constant_bytes,
             target: self.bound_frame,
             target_extent: self.bound_extent,
+            scissor: self.scissor,
         });
 
         Ok(())
@@ -2726,7 +2815,12 @@ fn vk_shader(gpu: &Gpu, wgsl: &str) -> Result<crate::ui::gfx::VkShader, String> 
     })
 }
 
-fn vk_upload(window: &mut VulkanWindow, pixels: &[u8], width: u32, height: u32) -> Result<crate::ui::gfx::VkTexture, String> {
+fn vk_upload(
+    window: &mut VulkanWindow,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<crate::ui::gfx::VkTexture, String> {
     unsafe { window.gpu.device.device_wait_idle().map_err(vk_err)? };
     let image = gpu_image(
         &window.gpu,
@@ -2923,7 +3017,11 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
     }
 
     fn make_buffer(&mut self, bytes: &[u8]) -> Result<crate::ui::gfx::Buffer, String> {
-        let buffer = HostBuffer::create(&self.gpu, bytes.len().max(4) as u64, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        let buffer = HostBuffer::create(
+            &self.gpu,
+            bytes.len().max(4) as u64,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
         buffer.write(bytes);
         let (handle, memory) = export_host(buffer);
         let out = crate::ui::gfx::VkBuffer {
@@ -2935,8 +3033,16 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
         Ok(crate::ui::gfx::Buffer::vulkan(out))
     }
 
-    fn make_sampler(&mut self, linear: bool, repeat: bool) -> Result<crate::ui::gfx::Sampler, String> {
-        let filter = if linear { vk::Filter::LINEAR } else { vk::Filter::NEAREST };
+    fn make_sampler(
+        &mut self,
+        linear: bool,
+        repeat: bool,
+    ) -> Result<crate::ui::gfx::Sampler, String> {
+        let filter = if linear {
+            vk::Filter::LINEAR
+        } else {
+            vk::Filter::NEAREST
+        };
         let address = if repeat {
             vk::SamplerAddressMode::REPEAT
         } else {
@@ -2950,7 +3056,9 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             .address_mode_w(address);
         let sampler = unsafe { self.gpu.device.create_sampler(&info, None) }.map_err(vk_err)?;
 
-        Ok(crate::ui::gfx::Sampler::vulkan(crate::ui::gfx::VkSampler { sampler }))
+        Ok(crate::ui::gfx::Sampler::vulkan(crate::ui::gfx::VkSampler {
+            sampler,
+        }))
     }
 
     fn make_pipeline(
@@ -2981,16 +3089,18 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             false,
         )?;
 
-        Ok(crate::ui::gfx::Pipeline::vulkan(crate::ui::gfx::VkPipeline {
-            pipeline,
-            layout,
-            stride: if screen {
-                crate::ui::gfx::SCREEN_FLOATS as u8
-            } else {
-                crate::ui::gfx::MESH_FLOATS as u8
+        Ok(crate::ui::gfx::Pipeline::vulkan(
+            crate::ui::gfx::VkPipeline {
+                pipeline,
+                layout,
+                stride: if screen {
+                    crate::ui::gfx::SCREEN_FLOATS as u8
+                } else {
+                    crate::ui::gfx::MESH_FLOATS as u8
+                },
+                depth: !screen,
             },
-            depth: !screen,
-        }))
+        ))
     }
 
     fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
@@ -3156,8 +3266,9 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             .map(|item| item.layout)
             .unwrap_or(self.pipes.text_layout);
         let mut constants = [0.0; 16];
-        constants[0] = self.width as f32;
-        constants[1] = self.height as f32;
+        let (width, height) = self.screen_size();
+        constants[0] = width;
+        constants[1] = height;
         let view = texture
             .and_then(|item| item.as_vulkan())
             .map(|item| item.view)
@@ -3181,8 +3292,9 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
         }
 
         let mut constants = [0.0; 16];
-        constants[0] = self.width as f32;
-        constants[1] = self.height as f32;
+        let (width, height) = self.screen_size();
+        constants[0] = width;
+        constants[1] = height;
         let view = texture
             .and_then(|item| item.as_vulkan())
             .map(|item| item.view)
@@ -3231,12 +3343,14 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Pipeline::vulkan(crate::ui::gfx::VkPipeline {
-            pipeline,
-            layout,
-            stride,
-            depth,
-        }))
+        Some(crate::ui::gfx::Pipeline::vulkan(
+            crate::ui::gfx::VkPipeline {
+                pipeline,
+                layout,
+                stride,
+                depth,
+            },
+        ))
     }
 
     fn builtin_texture(&mut self, index: u32) -> Option<crate::ui::gfx::Texture> {
@@ -3271,7 +3385,9 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
         let repeat = index == crate::ui::gfx::IDX_WRAP;
         let sampler = self.user_sampler(repeat).ok()?;
 
-        Some(crate::ui::gfx::Sampler::vulkan(crate::ui::gfx::VkSampler { sampler }))
+        Some(crate::ui::gfx::Sampler::vulkan(crate::ui::gfx::VkSampler {
+            sampler,
+        }))
     }
 
     fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
@@ -3328,6 +3444,7 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             constant_bytes,
             target: self.bound_frame,
             target_extent: self.bound_extent,
+            scissor: self.scissor,
         });
     }
 
@@ -3352,7 +3469,9 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
         let verts = frame.capture(text, x, y, scale, color);
         let pipe = pipeline.and_then(|item| item.as_vulkan());
         let pipeline_handle = pipe.map(|item| item.pipeline).unwrap_or(self.pipes.text);
-        let layout = pipe.map(|item| item.layout).unwrap_or(self.pipes.text_layout);
+        let layout = pipe
+            .map(|item| item.layout)
+            .unwrap_or(self.pipes.text_layout);
         let mut constants = [0.0; 16];
         let extent = if self.bound_frame.is_some() {
             self.bound_extent
@@ -3412,7 +3531,16 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             .as_ref()
             .map(|image| image.view)
             .unwrap_or(view);
-        let _ = self.push_user(&verts, pipeline_handle, layout, view, sampler, constants, 16, 8);
+        let _ = self.push_user(
+            &verts,
+            pipeline_handle,
+            layout,
+            view,
+            sampler,
+            constants,
+            16,
+            8,
+        );
     }
 
     fn set_target(&mut self, target: Option<&crate::ui::gfx::Target>) {
@@ -3482,11 +3610,7 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
         })
     }
 
-    fn update_mesh(
-        &mut self,
-        mesh: crate::ui::gfx::Mesh,
-        verts: &[f32],
-    ) -> crate::ui::gfx::Mesh {
+    fn update_mesh(&mut self, mesh: crate::ui::gfx::Mesh, verts: &[f32]) -> crate::ui::gfx::Mesh {
         let bytes = bytes_of(verts);
         let Some(mesh) = mesh.into_vulkan() else {
             return self.make_mesh(verts, false).unwrap_or_else(|_| {

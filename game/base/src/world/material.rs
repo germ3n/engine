@@ -1,7 +1,7 @@
 use super::surface::{
-    CpuImage, CpuMaterial, CubeImage, MaterialGpu, PixelFormat, FLAG_ALPHA, FLAG_BASE2, FLAG_BLENDMOD,
-    FLAG_BUMP, FLAG_BUMP2, FLAG_DETAIL, FLAG_ENV, FLAG_MASK, FLAG_PHONG, FLAG_SELF, FLAG_SSBUMP,
-    MODE_ADD, MODE_BLEND, MODE_LIGHT, MODE_MODULATE, MODE_UNLIT, MODE_WATER,
+    CpuImage, CpuMaterial, CubeImage, MaterialGpu, PixelFormat, FLAG_ALPHA, FLAG_BASE2,
+    FLAG_BLENDMOD, FLAG_BUMP, FLAG_BUMP2, FLAG_DETAIL, FLAG_ENV, FLAG_MASK, FLAG_PHONG, FLAG_SELF,
+    FLAG_SSBUMP, MODE_ADD, MODE_BLEND, MODE_LIGHT, MODE_MODULATE, MODE_UNLIT, MODE_WATER,
 };
 use source_vmt::Vmt;
 use source_vpk::Vpk;
@@ -141,7 +141,10 @@ impl MaterialBank {
         };
 
         if doc.shader == "patch" {
-            if let Some(include) = doc.get_string("include").or_else(|| doc.get_string("$include")) {
+            if let Some(include) = doc
+                .get_string("include")
+                .or_else(|| doc.get_string("$include"))
+            {
                 self.prepare(bsp, &include, depth + 1);
             }
         }
@@ -240,7 +243,9 @@ fn resolve_material(source: &FileSource, name: &str, depth: u32) -> Option<CpuMa
     let doc = Vmt::from_str(&text).ok()?;
 
     if doc.shader == "patch" {
-        let include = doc.get_string("include").or_else(|| doc.get_string("$include"))?;
+        let include = doc
+            .get_string("include")
+            .or_else(|| doc.get_string("$include"))?;
         let mut base = resolve_vmt(source, &include, depth + 1)?;
         base.apply_patch(&doc);
 
@@ -259,7 +264,9 @@ fn resolve_vmt(source: &FileSource, name: &str, depth: u32) -> Option<Vmt> {
     let doc = Vmt::from_str(&text).ok()?;
 
     if doc.shader == "patch" {
-        let include = doc.get_string("include").or_else(|| doc.get_string("$include"))?;
+        let include = doc
+            .get_string("include")
+            .or_else(|| doc.get_string("$include"))?;
         let mut base = resolve_vmt(source, &include, depth + 1)?;
         base.apply_patch(&doc);
 
@@ -338,7 +345,10 @@ fn material_from_vmt(source: &FileSource, doc: &Vmt) -> CpuMaterial {
     gpu.detail[1] = gpu.detail[0];
 
     if let Some(scale) = doc.get_string("detailscale") {
-        let parts: Vec<f32> = scale.split_whitespace().filter_map(|part| part.parse().ok()).collect();
+        let parts: Vec<f32> = scale
+            .split_whitespace()
+            .filter_map(|part| part.parse().ok())
+            .collect();
 
         if parts.len() >= 2 {
             gpu.detail[0] = parts[0];
@@ -422,7 +432,10 @@ fn scroll_component(doc: &Vmt, index: usize) -> f32 {
     let Some(text) = doc.get_string("bumptransform") else {
         return 0.0;
     };
-    let parts: Vec<f32> = text.split_whitespace().filter_map(|part| part.parse().ok()).collect();
+    let parts: Vec<f32> = text
+        .split_whitespace()
+        .filter_map(|part| part.parse().ok())
+        .collect();
 
     parts.get(index).copied().unwrap_or(0.0)
 }
@@ -473,7 +486,8 @@ fn image_from_vtf_face(vtf: &Vtf, face: u8) -> Option<CpuImage> {
         let expect_w = (image.width >> level).max(1);
         let expect_h = (image.height >> level).max(1);
 
-        if decoded.format != image.format || decoded.width != expect_w || decoded.height != expect_h {
+        if decoded.format != image.format || decoded.width != expect_w || decoded.height != expect_h
+        {
             break;
         }
 
@@ -535,7 +549,12 @@ fn compressed_format(format: ImageFormat) -> Option<PixelFormat> {
     }
 }
 
-fn decode_uncompressed(format: ImageFormat, width: u32, height: u32, data: &[u8]) -> Option<Vec<u8>> {
+fn decode_uncompressed(
+    format: ImageFormat,
+    width: u32,
+    height: u32,
+    data: &[u8],
+) -> Option<Vec<u8>> {
     let pixels = (width as usize).checked_mul(height as usize)?;
     let mut out = vec![0u8; pixels * 4];
     let mut idx = 0;
@@ -630,7 +649,11 @@ fn decode_uncompressed(format: ImageFormat, width: u32, height: u32, data: &[u8]
                 out[idx * 4] = value;
                 out[idx * 4 + 1] = value;
                 out[idx * 4 + 2] = value;
-                out[idx * 4 + 3] = if format == ImageFormat::A8 { value } else { 255 };
+                out[idx * 4 + 3] = if format == ImageFormat::A8 {
+                    value
+                } else {
+                    255
+                };
                 idx += 1;
             }
         }
@@ -804,7 +827,13 @@ fn decode_bc3(width: u32, height: u32, data: &[u8]) -> Option<Vec<u8>> {
     decode_blocks(width, height, data, 16, true)
 }
 
-fn decode_blocks(width: u32, height: u32, data: &[u8], block_bytes: usize, dxt5: bool) -> Option<Vec<u8>> {
+fn decode_blocks(
+    width: u32,
+    height: u32,
+    data: &[u8],
+    block_bytes: usize,
+    dxt5: bool,
+) -> Option<Vec<u8>> {
     if width == 0 || height == 0 {
         return None;
     }
@@ -1168,7 +1197,10 @@ mod tests {
     fn material_paths_drop_prefixes() {
         assert_eq!(material_key(r"Materials\Brick\Wall.vmt"), "brick/wall");
         assert_eq!(vmt_path("brick/wall"), "materials/brick/wall.vmt");
-        assert_eq!(vtf_path("materials/brick/wall.vtf"), "materials/brick/wall.vtf");
+        assert_eq!(
+            vtf_path("materials/brick/wall.vtf"),
+            "materials/brick/wall.vtf"
+        );
     }
 
     #[test]

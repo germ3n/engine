@@ -325,7 +325,12 @@ pub fn run(map_name: &str) {
                                     }
                                 } else {
                                     let command = modifiers.control_key() || modifiers.super_key();
-                                    editor.on_key(code, input.repeat, command, modifiers.shift_key());
+                                    editor.on_key(
+                                        code,
+                                        input.repeat,
+                                        command,
+                                        modifiers.shift_key(),
+                                    );
                                 }
                             }
                         }
@@ -397,10 +402,11 @@ pub fn run(map_name: &str) {
                         }
 
                         let aspect = width as f32 / height.max(1) as f32;
-                        let view =
-                            editor
-                                .camera
-                                .scene_at(aspect, editor.voxels.scale() as f32, draw_anchor);
+                        let view = editor.camera.scene_at(
+                            aspect,
+                            editor.voxels.scale() as f32,
+                            draw_anchor,
+                        );
                         let title = editor.title();
 
                         if title != shown_title {
@@ -1069,7 +1075,9 @@ impl Editor {
             return;
         };
 
-        if !self.edit("delete brush", None, |document| document.remove_brush(index)) {
+        if !self.edit("delete brush", None, |document| {
+            document.remove_brush(index)
+        }) {
             return;
         }
 
@@ -1210,7 +1218,9 @@ impl Editor {
         };
         let grid = self.grid;
 
-        if self.edit("snap brush", None, |document| document.snap_brush(index, grid)) {
+        if self.edit("snap brush", None, |document| {
+            document.snap_brush(index, grid)
+        }) {
             self.notify(format!("snapped brush {index} to the grid"));
         } else {
             self.notify("brush is already on the grid");
@@ -1223,7 +1233,9 @@ impl Editor {
         };
         let name = ["X", "Y", "Z"][axis];
 
-        if self.edit("flip brush", None, |document| document.flip_brush(index, axis)) {
+        if self.edit("flip brush", None, |document| {
+            document.flip_brush(index, axis)
+        }) {
             self.notify(format!("flipped brush {index} on {name}"));
         }
     }
@@ -1356,7 +1368,10 @@ impl Editor {
 
         self.entity_brush = self.selected;
         self.draft_rev = self.doc_rev;
-        self.entity_draft = match self.selected.and_then(|index| self.document.brush_owner(index)) {
+        self.entity_draft = match self
+            .selected
+            .and_then(|index| self.document.brush_owner(index))
+        {
             Some(entity) => entity
                 .keys
                 .iter()
@@ -1801,7 +1816,10 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
                 }
 
                 if ui
-                    .add_enabled(selected, egui::Button::new("Delete brush").shortcut_text("Del"))
+                    .add_enabled(
+                        selected,
+                        egui::Button::new("Delete brush").shortcut_text("Del"),
+                    )
                     .clicked()
                 {
                     editor.delete_selection();
@@ -1819,7 +1837,10 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
                 ui.separator();
 
                 if ui
-                    .add_enabled(selected, egui::Button::new("Copy brush").shortcut_text(&copy_key))
+                    .add_enabled(
+                        selected,
+                        egui::Button::new("Copy brush").shortcut_text(&copy_key),
+                    )
                     .clicked()
                 {
                     editor.copy_selection();
@@ -1841,7 +1862,10 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
                 let selected = editor.mode == Mode::Brush && editor.selected.is_some();
 
                 if ui
-                    .add_enabled(selected, egui::Button::new("Snap to grid").shortcut_text(&snap_key))
+                    .add_enabled(
+                        selected,
+                        egui::Button::new("Snap to grid").shortcut_text(&snap_key),
+                    )
                     .clicked()
                 {
                     editor.snap_selection();
@@ -1849,17 +1873,26 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
                 }
 
                 ui.menu_button("Flip", |ui| {
-                    if ui.add_enabled(selected, egui::Button::new("Flip X")).clicked() {
+                    if ui
+                        .add_enabled(selected, egui::Button::new("Flip X"))
+                        .clicked()
+                    {
                         editor.flip_selection(0);
                         ui.close_menu();
                     }
 
-                    if ui.add_enabled(selected, egui::Button::new("Flip Y")).clicked() {
+                    if ui
+                        .add_enabled(selected, egui::Button::new("Flip Y"))
+                        .clicked()
+                    {
                         editor.flip_selection(1);
                         ui.close_menu();
                     }
 
-                    if ui.add_enabled(selected, egui::Button::new("Flip Z")).clicked() {
+                    if ui
+                        .add_enabled(selected, egui::Button::new("Flip Z"))
+                        .clicked()
+                    {
                         editor.flip_selection(2);
                         ui.close_menu();
                     }
@@ -1885,7 +1918,10 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
                     ui.close_menu();
                 }
 
-                if ui.add_enabled(selected, egui::Button::new("Move to world")).clicked() {
+                if ui
+                    .add_enabled(selected, egui::Button::new("Move to world"))
+                    .clicked()
+                {
                     editor.move_selection_to_world();
                     ui.close_menu();
                 }
@@ -1955,159 +1991,179 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
 }
 
 fn tool_bar(ctx: &egui::Context, editor: &mut Editor) {
-    let frame = egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(10, 6));
+    let frame =
+        egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::symmetric(10, 6));
 
-    egui::TopBottomPanel::top("tools").frame(frame).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            caption(ui, "MODE");
+    egui::TopBottomPanel::top("tools")
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                caption(ui, "MODE");
 
-            if ui
-                .selectable_label(editor.mode == Mode::Brush, "⬛ Brush")
-                .on_hover_text("Build with solid brushes  (B, Tab)")
-                .clicked()
-            {
-                editor.set_mode(Mode::Brush);
-            }
+                if ui
+                    .selectable_label(editor.mode == Mode::Brush, "⬛ Brush")
+                    .on_hover_text("Build with solid brushes  (B, Tab)")
+                    .clicked()
+                {
+                    editor.set_mode(Mode::Brush);
+                }
 
-            if ui
-                .selectable_label(editor.mode == Mode::Voxel, "▦ Voxel")
-                .on_hover_text("Paint and erase voxel blocks  (V, Tab)")
-                .clicked()
-            {
-                editor.set_mode(Mode::Voxel);
-            }
+                if ui
+                    .selectable_label(editor.mode == Mode::Voxel, "▦ Voxel")
+                    .on_hover_text("Paint and erase voxel blocks  (V, Tab)")
+                    .clicked()
+                {
+                    editor.set_mode(Mode::Voxel);
+                }
 
-            ui.separator();
-            caption(ui, "TOOL");
+                ui.separator();
+                caption(ui, "TOOL");
 
-            match editor.mode {
-                Mode::Brush => {
-                    if ui
-                        .selectable_label(editor.brush_tool == BrushTool::Select, "Select")
-                        .on_hover_text("Click a brush to select it  (1)")
-                        .clicked()
-                    {
-                        editor.set_tool(1);
+                match editor.mode {
+                    Mode::Brush => {
+                        if ui
+                            .selectable_label(editor.brush_tool == BrushTool::Select, "Select")
+                            .on_hover_text("Click a brush to select it  (1)")
+                            .clicked()
+                        {
+                            editor.set_tool(1);
+                        }
+
+                        if ui
+                            .selectable_label(editor.brush_tool == BrushTool::Box, "Box")
+                            .on_hover_text("Click two corners to draw a box brush  (2)")
+                            .clicked()
+                        {
+                            editor.set_tool(2);
+                        }
                     }
+                    Mode::Voxel => {
+                        if ui
+                            .selectable_label(editor.voxel_tool == VoxelTool::Paint, "Paint")
+                            .on_hover_text("Click or drag to place blocks  (1)")
+                            .clicked()
+                        {
+                            editor.set_tool(1);
+                        }
 
-                    if ui
-                        .selectable_label(editor.brush_tool == BrushTool::Box, "Box")
-                        .on_hover_text("Click two corners to draw a box brush  (2)")
-                        .clicked()
-                    {
-                        editor.set_tool(2);
+                        if ui
+                            .selectable_label(editor.voxel_tool == VoxelTool::Erase, "Erase")
+                            .on_hover_text("Click or drag to remove blocks  (2)")
+                            .clicked()
+                        {
+                            editor.set_tool(2);
+                        }
                     }
                 }
-                Mode::Voxel => {
-                    if ui
-                        .selectable_label(editor.voxel_tool == VoxelTool::Paint, "Paint")
-                        .on_hover_text("Click or drag to place blocks  (1)")
-                        .clicked()
-                    {
-                        editor.set_tool(1);
-                    }
 
-                    if ui
-                        .selectable_label(editor.voxel_tool == VoxelTool::Erase, "Erase")
-                        .on_hover_text("Click or drag to remove blocks  (2)")
-                        .clicked()
-                    {
-                        editor.set_tool(2);
-                    }
-                }
-            }
+                ui.separator();
+                caption(ui, "GRID");
+                egui::ComboBox::from_id_salt("grid")
+                    .width(56.0)
+                    .selected_text(number_label(editor.grid))
+                    .show_ui(ui, |ui| {
+                        for grid in GRIDS {
+                            ui.selectable_value(&mut editor.grid, grid, number_label(grid));
+                        }
+                    })
+                    .response
+                    .on_hover_text("Snap size  (G cycles)");
+                ui.separator();
 
-            ui.separator();
-            caption(ui, "GRID");
-            egui::ComboBox::from_id_salt("grid")
-                .width(56.0)
-                .selected_text(number_label(editor.grid))
-                .show_ui(ui, |ui| {
-                    for grid in GRIDS {
-                        ui.selectable_value(&mut editor.grid, grid, number_label(grid));
+                match editor.mode {
+                    Mode::Brush => {
+                        caption(ui, "TEXTURE");
+                        let palette = editor.palette();
+                        egui::ComboBox::from_id_salt("texture")
+                            .width(110.0)
+                            .selected_text(editor.texture.clone())
+                            .show_ui(ui, |ui| {
+                                for name in &palette {
+                                    ui.selectable_value(
+                                        &mut editor.texture,
+                                        name.clone(),
+                                        name.as_str(),
+                                    );
+                                }
+                            })
+                            .response
+                            .on_hover_text("Texture for new brushes  (T cycles)");
                     }
-                })
-                .response
-                .on_hover_text("Snap size  (G cycles)");
-            ui.separator();
-
-            match editor.mode {
-                Mode::Brush => {
-                    caption(ui, "TEXTURE");
-                    let palette = editor.palette();
-                    egui::ComboBox::from_id_salt("texture")
-                        .width(110.0)
-                        .selected_text(editor.texture.clone())
-                        .show_ui(ui, |ui| {
-                            for name in &palette {
-                                ui.selectable_value(&mut editor.texture, name.clone(), name.as_str());
-                            }
-                        })
-                        .response
-                        .on_hover_text("Texture for new brushes  (T cycles)");
-                }
-                Mode::Voxel => {
-                    caption(ui, "BLOCK");
-                    swatch(ui, editor.block, 14.0);
-                    egui::ComboBox::from_id_salt("block")
-                        .width(110.0)
-                        .selected_text(block_name(editor.block))
-                        .show_ui(ui, |ui| {
-                            for (id, name) in BLOCKS {
-                                ui.horizontal(|ui| {
-                                    swatch(ui, id, 12.0);
-                                    ui.selectable_value(&mut editor.block, id, name);
-                                });
-                            }
-                        })
-                        .response
-                        .on_hover_text("Block to paint  ([ and ] cycle, or mouse wheel)");
-                    caption(ui, "SIZE");
-                    ui.add(egui::DragValue::new(&mut editor.voxel_size).range(1..=MAX_VOXEL_SIZE))
+                    Mode::Voxel => {
+                        caption(ui, "BLOCK");
+                        swatch(ui, editor.block, 14.0);
+                        egui::ComboBox::from_id_salt("block")
+                            .width(110.0)
+                            .selected_text(block_name(editor.block))
+                            .show_ui(ui, |ui| {
+                                for (id, name) in BLOCKS {
+                                    ui.horizontal(|ui| {
+                                        swatch(ui, id, 12.0);
+                                        ui.selectable_value(&mut editor.block, id, name);
+                                    });
+                                }
+                            })
+                            .response
+                            .on_hover_text("Block to paint  ([ and ] cycle, or mouse wheel)");
+                        caption(ui, "SIZE");
+                        ui.add(
+                            egui::DragValue::new(&mut editor.voxel_size).range(1..=MAX_VOXEL_SIZE),
+                        )
                         .on_hover_text("Brush size in blocks  (- and =)");
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let save = egui::Button::new(if editor.dirty { "💾 Save*" } else { "💾 Save" });
-                let save = if editor.dirty {
-                    save.fill(egui::Color32::from_rgb(44, 92, 168))
-                } else {
-                    save
-                };
-
-                if ui
-                    .add(save)
-                    .on_hover_text(format!("Save the map  ({})", command_key(ctx, egui::Key::S, false)))
-                    .clicked()
-                {
-                    editor.save();
+                    }
                 }
 
-                if ui
-                    .add_enabled(!editor.history.redo.is_empty(), egui::Button::new("Redo"))
-                    .on_hover_text(command_key(ctx, egui::Key::Z, true))
-                    .clicked()
-                {
-                    editor.redo();
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save = egui::Button::new(if editor.dirty {
+                        "💾 Save*"
+                    } else {
+                        "💾 Save"
+                    });
+                    let save = if editor.dirty {
+                        save.fill(egui::Color32::from_rgb(44, 92, 168))
+                    } else {
+                        save
+                    };
 
-                if ui
-                    .add_enabled(!editor.history.undo.is_empty(), egui::Button::new("Undo"))
-                    .on_hover_text(command_key(ctx, egui::Key::Z, false))
-                    .clicked()
-                {
-                    editor.undo();
-                }
+                    if ui
+                        .add(save)
+                        .on_hover_text(format!(
+                            "Save the map  ({})",
+                            command_key(ctx, egui::Key::S, false)
+                        ))
+                        .clicked()
+                    {
+                        editor.save();
+                    }
+
+                    if ui
+                        .add_enabled(!editor.history.redo.is_empty(), egui::Button::new("Redo"))
+                        .on_hover_text(command_key(ctx, egui::Key::Z, true))
+                        .clicked()
+                    {
+                        editor.redo();
+                    }
+
+                    if ui
+                        .add_enabled(!editor.history.undo.is_empty(), egui::Button::new("Undo"))
+                        .on_hover_text(command_key(ctx, egui::Key::Z, false))
+                        .clicked()
+                    {
+                        editor.undo();
+                    }
+                });
             });
         });
-    });
 }
 
 fn status_bar(ctx: &egui::Context, editor: &mut Editor, aim: &Aim) {
     egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(mode_label(editor)).strong().color(ACCENT));
+            ui.label(
+                egui::RichText::new(mode_label(editor))
+                    .strong()
+                    .color(ACCENT),
+            );
             ui.separator();
             ui.label(aim_label(editor, aim));
 
@@ -2205,14 +2261,21 @@ fn outliner(ctx: &egui::Context, editor: &mut Editor) {
             ui.horizontal(|ui| {
                 let height = ui.spacing().interact_size.y;
                 ui.add_space(4.0);
-                ui.add_sized([48.0, height], egui::Label::new(egui::RichText::new("#").small().color(MUTED)));
+                ui.add_sized(
+                    [48.0, height],
+                    egui::Label::new(egui::RichText::new("#").small().color(MUTED)),
+                );
                 ui.add_sized(
                     [96.0, height],
                     egui::Label::new(egui::RichText::new("texture").small().color(MUTED)),
                 );
                 ui.add_sized(
                     [62.0, height],
-                    egui::Label::new(egui::RichText::new("X").small().color(egui::Color32::from_rgb(230, 90, 90))),
+                    egui::Label::new(
+                        egui::RichText::new("X")
+                            .small()
+                            .color(egui::Color32::from_rgb(230, 90, 90)),
+                    ),
                 );
                 ui.add_sized(
                     [62.0, height],
@@ -2336,9 +2399,15 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
                     .spacing([6.0, 4.0])
                     .show(ui, |ui| {
                         ui.label("");
-                        ui.label(egui::RichText::new("X").color(egui::Color32::from_rgb(230, 90, 90)));
-                        ui.label(egui::RichText::new("Y").color(egui::Color32::from_rgb(110, 210, 120)));
-                        ui.label(egui::RichText::new("Z").color(egui::Color32::from_rgb(100, 150, 255)));
+                        ui.label(
+                            egui::RichText::new("X").color(egui::Color32::from_rgb(230, 90, 90)),
+                        );
+                        ui.label(
+                            egui::RichText::new("Y").color(egui::Color32::from_rgb(110, 210, 120)),
+                        );
+                        ui.label(
+                            egui::RichText::new("Z").color(egui::Color32::from_rgb(100, 150, 255)),
+                        );
                         ui.end_row();
                         ui.label(egui::RichText::new("Min").color(MUTED));
 
@@ -2468,7 +2537,10 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
     let palette = editor.palette();
     ui.horizontal_wrapped(|ui| {
         for name in &palette {
-            if ui.selectable_label(&editor.texture == name, name.as_str()).clicked() {
+            if ui
+                .selectable_label(&editor.texture == name, name.as_str())
+                .clicked()
+            {
                 editor.texture = name.clone();
             }
         }
@@ -2483,8 +2555,7 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
         let valid = texture_name_ok(&custom);
         let submit = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
 
-        if (ui.add_enabled(valid, egui::Button::new("Use")).clicked() || (submit && valid))
-            && valid
+        if (ui.add_enabled(valid, egui::Button::new("Use")).clicked() || (submit && valid)) && valid
         {
             editor.texture = custom;
             editor.custom.clear();
@@ -2705,7 +2776,9 @@ fn entity_fields(ui: &mut egui::Ui, editor: &mut Editor) {
     }
 
     if ui.button("Add key").clicked() {
-        editor.entity_draft.push(("key".to_string(), "value".to_string()));
+        editor
+            .entity_draft
+            .push(("key".to_string(), "value".to_string()));
         changed = true;
     }
 
@@ -2758,9 +2831,14 @@ fn face_fields(ui: &mut egui::Ui, editor: &mut Editor, index: usize) {
     let mut face = 0;
 
     while face < faces.len() {
-        let (texture, normal, mut scale_u, mut scale_v, mut shift_u, mut shift_v) = faces[face].clone();
+        let (texture, normal, mut scale_u, mut scale_v, mut shift_u, mut shift_v) =
+            faces[face].clone();
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(face_label(normal)).monospace().color(ACCENT));
+            ui.label(
+                egui::RichText::new(face_label(normal))
+                    .monospace()
+                    .color(ACCENT),
+            );
             ui.label(egui::RichText::new(texture).color(MUTED));
 
             if ui.small_button("Set").clicked() {
@@ -2769,10 +2847,18 @@ fn face_fields(ui: &mut egui::Ui, editor: &mut Editor, index: usize) {
 
             caption(ui, "SCALE");
             let scale_changed = ui
-                .add(egui::DragValue::new(&mut scale_u).speed(0.05).max_decimals(3))
+                .add(
+                    egui::DragValue::new(&mut scale_u)
+                        .speed(0.05)
+                        .max_decimals(3),
+                )
                 .changed()
-                | ui.add(egui::DragValue::new(&mut scale_v).speed(0.05).max_decimals(3))
-                    .changed();
+                | ui.add(
+                    egui::DragValue::new(&mut scale_v)
+                        .speed(0.05)
+                        .max_decimals(3),
+                )
+                .changed();
 
             if scale_changed {
                 editor.paint_face_scale(index, face, scale_u, scale_v);
@@ -2780,10 +2866,18 @@ fn face_fields(ui: &mut egui::Ui, editor: &mut Editor, index: usize) {
 
             caption(ui, "SHIFT");
             let shift_changed = ui
-                .add(egui::DragValue::new(&mut shift_u).speed(0.5).max_decimals(3))
+                .add(
+                    egui::DragValue::new(&mut shift_u)
+                        .speed(0.5)
+                        .max_decimals(3),
+                )
                 .changed()
-                | ui.add(egui::DragValue::new(&mut shift_v).speed(0.5).max_decimals(3))
-                    .changed();
+                | ui.add(
+                    egui::DragValue::new(&mut shift_v)
+                        .speed(0.5)
+                        .max_decimals(3),
+                )
+                .changed();
 
             if shift_changed {
                 editor.paint_face_shift(index, face, shift_u, shift_v);
@@ -2863,19 +2957,21 @@ fn problems_window(ctx: &egui::Context, editor: &mut Editor) {
             }
 
             ui.label(format!("{} problems", problems.len()));
-            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                let mut idx = 0;
+            egui::ScrollArea::vertical()
+                .max_height(280.0)
+                .show(ui, |ui| {
+                    let mut idx = 0;
 
-                while idx < problems.len() {
-                    let (brush, text) = &problems[idx];
+                    while idx < problems.len() {
+                        let (brush, text) = &problems[idx];
 
-                    if ui.button(text).clicked() {
-                        pick = *brush;
+                        if ui.button(text).clicked() {
+                            pick = *brush;
+                        }
+
+                        idx += 1;
                     }
-
-                    idx += 1;
-                }
-            });
+                });
         });
     editor.show_problems = open;
 
@@ -3054,7 +3150,11 @@ fn viewport_overlay(ctx: &egui::Context, editor: &Editor, aim: &Aim) {
 }
 
 fn help_window(ctx: &egui::Context, editor: &mut Editor) {
-    let command = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+    let command = if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    };
     let groups: [(&str, Vec<(String, &str)>); 4] = [
         (
             "Camera",
@@ -3093,7 +3193,10 @@ fn help_window(ctx: &egui::Context, editor: &mut Editor) {
                 ("Esc".to_string(), "cancel / deselect"),
             ],
         ),
-        ("File", vec![(format!("{command}+S"), "save map and voxels")]),
+        (
+            "File",
+            vec![(format!("{command}+S"), "save map and voxels")],
+        ),
     ];
 
     egui::Window::new("Keyboard shortcuts")
@@ -3141,7 +3244,10 @@ fn confirm_modal(ctx: &egui::Context, editor: &mut Editor) {
             match confirm {
                 Confirm::Quit => {
                     if ui
-                        .add(egui::Button::new("Save and quit").fill(egui::Color32::from_rgb(44, 92, 168)))
+                        .add(
+                            egui::Button::new("Save and quit")
+                                .fill(egui::Color32::from_rgb(44, 92, 168)),
+                        )
                         .clicked()
                     {
                         choice = Some("save");
@@ -3192,7 +3298,12 @@ fn confirm_modal(ctx: &egui::Context, editor: &mut Editor) {
 
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(8.0);
-    ui.label(egui::RichText::new(title.to_uppercase()).small().strong().color(MUTED));
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .small()
+            .strong()
+            .color(MUTED),
+    );
     ui.separator();
 }
 
@@ -3206,11 +3317,7 @@ fn swatch(ui: &mut egui::Ui, block: u16, size: f32) {
     ui.painter().rect_filled(
         rect,
         3.0,
-        egui::Color32::from_rgb(
-            (r * 255.0) as u8,
-            (g * 255.0) as u8,
-            (b * 255.0) as u8,
-        ),
+        egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8),
     );
     ui.painter().rect_stroke(
         rect,
@@ -3265,22 +3372,29 @@ fn mode_label(editor: &Editor) -> String {
 
 fn tool_hint(editor: &Editor) -> String {
     match editor.mode {
-        Mode::Brush => match editor.brush_tool {
-            BrushTool::Select => match editor.selected {
-                Some(index) => format!(
+        Mode::Brush => {
+            match editor.brush_tool {
+                BrushTool::Select => {
+                    match editor.selected {
+                        Some(index) => format!(
                     "Brush #{index} selected · arrows/Q/E nudge · {} duplicate · Del delete",
                     if cfg!(target_os = "macos") { "Cmd+D" } else { "Ctrl+D" }
                 ),
-                None => "Click a brush to select it".to_string(),
-            },
-            BrushTool::Box => match editor.anchor {
-                Some(_) => format!(
-                    "Click the opposite corner · wheel height ({}) · Esc cancel",
-                    number_label(editor.lift)
-                ),
-                None => format!("Click to place the first corner · texture “{}”", editor.texture),
-            },
-        },
+                        None => "Click a brush to select it".to_string(),
+                    }
+                }
+                BrushTool::Box => match editor.anchor {
+                    Some(_) => format!(
+                        "Click the opposite corner · wheel height ({}) · Esc cancel",
+                        number_label(editor.lift)
+                    ),
+                    None => format!(
+                        "Click to place the first corner · texture “{}”",
+                        editor.texture
+                    ),
+                },
+            }
+        }
         Mode::Voxel => {
             let verb = match editor.voxel_tool {
                 VoxelTool::Paint => format!("Painting {}", block_name(editor.block)),
@@ -3712,13 +3826,7 @@ fn block_bounds(world: &VoxelWorld, pos: BlockPos, pad: f64) -> (Vector3, Vector
     (min, max)
 }
 
-fn push_marker(
-    vertices: &mut Vec<f32>,
-    point: Vector3,
-    grid: f64,
-    color: [f32; 3],
-    draw: Anchor,
-) {
+fn push_marker(vertices: &mut Vec<f32>, point: Vector3, grid: f64, color: [f32; 3], draw: Anchor) {
     let s = (grid * 0.12).max(0.04);
     push_box(
         vertices,
@@ -3804,8 +3912,8 @@ fn push_ribbon(
     let p1 = shift_point(draw, [b[0] - sx, b[1] - sy, b[2]]);
     let p2 = shift_point(draw, [b[0] + sx, b[1] + sy, b[2]]);
     let p3 = shift_point(draw, [a[0] + sx, a[1] + sy, a[2]]);
-        crate::world::push_shaded_tri(vertices, p0, p1, p2, color);
-        crate::world::push_shaded_tri(vertices, p0, p2, p3, color);
+    crate::world::push_shaded_tri(vertices, p0, p1, p2, color);
+    crate::world::push_shaded_tri(vertices, p0, p2, p3, color);
 }
 
 fn shift_point(draw: Anchor, point: [f32; 3]) -> [f32; 3] {
@@ -4044,7 +4152,11 @@ mod tests {
 
         assert!(editor.edit("add brush", None, |document| {
             document
-                .add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), &texture)
+                .add_box(
+                    Vector3::new(0.0, 0.0, 0.0),
+                    Vector3::new(1.0, 1.0, 1.0),
+                    &texture,
+                )
                 .is_some()
         }));
         assert_eq!(editor.document.brush_count(), count + 1);

@@ -154,8 +154,7 @@ fn stage_steam() {
     }
 }
 
-fn link_virtualizer()
-{
+fn link_virtualizer() {
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let lib_dir = manifest_dir.join("src/third_party/code_virtualizer/lib");
     println!("cargo:rerun-if-changed={}", lib_dir.display());
@@ -163,23 +162,19 @@ fn link_virtualizer()
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-    let file_name = match (target_os.as_str(), target_arch.as_str())
-    {
+    let file_name = match (target_os.as_str(), target_arch.as_str()) {
         ("macos", "aarch64") => "libVirtualizerARM64SDK.dylib",
         ("linux", "aarch64") => "libVirtualizerARM64SDK.so",
         ("linux", _) => "libVirtualizerSDK64.so",
         ("windows", "aarch64") => "VirtualizerArm64SDK.lib",
         ("windows", _) => "VirtualizerSDK64.lib",
-        _ =>
-        {
-
+        _ => {
             return;
         }
     };
     let lib_path = lib_dir.join(file_name);
 
-    if !lib_path.exists()
-    {
+    if !lib_path.exists() {
         println!(
             "cargo:warning=virtualizer library {} was not found",
             lib_path.display()
@@ -188,21 +183,17 @@ fn link_virtualizer()
         return;
     }
 
-    if target_os == "macos"
-    {
+    if target_os == "macos" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
         println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
     }
 
-    if target_os == "linux"
-    {
+    if target_os == "linux" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     }
 
-    if target_os == "windows"
-    {
-        let lib_name = match target_arch.as_str()
-        {
+    if target_os == "windows" {
+        let lib_name = match target_arch.as_str() {
             "aarch64" => "VirtualizerArm64SDK",
             _ => "VirtualizerSDK64",
         };
@@ -215,15 +206,12 @@ fn link_virtualizer()
         .parent()
         .and_then(|path| path.parent())
         .and_then(|path| path.parent())
-    else
-    {
-
+    else {
         return;
     };
     let dest = dest_dir.join(file_name);
 
-    if let Err(err) = std::fs::copy(&lib_path, &dest)
-    {
+    if let Err(err) = std::fs::copy(&lib_path, &dest) {
         println!("cargo:warning=failed to copy {file_name}: {err}");
     }
 }
@@ -278,6 +266,7 @@ fn compile_bundled_lua() {
         "src/script/libs/ents.lua",
         "src/script/libs/scripted_ents.lua",
         "src/script/libs/sound.lua",
+        "src/script/libs/gui.lua",
         "src/lua/menu/menu.lua",
     ];
 
@@ -386,6 +375,7 @@ fn write_base_pak() {
         ("lua/libs/ents.luac", "ents.luac"),
         ("lua/libs/scripted_ents.luac", "scripted_ents.luac"),
         ("lua/libs/sound.luac", "sound.luac"),
+        ("lua/libs/gui.luac", "gui.luac"),
         ("lua/menu/menu.luac", "menu.luac"),
     ];
     let mut owned = Vec::new();

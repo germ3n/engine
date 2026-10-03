@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::batch::Scissor;
 use crate::ui::shader;
 use crate::ui::skin::SkinBatch;
 use crate::ui::voxel::SceneView;
@@ -44,6 +45,7 @@ pub struct OpenGLWindow {
     bound: bool,
     bound_w: i32,
     bound_h: i32,
+    scissor: Option<Scissor>,
     text_once: Option<crate::ui::batch::TextFrame>,
     text_atlas: Option<glow::Texture>,
 }
@@ -188,6 +190,7 @@ impl OpenGLWindow {
             bound: false,
             bound_w: 0,
             bound_h: 0,
+            scissor: None,
             text_once: None,
             text_atlas: None,
         };
@@ -250,6 +253,8 @@ impl Window for OpenGLWindow {
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
+        self.scissor = None;
+        self.apply_gl_scissor();
         self.unbind_target();
         self.clear = [red, green, blue, 1.0];
         unsafe {
@@ -307,6 +312,7 @@ impl Window for OpenGLWindow {
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        self.apply_gl_scissor();
         let width = self.width;
         let height = self.height;
         let vertices: [f32; 12] = [x, y, x + w, y, x, y + h, x, y + h, x + w, y, x + w, y + h];
@@ -369,6 +375,22 @@ impl Window for OpenGLWindow {
     }
 
     fn draw_text(&mut self, font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
+        if self.scissor.is_some() {
+            crate::ui::gfx::BackendGpu::draw_text_user(
+                self,
+                text,
+                x,
+                y,
+                scale,
+                color.as_rgba_f32(),
+                None,
+                None,
+                None,
+            );
+
+            return;
+        }
+
         // Convert your 0-255 color to 0.0-1.0 floats
         let rgba = color.as_rgba_f32();
 
@@ -398,7 +420,13 @@ impl Window for OpenGLWindow {
         }
     }
 
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>) {
+        self.scissor = rect.map(|rect| Scissor::from_rect(rect[0], rect[1], rect[2], rect[3]));
+    }
+
     fn render_text(&mut self) {
+        self.scissor = None;
+        self.apply_gl_scissor();
         unsafe {
             self.gl.disable(glow::DEPTH_TEST);
             self.gl.depth_mask(false);
@@ -3219,7 +3247,10 @@ fn compile_stage(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Sh
     }
 }
 
-fn link_wgsl(gl: &glow::Context, shader: &crate::ui::gfx::GlShader) -> Result<glow::Program, String> {
+fn link_wgsl(
+    gl: &glow::Context,
+    shader: &crate::ui::gfx::GlShader,
+) -> Result<glow::Program, String> {
     unsafe {
         let program = gl.create_program().map_err(|err| err.to_string())?;
         gl.attach_shader(program, shader.vs);
@@ -3257,8 +3288,16 @@ fn rgba_texture(
             glow::UNSIGNED_BYTE,
             Some(pixels),
         );
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
         gl.tex_parameter_i32(
             glow::TEXTURE_2D,
             glow::TEXTURE_WRAP_S,
@@ -3331,8 +3370,7 @@ fn bind_user(
         gl.use_program(Some(program));
 
         if screen {
-            if let Some(loc) =
-                gl.get_uniform_location(program, "_immediates_binding_vs.resolution")
+            if let Some(loc) = gl.get_uniform_location(program, "_immediates_binding_vs.resolution")
             {
                 gl.uniform_4_f32(Some(&loc), width, height, 0.0, 0.0);
             }
@@ -3352,6 +3390,26 @@ fn bind_user(
 }
 
 impl OpenGLWindow {
+    fn apply_gl_scissor(&self) {
+        let (width, height) = self.pixel_size();
+        let height = height as i32;
+        unsafe {
+            match self.scissor {
+                Some(scissor) => {
+                    let scissor = scissor.clamp(width as i32, height);
+                    self.gl.enable(glow::SCISSOR_TEST);
+                    self.gl.scissor(
+                        scissor.x,
+                        scissor.gl_y(height),
+                        scissor.w.max(0),
+                        scissor.h.max(0),
+                    );
+                }
+                None => self.gl.disable(glow::SCISSOR_TEST),
+            }
+        }
+    }
+
     fn pixel_size(&self) -> (f32, f32) {
         if self.bound {
             return (self.bound_w as f32, self.bound_h as f32);
@@ -3384,6 +3442,7 @@ impl OpenGLWindow {
             return;
         }
 
+        self.apply_gl_scissor();
         let (width, height) = self.pixel_size();
         unsafe {
             self.gl.disable(glow::DEPTH_TEST);
@@ -3401,15 +3460,20 @@ impl OpenGLWindow {
             let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * 4);
             self.gl
                 .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
-            self.gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 32, 0);
-            self.gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 32, 8);
+            self.gl
+                .vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 32, 0);
+            self.gl
+                .vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 32, 8);
             self.gl
                 .vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, 32, 16);
             self.gl.enable_vertex_attrib_array(0);
             self.gl.enable_vertex_attrib_array(1);
             self.gl.enable_vertex_attrib_array(2);
-            self.gl
-                .draw_arrays(glow::TRIANGLES, 0, (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as i32);
+            self.gl.draw_arrays(
+                glow::TRIANGLES,
+                0,
+                (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as i32,
+            );
             self.gl.disable_vertex_attrib_array(1);
             self.gl.disable_vertex_attrib_array(2);
             self.gl
@@ -3457,11 +3521,16 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         )?))
     }
 
-    fn make_texture(&mut self, image: &crate::world::surface::CpuImage) -> Result<crate::ui::gfx::Texture, String> {
+    fn make_texture(
+        &mut self,
+        image: &crate::world::surface::CpuImage,
+    ) -> Result<crate::ui::gfx::Texture, String> {
         let pixels = crate::world::image_rgba(image);
         let name = rgba_texture(&self.gl, image.width as i32, image.height as i32, &pixels)?;
 
-        Ok(crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture { name }))
+        Ok(crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture {
+            name,
+        }))
     }
 
     fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
@@ -3470,11 +3539,21 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         let empty = vec![0u8; (width as usize) * (height as usize) * 4];
         let color = rgba_texture(&self.gl, width, height, &empty)?;
         unsafe {
-            let depth = self.gl.create_renderbuffer().map_err(|err| err.to_string())?;
-            let frame = self.gl.create_framebuffer().map_err(|err| err.to_string())?;
+            let depth = self
+                .gl
+                .create_renderbuffer()
+                .map_err(|err| err.to_string())?;
+            let frame = self
+                .gl
+                .create_framebuffer()
+                .map_err(|err| err.to_string())?;
             self.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
-            self.gl
-                .renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, width, height);
+            self.gl.renderbuffer_storage(
+                glow::RENDERBUFFER,
+                glow::DEPTH_COMPONENT24,
+                width,
+                height,
+            );
             self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(frame));
             self.gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
@@ -3516,7 +3595,11 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         }
     }
 
-    fn make_sampler(&mut self, linear: bool, repeat: bool) -> Result<crate::ui::gfx::Sampler, String> {
+    fn make_sampler(
+        &mut self,
+        linear: bool,
+        repeat: bool,
+    ) -> Result<crate::ui::gfx::Sampler, String> {
         Ok(crate::ui::gfx::Sampler::opengl(crate::ui::gfx::GlSampler {
             name: gl_sampler(&self.gl, linear, repeat)?,
         }))
@@ -3527,9 +3610,7 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         shader: &crate::ui::gfx::Shader,
         screen: bool,
     ) -> Result<crate::ui::gfx::Pipeline, String> {
-        let shader = shader
-            .as_opengl()
-            .ok_or_else(|| "shader".to_string())?;
+        let shader = shader.as_opengl().ok_or_else(|| "shader".to_string())?;
         let program = link_wgsl(&self.gl, shader)?;
         let stride = if screen {
             crate::ui::gfx::SCREEN_FLOATS as u8
@@ -3537,11 +3618,13 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             crate::ui::gfx::MESH_FLOATS as u8
         };
 
-        Ok(crate::ui::gfx::Pipeline::opengl(crate::ui::gfx::GlPipeline {
-            program,
-            stride,
-            depth: !screen,
-        }))
+        Ok(crate::ui::gfx::Pipeline::opengl(
+            crate::ui::gfx::GlPipeline {
+                program,
+                stride,
+                depth: !screen,
+            },
+        ))
     }
 
     fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
@@ -3620,6 +3703,7 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         let (Some(mesh), Some(pipeline)) = (mesh.as_opengl(), pipeline.as_opengl()) else {
             return;
         };
+        self.apply_gl_scissor();
         let stride = pipeline.stride.max(1) as i32;
         unsafe {
             self.gl.disable(glow::CULL_FACE);
@@ -3645,11 +3729,15 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl.bind_texture(
                 glow::TEXTURE_2D,
-                texture.and_then(|item| item.as_opengl()).map(|item| item.name),
+                texture
+                    .and_then(|item| item.as_opengl())
+                    .map(|item| item.name),
             );
             self.gl.bind_sampler(
                 0,
-                sampler.and_then(|item| item.as_opengl()).map(|item| item.name),
+                sampler
+                    .and_then(|item| item.as_opengl())
+                    .map(|item| item.name),
             );
             self.gl.bind_vertex_array(Some(mesh.vao));
             self.gl
@@ -3674,6 +3762,7 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             .map(|item| item.program)
             .unwrap_or(self.sprite);
         let verts = crate::ui::gfx::screen_quad(x, y, w, h, color);
+        self.apply_gl_scissor();
         unsafe {
             self.gl.disable(glow::DEPTH_TEST);
             self.gl.depth_mask(false);
@@ -3682,14 +3771,7 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
             let (width, height) = self.pixel_size();
-            bind_user(
-                &self.gl,
-                program,
-                true,
-                width,
-                height,
-                None,
-            );
+            bind_user(&self.gl, program, true, width, height, None);
             self.gl.active_texture(glow::TEXTURE0);
             self.gl.bind_texture(
                 glow::TEXTURE_2D,
@@ -3710,9 +3792,12 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * 4);
             self.gl
                 .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
-            self.gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 32, 0);
-            self.gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 32, 8);
-            self.gl.vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, 32, 16);
+            self.gl
+                .vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 32, 0);
+            self.gl
+                .vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 32, 8);
+            self.gl
+                .vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, 32, 16);
             self.gl.enable_vertex_attrib_array(0);
             self.gl.enable_vertex_attrib_array(1);
             self.gl.enable_vertex_attrib_array(2);
@@ -3765,11 +3850,13 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Pipeline::opengl(crate::ui::gfx::GlPipeline {
-            program,
-            stride,
-            depth,
-        }))
+        Some(crate::ui::gfx::Pipeline::opengl(
+            crate::ui::gfx::GlPipeline {
+                program,
+                stride,
+                depth,
+            },
+        ))
     }
 
     fn builtin_texture(&mut self, index: u32) -> Option<crate::ui::gfx::Texture> {
@@ -3779,7 +3866,9 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture { name }))
+        Some(crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture {
+            name,
+        }))
     }
 
     fn builtin_sampler(&mut self, index: u32) -> Option<crate::ui::gfx::Sampler> {
@@ -3789,7 +3878,9 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Sampler::opengl(crate::ui::gfx::GlSampler { name }))
+        Some(crate::ui::gfx::Sampler::opengl(crate::ui::gfx::GlSampler {
+            name,
+        }))
     }
 
     fn material_alias(&self, name: &str) -> Option<crate::ui::gfx::Texture> {
@@ -3817,6 +3908,7 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         let (Some(buffer), Some(pipeline)) = (buffer.as_opengl(), pipeline.as_opengl()) else {
             return;
         };
+        self.apply_gl_scissor();
         let stride = pipeline.stride.max(1) as i32;
         let screen = stride == crate::ui::gfx::SCREEN_FLOATS as i32;
         let (width, height) = self.pixel_size();
@@ -3832,15 +3924,26 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
-            bind_user(&self.gl, pipeline.program, screen, width, height, Some(view));
+            bind_user(
+                &self.gl,
+                pipeline.program,
+                screen,
+                width,
+                height,
+                Some(view),
+            );
             self.gl.active_texture(glow::TEXTURE0);
             self.gl.bind_texture(
                 glow::TEXTURE_2D,
-                texture.and_then(|item| item.as_opengl()).map(|item| item.name),
+                texture
+                    .and_then(|item| item.as_opengl())
+                    .map(|item| item.name),
             );
             self.gl.bind_sampler(
                 0,
-                sampler.and_then(|item| item.as_opengl()).map(|item| item.name),
+                sampler
+                    .and_then(|item| item.as_opengl())
+                    .map(|item| item.name),
             );
             self.gl.bind_vertex_array(Some(self.vao));
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
@@ -3865,11 +3968,8 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             self.gl.enable_vertex_attrib_array(0);
             self.gl.enable_vertex_attrib_array(1);
             self.gl.enable_vertex_attrib_array(2);
-            self.gl.draw_arrays(
-                glow::TRIANGLES,
-                0,
-                buffer.bytes as i32 / byte_stride.max(1),
-            );
+            self.gl
+                .draw_arrays(glow::TRIANGLES, 0, buffer.bytes as i32 / byte_stride.max(1));
             self.gl.disable_vertex_attrib_array(1);
             self.gl.disable_vertex_attrib_array(2);
             self.gl
@@ -3943,12 +4043,12 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         bytes: &[u8],
     ) -> crate::ui::gfx::Buffer {
         let Some(buffer) = buffer.into_opengl() else {
-            return self
-                .make_buffer(bytes)
-                .unwrap_or_else(|_| crate::ui::gfx::Buffer::opengl(crate::ui::gfx::GlBuffer {
+            return self.make_buffer(bytes).unwrap_or_else(|_| {
+                crate::ui::gfx::Buffer::opengl(crate::ui::gfx::GlBuffer {
                     name: unsafe { self.gl.create_buffer().unwrap() },
                     bytes: 0,
-                }));
+                })
+            });
         };
         unsafe {
             self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
@@ -3963,11 +4063,7 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         })
     }
 
-    fn update_mesh(
-        &mut self,
-        mesh: crate::ui::gfx::Mesh,
-        verts: &[f32],
-    ) -> crate::ui::gfx::Mesh {
+    fn update_mesh(&mut self, mesh: crate::ui::gfx::Mesh, verts: &[f32]) -> crate::ui::gfx::Mesh {
         let Some(mesh) = mesh.into_opengl() else {
             return self
                 .make_mesh(verts, false)
@@ -4003,14 +4099,11 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         image: &crate::world::surface::CpuImage,
     ) -> crate::ui::gfx::Texture {
         let Some(texture) = texture.into_opengl() else {
-            return self
-                .make_texture(image)
-                .ok()
-                .unwrap_or_else(|| {
-                    crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture {
-                        name: self.colored_mesh.white,
-                    })
-                });
+            return self.make_texture(image).ok().unwrap_or_else(|| {
+                crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture {
+                    name: self.colored_mesh.white,
+                })
+            });
         };
         let pixels = crate::world::image_rgba(image);
         unsafe {

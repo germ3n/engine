@@ -537,7 +537,12 @@ fn push_sky(
     );
 }
 
-pub fn view_constants(view_proj: [f32; 16], eye: [f32; 3], time: f32, screen: [f32; 4]) -> [f32; 24] {
+pub fn view_constants(
+    view_proj: [f32; 16],
+    eye: [f32; 3],
+    time: f32,
+    screen: [f32; 4],
+) -> [f32; 24] {
     let mut out = [0.0; 24];
     out[..16].copy_from_slice(&view_proj);
     out[16] = eye[0];

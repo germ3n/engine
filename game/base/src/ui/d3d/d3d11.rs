@@ -1,5 +1,5 @@
 use crate::platform::Surface;
-use crate::ui::batch::{bytes_of, grow, push_outline, push_rect, TextFrame};
+use crate::ui::batch::{bytes_of, grow, note_span, push_outline, push_rect, Scissor, TextFrame};
 use crate::ui::d3d::draw::{attach_desktop, Desktop};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes};
@@ -9,7 +9,7 @@ use crate::ui::vr::{self, EyeViews, Headset, VrInput};
 use crate::ui::window::Window;
 use crate::ui::Color;
 use windows::core::{s, Interface};
-use windows::Win32::Foundation::{HMODULE, HWND};
+use windows::Win32::Foundation::{HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -47,10 +47,15 @@ pub struct D3D11Window {
     blend_on: ID3D11BlendState,
     cull_back: ID3D11RasterizerState,
     cull_none: ID3D11RasterizerState,
+    cull_clip: ID3D11RasterizerState,
     width: u32,
     height: u32,
     clear: [f32; 4],
     ui: Vec<f32>,
+    ui_spans: Vec<crate::ui::batch::UiSpan>,
+    scissor: Option<Scissor>,
+    bound_w: u32,
+    bound_h: u32,
     text: TextFrame,
     mesh_vertices: u32,
     mesh_revision: u64,
@@ -118,8 +123,9 @@ impl D3D11Window {
         let depth_off = depth_state(&device, false)?;
         let blend_off = blend_state(&device, false)?;
         let blend_on = blend_state(&device, true)?;
-        let cull_back = rasterizer(&device, D3D11_CULL_BACK)?;
-        let cull_none = rasterizer(&device, D3D11_CULL_NONE)?;
+        let cull_back = rasterizer(&device, D3D11_CULL_BACK, false)?;
+        let cull_none = rasterizer(&device, D3D11_CULL_NONE, false)?;
+        let cull_clip = rasterizer(&device, D3D11_CULL_NONE, true)?;
         let text = TextFrame::new()?;
 
         Ok(Self {
@@ -154,10 +160,15 @@ impl D3D11Window {
             blend_on,
             cull_back,
             cull_none,
+            cull_clip,
             width,
             height,
             clear: [0.0, 0.0, 0.0, 1.0],
             ui: Vec::new(),
+            ui_spans: Vec::new(),
+            scissor: None,
+            bound_w: 0,
+            bound_h: 0,
             text,
             mesh_vertices: 0,
             mesh_revision: 0,
@@ -276,9 +287,13 @@ impl Window for D3D11Window {
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
+        self.ui_spans.clear();
+        self.scissor = None;
         self.user.clear();
         self.bound_rtv = None;
         self.bound_dsv = None;
+        self.bound_w = 0;
+        self.bound_h = 0;
         self.draw_mesh = false;
     }
 
@@ -314,7 +329,9 @@ impl Window for D3D11Window {
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let before = self.ui.len();
         push_rect(&mut self.ui, x, y, w, h, color.as_rgba_f32());
+        note_span(&mut self.ui_spans, self.scissor, before, self.ui.len(), 6);
     }
 
     fn draw_outlined_rectangle(
@@ -326,11 +343,33 @@ impl Window for D3D11Window {
         thickness: f32,
         color: Color,
     ) {
+        let before = self.ui.len();
         push_outline(&mut self.ui, x, y, w, h, thickness, color.as_rgba_f32());
+        note_span(&mut self.ui_spans, self.scissor, before, self.ui.len(), 6);
     }
 
     fn draw_text(&mut self, _font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
+        if self.scissor.is_some() {
+            crate::ui::gfx::BackendGpu::draw_text_user(
+                self,
+                text,
+                x,
+                y,
+                scale,
+                color.as_rgba_f32(),
+                None,
+                None,
+                None,
+            );
+
+            return;
+        }
+
         self.text.queue(text, x, y, scale, color.as_rgba_f32());
+    }
+
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>) {
+        self.scissor = rect.map(|rect| Scissor::from_rect(rect[0], rect[1], rect[2], rect[3]));
     }
 
     fn render_text(&mut self) {
@@ -424,25 +463,38 @@ impl Window for D3D11Window {
                     &self.cull_back,
                     None,
                     None,
+                    0,
                 );
             }
         }
 
         if let Some(ui) = self.ui_buf.as_ref() {
-            let count = (self.ui.len() / 6) as u32;
-            self.draw_buffer(
-                &self.color_vs,
-                &self.color_ps,
-                &self.color_layout,
-                &self.screen_cb,
-                ui,
-                count,
-                &self.depth_off,
-                &self.blend_on,
-                &self.cull_none,
-                None,
-                None,
-            );
+            let mut span_idx = 0;
+
+            while span_idx < self.ui_spans.len() {
+                let span = self.ui_spans[span_idx];
+                let raster = if span.scissor.is_some() {
+                    self.apply_dx_scissor(span.scissor, self.width, self.height);
+                    &self.cull_clip
+                } else {
+                    &self.cull_none
+                };
+                self.draw_buffer(
+                    &self.color_vs,
+                    &self.color_ps,
+                    &self.color_layout,
+                    &self.screen_cb,
+                    ui,
+                    span.count,
+                    &self.depth_off,
+                    &self.blend_on,
+                    raster,
+                    None,
+                    None,
+                    span.start,
+                );
+                span_idx += 1;
+            }
         }
 
         if let Some(text) = self.text_buf.as_ref() {
@@ -459,6 +511,7 @@ impl Window for D3D11Window {
                 &self.cull_none,
                 self.atlas_view.clone(),
                 None,
+                0,
             );
         }
 
@@ -532,6 +585,7 @@ impl D3D11Window {
                         &self.cull_back,
                         None,
                         None,
+                        0,
                     );
                 }
             }
@@ -600,6 +654,7 @@ impl D3D11Window {
         raster: &ID3D11RasterizerState,
         texture: Option<ID3D11ShaderResourceView>,
         sampler: Option<ID3D11SamplerState>,
+        start: u32,
     ) {
         if vertices == 0 {
             return;
@@ -633,7 +688,7 @@ impl D3D11Window {
                 self.context.PSSetSamplers(0, Some(&[Some(sampler)]));
             }
 
-            self.context.Draw(vertices, 0);
+            self.context.Draw(vertices, start);
         }
     }
 }
@@ -1189,6 +1244,7 @@ fn blend_state(device: &ID3D11Device, enabled: bool) -> Result<ID3D11BlendState,
 fn rasterizer(
     device: &ID3D11Device,
     cull: D3D11_CULL_MODE,
+    scissor: bool,
 ) -> Result<ID3D11RasterizerState, String> {
     let desc = D3D11_RASTERIZER_DESC {
         FillMode: D3D11_FILL_SOLID,
@@ -1198,7 +1254,7 @@ fn rasterizer(
         DepthBiasClamp: 0.0,
         SlopeScaledDepthBias: 0.0,
         DepthClipEnable: true.into(),
-        ScissorEnable: false.into(),
+        ScissorEnable: scissor.into(),
         MultisampleEnable: false.into(),
         AntialiasedLineEnable: false.into(),
     };
@@ -1224,6 +1280,9 @@ struct DxUser {
     constants: [f32; 16],
     rtv: Option<ID3D11RenderTargetView>,
     dsv: Option<ID3D11DepthStencilView>,
+    scissor: Option<Scissor>,
+    view_w: u32,
+    view_h: u32,
 }
 
 impl D3D11Window {
@@ -1257,13 +1316,37 @@ impl D3D11Window {
             let words = self.user[idx].constants;
             let rtv = self.user[idx].rtv.clone();
             let dsv = self.user[idx].dsv.clone();
+            let scissor = self.user[idx].scissor;
+            let view_w = self.user[idx].view_w;
+            let view_h = self.user[idx].view_h;
             let _ = write_constants(&self.context, &constants, &words);
+            let (clip_w, clip_h) = if view_w > 0 && view_h > 0 {
+                (view_w, view_h)
+            } else {
+                (self.width, self.height)
+            };
 
-            if let (Some(rtv), Some(dsv)) = (rtv, dsv) {
-                unsafe {
+            unsafe {
+                if let (Some(rtv), Some(dsv)) = (rtv, dsv) {
                     self.context.OMSetRenderTargets(Some(&[Some(rtv)]), &dsv);
                 }
+
+                self.context.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: clip_w as f32,
+                    Height: clip_h as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                }]));
             }
+
+            let raster = if scissor.is_some() {
+                self.apply_dx_scissor(scissor, clip_w, clip_h);
+                &self.cull_clip
+            } else {
+                &self.cull_none
+            };
             self.draw_buffer(
                 &vs,
                 &ps,
@@ -1271,11 +1354,16 @@ impl D3D11Window {
                 &constants,
                 &buffer,
                 count,
-                if depth { &self.depth_on } else { &self.depth_off },
+                if depth {
+                    &self.depth_on
+                } else {
+                    &self.depth_off
+                },
                 &self.blend_on,
-                &self.cull_none,
+                raster,
                 texture,
                 sampler,
+                0,
             );
             idx += 1;
         }
@@ -1393,7 +1481,10 @@ fn mesh_user_elements() -> [D3D11_INPUT_ELEMENT_DESC; 3] {
 
 impl crate::ui::gfx::BackendGpu for D3D11Window {
     fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
-        Ok(crate::ui::gfx::Shader::d3d11(dx11_shader(&self.device, wgsl)?))
+        Ok(crate::ui::gfx::Shader::d3d11(dx11_shader(
+            &self.device,
+            wgsl,
+        )?))
     }
 
     fn make_texture(
@@ -1473,9 +1564,11 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
         linear: bool,
         repeat: bool,
     ) -> Result<crate::ui::gfx::Sampler, String> {
-        Ok(crate::ui::gfx::Sampler::d3d11(crate::ui::gfx::Dx11Sampler {
-            state: dx11_sampler(&self.device, linear, repeat)?,
-        }))
+        Ok(crate::ui::gfx::Sampler::d3d11(
+            crate::ui::gfx::Dx11Sampler {
+                state: dx11_sampler(&self.device, linear, repeat)?,
+            },
+        ))
     }
 
     fn make_pipeline(
@@ -1498,13 +1591,15 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             crate::ui::gfx::MESH_FLOATS as u8
         };
 
-        Ok(crate::ui::gfx::Pipeline::d3d11(crate::ui::gfx::Dx11Pipeline {
-            vs,
-            ps,
-            layout,
-            stride,
-            depth: !screen,
-        }))
+        Ok(crate::ui::gfx::Pipeline::d3d11(
+            crate::ui::gfx::Dx11Pipeline {
+                vs,
+                ps,
+                layout,
+                stride,
+                depth: !screen,
+            },
+        ))
     }
 
     fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
@@ -1571,13 +1666,20 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             vs: pipeline.vs.clone(),
             ps: pipeline.ps.clone(),
             layout: pipeline.layout.clone(),
-            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
-            sampler: sampler.and_then(|item| item.as_d3d11()).map(|item| item.state.clone()),
+            texture: texture
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.view.clone()),
+            sampler: sampler
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.state.clone()),
             count,
             depth: pipeline.depth,
             constants,
             rtv: self.bound_rtv.clone(),
             dsv: self.bound_dsv.clone(),
+            scissor: self.scissor,
+            view_w: self.bound_w,
+            view_h: self.bound_h,
         });
     }
 
@@ -1598,19 +1700,30 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             return;
         };
         let (vs, ps, layout) = if let Some(pipeline) = pipeline.and_then(|item| item.as_d3d11()) {
-            (pipeline.vs.clone(), pipeline.ps.clone(), pipeline.layout.clone())
+            (
+                pipeline.vs.clone(),
+                pipeline.ps.clone(),
+                pipeline.layout.clone(),
+            )
         } else {
-            (self.text_vs.clone(), self.text_ps.clone(), self.text_layout.clone())
+            (
+                self.text_vs.clone(),
+                self.text_ps.clone(),
+                self.text_layout.clone(),
+            )
         };
         let mut constants = [0.0; 16];
-        constants[0] = self.width as f32;
-        constants[1] = self.height as f32;
+        let (width, height) = self.screen_size();
+        constants[0] = width;
+        constants[1] = height;
         self.user.push(DxUser {
             buffer,
             vs,
             ps,
             layout,
-            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            texture: texture
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.view.clone()),
             sampler: sampler
                 .and_then(|item| item.as_d3d11())
                 .map(|item| item.state.clone())
@@ -1620,6 +1733,9 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             constants,
             rtv: self.bound_rtv.clone(),
             dsv: self.bound_dsv.clone(),
+            scissor: self.scissor,
+            view_w: self.bound_w,
+            view_h: self.bound_h,
         });
     }
 
@@ -1638,14 +1754,17 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             return;
         };
         let mut constants = [0.0; 16];
-        constants[0] = self.width as f32;
-        constants[1] = self.height as f32;
+        let (width, height) = self.screen_size();
+        constants[0] = width;
+        constants[1] = height;
         self.user.push(DxUser {
             buffer,
             vs: self.text_vs.clone(),
             ps: self.text_ps.clone(),
             layout: self.text_layout.clone(),
-            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            texture: texture
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.view.clone()),
             sampler: sampler
                 .and_then(|item| item.as_d3d11())
                 .map(|item| item.state.clone())
@@ -1655,6 +1774,9 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             constants,
             rtv: self.bound_rtv.clone(),
             dsv: self.bound_dsv.clone(),
+            scissor: self.scissor,
+            view_w: self.bound_w,
+            view_h: self.bound_h,
         });
     }
 
@@ -1697,13 +1819,15 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Pipeline::d3d11(crate::ui::gfx::Dx11Pipeline {
-            vs,
-            ps,
-            layout,
-            stride,
-            depth,
-        }))
+        Some(crate::ui::gfx::Pipeline::d3d11(
+            crate::ui::gfx::Dx11Pipeline {
+                vs,
+                ps,
+                layout,
+                stride,
+                depth,
+            },
+        ))
     }
 
     fn builtin_texture(&mut self, _index: u32) -> Option<crate::ui::gfx::Texture> {
@@ -1711,9 +1835,11 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
     }
 
     fn builtin_sampler(&mut self, _index: u32) -> Option<crate::ui::gfx::Sampler> {
-        Some(crate::ui::gfx::Sampler::d3d11(crate::ui::gfx::Dx11Sampler {
-            state: self.sampler.clone(),
-        }))
+        Some(crate::ui::gfx::Sampler::d3d11(
+            crate::ui::gfx::Dx11Sampler {
+                state: self.sampler.clone(),
+            },
+        ))
     }
 
     fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
@@ -1743,13 +1869,20 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             vs: pipeline.vs.clone(),
             ps: pipeline.ps.clone(),
             layout: pipeline.layout.clone(),
-            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
-            sampler: sampler.and_then(|item| item.as_d3d11()).map(|item| item.state.clone()),
+            texture: texture
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.view.clone()),
+            sampler: sampler
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.state.clone()),
             count: buffer.bytes / (stride * 4).max(1),
             depth: pipeline.depth,
             constants,
             rtv: self.bound_rtv.clone(),
             dsv: self.bound_dsv.clone(),
+            scissor: self.scissor,
+            view_w: self.bound_w,
+            view_h: self.bound_h,
         });
     }
 
@@ -1777,19 +1910,30 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             return;
         };
         let (vs, ps, layout) = if let Some(pipeline) = pipeline.and_then(|item| item.as_d3d11()) {
-            (pipeline.vs.clone(), pipeline.ps.clone(), pipeline.layout.clone())
+            (
+                pipeline.vs.clone(),
+                pipeline.ps.clone(),
+                pipeline.layout.clone(),
+            )
         } else {
-            (self.text_vs.clone(), self.text_ps.clone(), self.text_layout.clone())
+            (
+                self.text_vs.clone(),
+                self.text_ps.clone(),
+                self.text_layout.clone(),
+            )
         };
         let mut constants = [0.0; 16];
-        constants[0] = self.width as f32;
-        constants[1] = self.height as f32;
+        let (width, height) = self.screen_size();
+        constants[0] = width;
+        constants[1] = height;
         self.user.push(DxUser {
             buffer,
             vs,
             ps,
             layout,
-            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            texture: texture
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.view.clone()),
             sampler: sampler
                 .and_then(|item| item.as_d3d11())
                 .map(|item| item.state.clone())
@@ -1799,6 +1943,9 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             constants,
             rtv: self.bound_rtv.clone(),
             dsv: self.bound_dsv.clone(),
+            scissor: self.scissor,
+            view_w: self.bound_w,
+            view_h: self.bound_h,
         });
     }
 
@@ -1807,16 +1954,43 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             Some(target) => {
                 self.bound_rtv = Some(target.rtv.clone());
                 self.bound_dsv = Some(target.dsv.clone());
+                self.bound_w = target.width;
+                self.bound_h = target.height;
             }
             None => {
                 self.bound_rtv = None;
                 self.bound_dsv = None;
+                self.bound_w = 0;
+                self.bound_h = 0;
             }
         }
     }
 
     fn target_bound(&self) -> bool {
         self.bound_rtv.is_some()
+    }
+
+    fn screen_size(&self) -> (f32, f32) {
+        if self.bound_w > 0 && self.bound_h > 0 {
+            return (self.bound_w as f32, self.bound_h as f32);
+        }
+
+        (self.width as f32, self.height as f32)
+    }
+
+    fn apply_dx_scissor(&self, scissor: Option<Scissor>, width: u32, height: u32) {
+        let Some(scissor) = scissor else {
+            return;
+        };
+        let scissor = scissor.clamp(width as i32, height as i32);
+        unsafe {
+            self.context.RSSetScissorRects(Some(&[RECT {
+                left: scissor.x,
+                top: scissor.y,
+                right: scissor.x + scissor.w,
+                bottom: scissor.y + scissor.h,
+            }]));
+        }
     }
 
     fn update_buffer(
@@ -1858,11 +2032,7 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
         }
     }
 
-    fn update_mesh(
-        &mut self,
-        mesh: crate::ui::gfx::Mesh,
-        verts: &[f32],
-    ) -> crate::ui::gfx::Mesh {
+    fn update_mesh(&mut self, mesh: crate::ui::gfx::Mesh, verts: &[f32]) -> crate::ui::gfx::Mesh {
         let Some(mesh) = mesh.into_d3d11() else {
             return self.make_mesh(verts, false).unwrap_or_else(|_| {
                 crate::ui::gfx::Mesh::d3d11(crate::ui::gfx::Dx11Mesh {
@@ -1911,7 +2081,10 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
 
         self.make_texture(image).unwrap_or_else(|_| {
             crate::ui::gfx::Texture::d3d11(crate::ui::gfx::Dx11Texture {
-                texture: self.depth.clone().unwrap_or_else(|| unsafe { self.swap.GetBuffer(0).unwrap() }),
+                texture: self
+                    .depth
+                    .clone()
+                    .unwrap_or_else(|| unsafe { self.swap.GetBuffer(0).unwrap() }),
                 view: self.atlas_view.clone().unwrap_or_else(|| {
                     dx11_texture(&self.device, &[255, 255, 255, 255], 1, 1)
                         .unwrap()

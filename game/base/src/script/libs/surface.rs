@@ -366,32 +366,39 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
     surface_table
         .set(
             "draw_mesh",
-            lua.create_function(
-                move |_, (mesh, pipeline, texture, sampler): (u32, u32, Option<u32>, Option<u32>)| {
-                    let texture = texture.unwrap_or(0);
-                    let sampler = sampler.unwrap_or(0);
+            lua
+                .create_function(
+                    move |_,
+                          (mesh, pipeline, texture, sampler): (
+                        u32,
+                        u32,
+                        Option<u32>,
+                        Option<u32>,
+                    )| {
+                        let texture = texture.unwrap_or(0);
+                        let sampler = sampler.unwrap_or(0);
 
-                    if !ids_live(&render_queue_, &[mesh, pipeline, texture, sampler]) {
-                        return Ok(());
-                    }
+                        if !ids_live(&render_queue_, &[mesh, pipeline, texture, sampler]) {
+                            return Ok(());
+                        }
 
-                    render_queue_
-                        .lock()
-                        .expect("Couldn't lock render queue")
-                        .commands
-                        .push(DrawCommand::DrawMesh {
-                            mesh,
-                            pipeline,
-                            texture,
-                            sampler,
-                        });
+                        render_queue_
+                            .lock()
+                            .expect("Couldn't lock render queue")
+                            .commands
+                            .push(DrawCommand::DrawMesh {
+                                mesh,
+                                pipeline,
+                                texture,
+                                sampler,
+                            });
 
-                    Ok(())
-                },
-            )
-            .expect("[surface] Failed to create draw_mesh function"),
+                        Ok(())
+                    },
+                )
+                .expect("[surface] Failed to create draw_mesh function"),
         )
-            .expect("[surface] Failed setting draw_mesh function");
+        .expect("[surface] Failed setting draw_mesh function");
 
     let render_queue_ = render_queue.clone();
     surface_table
@@ -502,6 +509,42 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
             .expect("[surface] Failed to create update_target function"),
         )
         .expect("[surface] Failed setting update_target function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "set_scissor",
+            lua.create_function(
+                move |_, (x, y, w, h): (Option<f32>, Option<f32>, Option<f32>, Option<f32>)| {
+                    let rect = match (x, y, w, h) {
+                        (Some(x), Some(y), Some(w), Some(h)) => Some([x, y, w, h]),
+                        _ => None,
+                    };
+                    render_queue_
+                        .lock()
+                        .expect("Couldn't lock render queue")
+                        .commands
+                        .push(DrawCommand::SetScissor { rect });
+
+                    Ok(())
+                },
+            )
+            .expect("[surface] Failed to create set_scissor function"),
+        )
+        .expect("[surface] Failed setting set_scissor function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "size",
+            lua.create_function(move |_, ()| {
+                let state = render_queue_.lock().expect("Couldn't lock render queue");
+
+                Ok((state.width, state.height))
+            })
+            .expect("[surface] Failed to create size function"),
+        )
+        .expect("[surface] Failed setting size function");
 
     lua.globals().set("surface", surface_table).unwrap();
 }

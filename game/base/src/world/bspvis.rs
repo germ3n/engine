@@ -102,7 +102,11 @@ pub fn build(bytes: &[u8], map_name: &str) -> Result<BspVisual, String> {
         for face in model.faces() {
             let name = face.texture().name();
             let flags = face.texture().flags;
-            polygons.push(face.vertices().map(|vert| [vert.position.x, vert.position.y, vert.position.z]).collect::<Vec<_>>());
+            polygons.push(
+                face.vertices()
+                    .map(|vert| [vert.position.x, vert.position.y, vert.position.z])
+                    .collect::<Vec<_>>(),
+            );
 
             if hidden(name, flags) {
                 continue;
@@ -122,7 +126,11 @@ pub fn build(bytes: &[u8], map_name: &str) -> Result<BspVisual, String> {
                 info.texture_transforms_v[1],
                 info.texture_transforms_v[2],
             ];
-            let tangent = tangent_of(tex_u, tex_v, [face.normal().x, face.normal().y, face.normal().z]);
+            let tangent = tangent_of(
+                tex_u,
+                tex_v,
+                [face.normal().x, face.normal().y, face.normal().z],
+            );
             let light = light_rect(&mut atlas, &lighting, &face);
             let centroid = face_centroid(&face);
             let cubemap = if material_wants_env(&graphics, material) {
@@ -132,12 +140,14 @@ pub fn build(bytes: &[u8], map_name: &str) -> Result<BspVisual, String> {
             };
             let mins = face.light_map_texture_min;
             let size = face.light_map_texture_size;
-            let bucket = buckets.entry((material, cubemap, pass)).or_insert_with(|| Bucket {
-                material,
-                cubemap,
-                pass,
-                verts: Vec::new(),
-            });
+            let bucket = buckets
+                .entry((material, cubemap, pass))
+                .or_insert_with(|| Bucket {
+                    material,
+                    cubemap,
+                    pass,
+                    verts: Vec::new(),
+                });
 
             if let Some(disp) = face.displacement() {
                 emit_displacement(
@@ -173,7 +183,14 @@ pub fn build(bytes: &[u8], map_name: &str) -> Result<BspVisual, String> {
         }
     }
 
-    emit_overlays(&bsp, &mut bank, &mut graphics, &mut buckets, &polygons, &probes);
+    emit_overlays(
+        &bsp,
+        &mut bank,
+        &mut graphics,
+        &mut buckets,
+        &polygons,
+        &probes,
+    );
     graphics.material_names = bank.ordered_names();
     graphics.materials = bank.materials().to_vec();
     graphics.lightmaps = atlas.images();
@@ -197,7 +214,10 @@ fn emit_displacement(
 ) {
     let steps = 2usize.pow(disp.power as u32);
     let verts: Vec<_> = disp.displaced_vertices().collect();
-    let alphas: Vec<f32> = disp.displacement_vertices().map(|vert| vert.alpha).collect();
+    let alphas: Vec<f32> = disp
+        .displacement_vertices()
+        .map(|vert| vert.alpha)
+        .collect();
     let mut x = 0;
 
     while x < steps {
@@ -228,15 +248,7 @@ fn emit_displacement(
                     [0.0, 0.0, 0.0]
                 };
                 emit_tri(
-                    bucket,
-                    positions,
-                    blend,
-                    info,
-                    tangent,
-                    light,
-                    mins,
-                    size,
-                    atlas,
+                    bucket, positions, blend, info, tangent, light, mins, size, atlas,
                 );
                 tri += 1;
             }
@@ -373,12 +385,14 @@ fn push_overlay(
         return;
     }
 
-    let bucket = buckets.entry((material, cubemap, PASS_DECAL)).or_insert_with(|| Bucket {
-        material,
-        cubemap,
-        pass: PASS_DECAL,
-        verts: Vec::new(),
-    });
+    let bucket = buckets
+        .entry((material, cubemap, PASS_DECAL))
+        .or_insert_with(|| Bucket {
+            material,
+            cubemap,
+            pass: PASS_DECAL,
+            verts: Vec::new(),
+        });
     let tangent = tri_tangent(poly[0], poly[1], normal);
     let mut idx = 1;
 
@@ -457,7 +471,12 @@ fn side(normal: [f32; 3], origin: [f32; 3], point: [f32; 3]) -> f32 {
         + (point[2] - origin[2]) * normal[2]
 }
 
-fn intersect_plane(a: [f32; 3], b: [f32; 3], normal: [f32; 3], origin: [f32; 3]) -> Option<[f32; 3]> {
+fn intersect_plane(
+    a: [f32; 3],
+    b: [f32; 3],
+    normal: [f32; 3],
+    origin: [f32; 3],
+) -> Option<[f32; 3]> {
     let dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let denom = dir[0] * normal[0] + dir[1] * normal[1] + dir[2] * normal[2];
 
@@ -553,7 +572,9 @@ fn pass_of(graphics: &MapGraphics, material: u16, flags: TextureFlags) -> u8 {
         return PASS_OPAQUE;
     };
 
-    if cpu.gpu.params[0] == super::surface::MODE_WATER || cpu.gpu.params[0] == super::surface::MODE_ADD {
+    if cpu.gpu.params[0] == super::surface::MODE_WATER
+        || cpu.gpu.params[0] == super::surface::MODE_ADD
+    {
         return PASS_BLEND;
     }
 
@@ -700,7 +721,12 @@ impl Atlas {
             x: 1,
             y: 1,
             row: 0,
-            layers: [vec![255; pixels], vec![255; pixels], vec![255; pixels], vec![255; pixels]],
+            layers: [
+                vec![255; pixels],
+                vec![255; pixels],
+                vec![255; pixels],
+                vec![255; pixels],
+            ],
         }
     }
 
@@ -853,7 +879,9 @@ fn load_sky(bsp: &vbsp::Bsp, bank: &MaterialBank) -> Option<CubeImage> {
         let sky = entity.prop("skyname")?;
         let paths = sky_paths(sky);
 
-        return bank.read_cube([&paths[0], &paths[1], &paths[2], &paths[3], &paths[4], &paths[5]]);
+        return bank.read_cube([
+            &paths[0], &paths[1], &paths[2], &paths[3], &paths[4], &paths[5],
+        ]);
     }
 
     None
@@ -896,7 +924,12 @@ fn lump_bytes(bytes: &[u8], index: usize) -> Vec<u8> {
         return Vec::new();
     }
 
-    let mut offset = u32::from_le_bytes([bytes[base], bytes[base + 1], bytes[base + 2], bytes[base + 3]]);
+    let mut offset = u32::from_le_bytes([
+        bytes[base],
+        bytes[base + 1],
+        bytes[base + 2],
+        bytes[base + 3],
+    ]);
     let mut length = u32::from_le_bytes([
         bytes[base + 4],
         bytes[base + 5],
@@ -966,9 +999,18 @@ fn map_stem(name: &str) -> String {
 
 fn parse_vec(text: &str) -> [f32; 3] {
     let mut parts = text.split_whitespace();
-    let x = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0.0);
-    let y = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0.0);
-    let z = parts.next().and_then(|part| part.parse().ok()).unwrap_or(0.0);
+    let x = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(0.0);
+    let y = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(0.0);
+    let z = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(0.0);
 
     [x, y, z]
 }
@@ -982,8 +1024,14 @@ fn parse_uv(text: Option<&str>, fallback: [f32; 2]) -> [f32; 2] {
         return fallback;
     };
     let mut parts = text.split_whitespace();
-    let u = parts.next().and_then(|part| part.parse().ok()).unwrap_or(fallback[0]);
-    let v = parts.next().and_then(|part| part.parse().ok()).unwrap_or(fallback[1]);
+    let u = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(fallback[0]);
+    let v = parts
+        .next()
+        .and_then(|part| part.parse().ok())
+        .unwrap_or(fallback[1]);
 
     [u, v]
 }
@@ -995,4 +1043,3 @@ fn mad(origin: [f32; 3], axis_u: [f32; 3], axis_v: [f32; 3], u: f32, v: f32) -> 
         origin[2] + axis_u[2] * u + axis_v[2] * v,
     ]
 }
-

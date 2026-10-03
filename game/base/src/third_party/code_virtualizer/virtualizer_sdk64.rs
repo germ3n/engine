@@ -7,10 +7,12 @@
     all(target_arch = "aarch64", windows),
     link(name = "VirtualizerArm64SDK", kind = "dylib")
 )]
-#[cfg_attr(not(target_arch = "aarch64"), link(name = "VirtualizerSDK64", kind = "dylib"))]
-extern "C"
-{
-	#[link_name = "VirtualizerStart"]
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    link(name = "VirtualizerSDK64", kind = "dylib")
+)]
+extern "C" {
+    #[link_name = "VirtualizerStart"]
     fn VIRTUALIZER_START();
 
     #[link_name = "VirtualizerEnd"]
@@ -34,5 +36,3 @@ extern "C"
     #[link_name = "VirtualizerUnprotectedEnd"]
     fn VIRTUALIZER_UNPROTECTED_END();
 }
-
-

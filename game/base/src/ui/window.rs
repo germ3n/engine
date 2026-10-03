@@ -31,6 +31,7 @@ pub trait Window {
         color: Color,
     );
     fn draw_text(&mut self, font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color);
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>);
     fn render_text(&mut self);
     fn present(&mut self);
     fn enable_vr(&mut self);

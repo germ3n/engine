@@ -1716,7 +1716,11 @@ impl CompiledMap {
 
         for face in &mut brush.faces {
             let normal = face.normal;
-            let raw = Vector3::new(normal.x / scale[0], normal.y / scale[1], normal.z / scale[2]);
+            let raw = Vector3::new(
+                normal.x / scale[0],
+                normal.y / scale[1],
+                normal.z / scale[2],
+            );
             let len = raw.len();
 
             if len <= LENGTH_EPS {
@@ -1991,8 +1995,18 @@ impl CompiledMap {
         true
     }
 
-    pub fn set_face_scale(&mut self, index: usize, face: usize, scale_u: f64, scale_v: f64) -> bool {
-        if !scale_u.is_finite() || !scale_v.is_finite() || scale_u.abs() < 1e-6 || scale_v.abs() < 1e-6 {
+    pub fn set_face_scale(
+        &mut self,
+        index: usize,
+        face: usize,
+        scale_u: f64,
+        scale_v: f64,
+    ) -> bool {
+        if !scale_u.is_finite()
+            || !scale_v.is_finite()
+            || scale_u.abs() < 1e-6
+            || scale_v.abs() < 1e-6
+        {
             return false;
         }
 
@@ -2013,7 +2027,13 @@ impl CompiledMap {
         true
     }
 
-    pub fn set_face_shift(&mut self, index: usize, face: usize, shift_u: f64, shift_v: f64) -> bool {
+    pub fn set_face_shift(
+        &mut self,
+        index: usize,
+        face: usize,
+        shift_u: f64,
+        shift_v: f64,
+    ) -> bool {
         if !shift_u.is_finite() || !shift_v.is_finite() {
             return false;
         }
@@ -2096,10 +2116,7 @@ impl CompiledMap {
             }
 
             if class.is_empty() {
-                out.push((
-                    None,
-                    format!("entity {entity_index} has no classname"),
-                ));
+                out.push((None, format!("entity {entity_index} has no classname")));
             }
 
             if entity.brushes.is_empty() && class != "worldspawn" {
@@ -2124,17 +2141,11 @@ impl CompiledMap {
 
                 for face in &brush.faces {
                     if !valid_texture(&face.texture) {
-                        out.push((
-                            Some(flat),
-                            format!("brush {flat} has an invalid texture"),
-                        ));
+                        out.push((Some(flat), format!("brush {flat} has an invalid texture")));
                     }
 
                     if face.scale_u.abs() < 1e-8 || face.scale_v.abs() < 1e-8 {
-                        out.push((
-                            Some(flat),
-                            format!("brush {flat} has a zero texture scale"),
-                        ));
+                        out.push((Some(flat), format!("brush {flat} has a zero texture scale")));
                     }
                 }
 
@@ -4388,8 +4399,14 @@ mod tests {
         let mut face = 0;
 
         while face < before.faces.len() {
-            assert!(near(before.faces[face].normal.x, after.faces[face].normal.x));
-            assert!(near(before.faces[face].distance, after.faces[face].distance));
+            assert!(near(
+                before.faces[face].normal.x,
+                after.faces[face].normal.x
+            ));
+            assert!(near(
+                before.faces[face].distance,
+                after.faces[face].distance
+            ));
             face += 1;
         }
     }
@@ -4421,20 +4438,30 @@ mod tests {
         let mut map = CompiledMap::worldspawn();
 
         assert!(map
-            .add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), "solid")
+            .add_box(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 1.0),
+                "solid"
+            )
             .is_some());
         let tied = map.tie_brush(0, "func_detail").unwrap();
 
         assert_eq!(map.brush_count(), 1);
-        assert!(map.brush_owner(tied).unwrap().keys.iter().any(|pair| {
-            pair.key == "classname" && pair.value == "func_detail"
-        }));
+        assert!(map
+            .brush_owner(tied)
+            .unwrap()
+            .keys
+            .iter()
+            .any(|pair| { pair.key == "classname" && pair.value == "func_detail" }));
         assert!(map.tie_brush(tied, "func_detail").is_none());
         let world = map.move_brush_to_world(tied).unwrap();
 
-        assert!(map.brush_owner(world).unwrap().keys.iter().any(|pair| {
-            pair.key == "classname" && pair.value == "worldspawn"
-        }));
+        assert!(map
+            .brush_owner(world)
+            .unwrap()
+            .keys
+            .iter()
+            .any(|pair| { pair.key == "classname" && pair.value == "worldspawn" }));
         assert!(map.move_brush_to_world(world).is_none());
     }
 
@@ -4443,7 +4470,11 @@ mod tests {
         let mut map = CompiledMap::worldspawn();
 
         assert!(map
-            .add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), "solid")
+            .add_box(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 1.0),
+                "solid"
+            )
             .is_some());
         assert_eq!(map.replace_texture("solid", "floor", None), 6);
         assert_eq!(map.brush(0).unwrap().faces[0].texture, "floor");

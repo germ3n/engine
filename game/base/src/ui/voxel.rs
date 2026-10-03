@@ -57,12 +57,7 @@ impl FlyCamera {
         self.scene_at(aspect, scale, crate::anchor::Anchor::ZERO)
     }
 
-    pub fn scene_at(
-        &self,
-        aspect: f32,
-        scale: f32,
-        anchor: crate::anchor::Anchor,
-    ) -> SceneView {
+    pub fn scene_at(&self, aspect: f32, scale: f32, anchor: crate::anchor::Anchor) -> SceneView {
         let (fx, fy, fz) = self.forward();
 
         SceneView {

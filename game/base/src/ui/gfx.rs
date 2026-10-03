@@ -237,7 +237,11 @@ impl Book {
 
         let kind = kind_of(id) as usize;
         let index = index_of(id) as usize;
-        let Some(slot) = self.slots.get_mut(kind).and_then(|slots| slots.get_mut(index)) else {
+        let Some(slot) = self
+            .slots
+            .get_mut(kind)
+            .and_then(|slots| slots.get_mut(index))
+        else {
             return false;
         };
 
@@ -257,7 +261,11 @@ impl Book {
     pub fn recycle(&mut self, id: u32) {
         let kind = kind_of(id) as usize;
         let index = index_of(id) as usize;
-        let Some(slot) = self.slots.get_mut(kind).and_then(|slots| slots.get_mut(index)) else {
+        let Some(slot) = self
+            .slots
+            .get_mut(kind)
+            .and_then(|slots| slots.get_mut(index))
+        else {
             return;
         };
 

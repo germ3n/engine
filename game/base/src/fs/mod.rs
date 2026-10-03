@@ -114,6 +114,7 @@ impl Fs {
             "lua/libs/angle3.luac",
             "lua/libs/ents.luac",
             "lua/libs/scripted_ents.luac",
+            "lua/libs/gui.luac",
             "lua/menu/menu.luac",
             "shaders/mesh.wgsl",
             "shaders/color.wgsl",

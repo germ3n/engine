@@ -9,8 +9,9 @@ use crate::script::libs::engine::publish_clock;
 use crate::script::libs::ents::{AnimAccess, EntityAccess};
 use crate::script::libs::{
     register_angle3_lib, register_biome_lib, register_console_lib, register_convar_lib,
-    register_engine_lib, register_ents_lib, register_net_lib, register_noise_lib, register_pad_lib,
-    register_scripted_ents_lib, register_sound_lib, register_surface_lib, register_vector3_lib,
+    register_engine_lib, register_ents_lib, register_input_lib, register_net_lib,
+    register_noise_lib, register_pad_lib, register_scripted_ents_lib, register_sound_lib,
+    register_surface_lib, register_vector3_lib,
 };
 use crate::sound::SoundAccess;
 use crate::ui::Color;
@@ -118,11 +119,16 @@ pub enum DrawCommand {
         width: u32,
         height: u32,
     },
+    SetScissor {
+        rect: Option<[f32; 4]>,
+    },
 }
 
 pub struct RenderState {
     pub commands: Vec<DrawCommand>,
     pub book: crate::ui::gfx::Book,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub type RenderQueue = Arc<Mutex<RenderState>>;
@@ -147,6 +153,7 @@ pub struct ScriptEngine {
     pub physics_access: PhysicsAccess,
     pub brush_access: crate::script::libs::engine::BrushAccess,
     pub voxel_access: crate::script::libs::engine::VoxelAccess,
+    pub pointer: Arc<Mutex<crate::script::libs::input::Pointer>>,
     pub motion_access: crate::script::libs::engine::MotionAccess,
     pub gen_settings: Arc<Mutex<crate::world::gen::GenSettings>>,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
@@ -194,9 +201,14 @@ impl ScriptEngine {
         let render_queue = Arc::new(Mutex::new(RenderState {
             commands: Vec::new(),
             book: crate::ui::gfx::Book::new(),
+            width: 0,
+            height: 0,
         }));
+        let pointer = Arc::new(Mutex::new(crate::script::libs::input::Pointer::new()));
         if !matches!(realm, Realm::Server) {
             register_surface_lib(&lua, render_queue.clone());
+            register_input_lib(&lua, pointer.clone());
+            crate::script::exec(&lua, "gui.lua", "lua/libs/gui.luac");
         }
 
         let entity_access: EntityAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
@@ -259,6 +271,7 @@ impl ScriptEngine {
             physics_access,
             brush_access,
             voxel_access,
+            pointer,
             motion_access,
             gen_settings,
             usermsg_receiver,

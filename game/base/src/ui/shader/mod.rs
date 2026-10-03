@@ -481,7 +481,6 @@ mod tests {
             assert!(glsl_vert.contains("#version"));
             let (glsl_frag, _) = glsl(source, ShaderStage::Fragment, frag, glsl_version()).unwrap();
             assert!(glsl_frag.contains("#version"));
-
         }
 
         let (batch, _) = glsl(MESH, ShaderStage::Fragment, "fs_batch", glsl_version()).unwrap();

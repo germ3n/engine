@@ -105,6 +105,7 @@ mod tests {
             "lua/libs/angle3.luac",
             "lua/libs/ents.luac",
             "lua/libs/scripted_ents.luac",
+            "lua/libs/gui.luac",
             "lua/menu/menu.luac",
         ];
 
@@ -164,5 +165,53 @@ mod tests {
         let none: Option<bool> = engine.run_hook("Missing", 0.0, 0.0, 1, ());
         assert_eq!(none, None);
         exec(&engine.lua, "menu.lua", "lua/menu/menu.luac");
+    }
+
+    #[test]
+    fn gui_hits_top_panel() {
+        boot_fs();
+        let mut cvars = HashMap::new();
+        cvars.insert(
+            "sv_gravity".to_string(),
+            Arc::new(ConVar::new(
+                "sv_gravity",
+                ConVarValue::Float(24.0),
+                "World gravity",
+                Some(false),
+                Some(true),
+            )),
+        );
+        let binds = Arc::new(Mutex::new(crate::input::Binds::defaults()));
+        let pads = Arc::new(Mutex::new(crate::platform::PadCache::new()));
+        let engine = ScriptEngine::new(
+            Realm::Client,
+            1.0 / 60.0,
+            Arc::new(cvars),
+            binds,
+            pads,
+            std::ptr::null_mut(),
+        );
+        engine
+            .lua
+            .load(
+                r#"
+                local panel = gui.create("Panel")
+                panel:set_pos(10, 20)
+                panel:set_size(30, 40)
+                assert(gui.hit(15, 25) == panel)
+                assert(gui.hit(0, 0) == nil)
+                local child = gui.create("Button")
+                child:set_parent(panel)
+                child:set_pos(5, 5)
+                child:set_size(10, 10)
+                assert(gui.hit(16, 26) == child)
+                surface.push_scissor(0, 0, 100, 100)
+                surface.push_scissor(50, 50, 100, 100)
+                surface.pop_scissor()
+                surface.pop_scissor()
+                "#,
+            )
+            .exec()
+            .unwrap();
     }
 }

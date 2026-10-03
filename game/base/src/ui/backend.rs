@@ -205,6 +205,10 @@ impl Window for GfxWindow {
             .draw_text(font, text, x, y, scale, color))
     }
 
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>) {
+        each_window!(self, |window| window.set_scissor(rect))
+    }
+
     fn render_text(&mut self) {
         each_window!(self, |window| window.render_text())
     }
@@ -408,7 +412,9 @@ impl GfxWindow {
         };
 
         match self.with_backend(|window| window.make_pipeline(&source, screen)) {
-            Ok(pipeline) => self.gpu.put_pipeline(id, pipeline, true, false, screen, stride),
+            Ok(pipeline) => self
+                .gpu
+                .put_pipeline(id, pipeline, true, false, screen, stride),
             Err(err) => log::warn!("[gfx] pipeline {err}"),
         }
     }

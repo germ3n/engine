@@ -16,9 +16,9 @@ mod script;
 mod server;
 mod sound;
 mod state;
+mod third_party;
 mod ui;
 mod world;
-mod third_party;
 
 use crate::network::{wake_pair, NetWake, OUTBOUND_CAP};
 use crate::script::Realm;

@@ -2,7 +2,7 @@
 // Header: VirtualizerSDK64_CustomVMs.rs
 // Description: Rust macros definitions
 //
-// Author/s: Oreans Technologies 
+// Author/s: Oreans Technologies
 // (c) 2024 Oreans Technologies
 //
 // --- File generated automatically from Oreans VM Generator (21/7/2024) ---
@@ -17,9 +17,11 @@
     all(target_arch = "aarch64", windows),
     link(name = "VirtualizerArm64SDK", kind = "dylib")
 )]
-#[cfg_attr(not(target_arch = "aarch64"), link(name = "VirtualizerSDK64", kind = "dylib"))]
-extern "C"
-{
+#[cfg_attr(
+    not(target_arch = "aarch64"),
+    link(name = "VirtualizerSDK64", kind = "dylib")
+)]
+extern "C" {
     #[link_name = "CustomVM00000103_Start"]
     fn VIRTUALIZER_TIGER_WHITE_START();
 

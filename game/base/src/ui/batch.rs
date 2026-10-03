@@ -22,6 +22,85 @@ pub fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Scissor {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Scissor {
+    pub fn from_rect(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Self {
+            x: x.floor() as i32,
+            y: y.floor() as i32,
+            w: w.ceil().max(0.0) as i32,
+            h: h.ceil().max(0.0) as i32,
+        }
+    }
+
+    pub fn clamp(self, width: i32, height: i32) -> Self {
+        let x0 = self.x.max(0).min(width);
+        let y0 = self.y.max(0).min(height);
+        let x1 = (self.x.saturating_add(self.w)).max(0).min(width);
+        let y1 = (self.y.saturating_add(self.h)).max(0).min(height);
+
+        Self {
+            x: x0,
+            y: y0,
+            w: (x1 - x0).max(0),
+            h: (y1 - y0).max(0),
+        }
+    }
+
+    pub fn gl_y(self, height: i32) -> i32 {
+        height - (self.y + self.h)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct UiSpan {
+    pub scissor: Option<Scissor>,
+    pub start: u32,
+    pub count: u32,
+}
+
+pub fn note_span(
+    spans: &mut Vec<UiSpan>,
+    scissor: Option<Scissor>,
+    before_floats: usize,
+    after_floats: usize,
+    stride: usize,
+) {
+    if stride == 0 || after_floats < before_floats {
+        return;
+    }
+
+    let added = ((after_floats - before_floats) / stride) as u32;
+    let total = (after_floats / stride) as u32;
+
+    if added == 0 {
+        return;
+    }
+
+    let start = total - added;
+
+    if let Some(last) = spans.last_mut() {
+        if last.scissor == scissor && last.start + last.count == start {
+            last.count += added;
+
+            return;
+        }
+    }
+
+    spans.push(UiSpan {
+        scissor,
+        start,
+        count: added,
+    });
+}
+
 pub fn push_outline(
     verts: &mut Vec<f32>,
     x: f32,

@@ -130,7 +130,10 @@ fn load_buffers(
 
         let data = match buffer.source() {
             gltf::buffer::Source::Bin => {
-                let blob = gltf.blob.as_deref().ok_or_else(|| "gltf buffer".to_string())?;
+                let blob = gltf
+                    .blob
+                    .as_deref()
+                    .ok_or_else(|| "gltf buffer".to_string())?;
 
                 if blob.len() < buffer.length() {
                     return Err("gltf buffer".to_string());
@@ -164,7 +167,9 @@ fn read_nodes(gltf: &gltf::Gltf) -> Result<Vec<NodeRec>, String> {
 
         let (translation, rotation, scale) = node.transform().decomposed();
 
-        if !translation.iter().all(|value| value.is_finite()) || !rotation.iter().all(|value| value.is_finite()) {
+        if !translation.iter().all(|value| value.is_finite())
+            || !rotation.iter().all(|value| value.is_finite())
+        {
             return Err("gltf transform".to_string());
         }
 
@@ -242,7 +247,10 @@ fn read_prims(
     while idx < nodes.len() {
         if scene[idx] {
             if let Some(mesh_index) = nodes[idx].mesh {
-                let mesh = gltf.meshes().nth(mesh_index).ok_or_else(|| "gltf mesh".to_string())?;
+                let mesh = gltf
+                    .meshes()
+                    .nth(mesh_index)
+                    .ok_or_else(|| "gltf mesh".to_string())?;
 
                 for primitive in mesh.primitives() {
                     if let Some(prim) = read_prim(idx, nodes[idx].skin, &primitive, buffers)? {
@@ -269,10 +277,15 @@ fn read_prim(
     buffers: &[Vec<u8>],
 ) -> Result<Option<PrimRec>, String> {
     match primitive.mode() {
-        gltf::mesh::Mode::Points | gltf::mesh::Mode::Lines | gltf::mesh::Mode::LineLoop | gltf::mesh::Mode::LineStrip => {
+        gltf::mesh::Mode::Points
+        | gltf::mesh::Mode::Lines
+        | gltf::mesh::Mode::LineLoop
+        | gltf::mesh::Mode::LineStrip => {
             return Ok(None);
         }
-        gltf::mesh::Mode::Triangles | gltf::mesh::Mode::TriangleStrip | gltf::mesh::Mode::TriangleFan => {}
+        gltf::mesh::Mode::Triangles
+        | gltf::mesh::Mode::TriangleStrip
+        | gltf::mesh::Mode::TriangleFan => {}
     }
 
     let get_buffer = |buffer: gltf::Buffer<'_>| buffers.get(buffer.index()).map(Vec::as_slice);
@@ -286,7 +299,10 @@ fn read_prim(
         return Err("gltf position".to_string());
     }
 
-    if positions.iter().any(|position| !position.iter().all(|value| value.is_finite())) {
+    if positions
+        .iter()
+        .any(|position| !position.iter().all(|value| value.is_finite()))
+    {
         return Err("gltf position".to_string());
     }
 
@@ -304,7 +320,10 @@ fn read_prim(
         .base_color_texture()
         .map(|info| info.tex_coord())
         .unwrap_or(0);
-    let uvs = match reader.read_tex_coords(tex_coord).or_else(|| reader.read_tex_coords(0)) {
+    let uvs = match reader
+        .read_tex_coords(tex_coord)
+        .or_else(|| reader.read_tex_coords(0))
+    {
         Some(coords) => {
             let uvs = coords.into_f32().collect::<Vec<_>>();
 
@@ -377,7 +396,11 @@ fn read_prim(
     }))
 }
 
-fn expand_indices(mode: gltf::mesh::Mode, indices: &[u32], vertex_count: usize) -> Result<Vec<u32>, String> {
+fn expand_indices(
+    mode: gltf::mesh::Mode,
+    indices: &[u32],
+    vertex_count: usize,
+) -> Result<Vec<u32>, String> {
     let mut out = Vec::new();
     let mut idx = 0;
 
@@ -499,7 +522,9 @@ fn read_channel(
         .read_inputs()
         .ok_or_else(|| "gltf keys".to_string())?
         .collect::<Vec<_>>();
-    let outputs = reader.read_outputs().ok_or_else(|| "gltf keys".to_string())?;
+    let outputs = reader
+        .read_outputs()
+        .ok_or_else(|| "gltf keys".to_string())?;
 
     if times.is_empty() || times.len() > MAX_KEYS || times.iter().any(|time| !time.is_finite()) {
         return Err("gltf keys".to_string());
@@ -520,7 +545,9 @@ fn read_channel(
     let rec = match property {
         gltf::animation::Property::Translation => {
             let values = match outputs {
-                gltf::animation::util::ReadOutputs::Translations(values) => values.collect::<Vec<_>>(),
+                gltf::animation::util::ReadOutputs::Translations(values) => {
+                    values.collect::<Vec<_>>()
+                }
                 _ => return Err("gltf keys".to_string()),
             };
             let values = finish_vec3(interpolation, &times, values)?;
@@ -534,7 +561,9 @@ fn read_channel(
         }
         gltf::animation::Property::Rotation => {
             let values = match outputs {
-                gltf::animation::util::ReadOutputs::Rotations(values) => values.into_f32().collect::<Vec<_>>(),
+                gltf::animation::util::ReadOutputs::Rotations(values) => {
+                    values.into_f32().collect::<Vec<_>>()
+                }
                 _ => return Err("gltf keys".to_string()),
             };
             let values = finish_quat(interpolation, &times, values)?;
@@ -763,7 +792,12 @@ fn hermite_basis(t: f32) -> (f32, f32, f32, f32) {
     let t2 = t * t;
     let t3 = t2 * t;
 
-    (2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, -2.0 * t3 + 3.0 * t2, t3 - t2)
+    (
+        2.0 * t3 - 3.0 * t2 + 1.0,
+        t3 - 2.0 * t2 + t,
+        -2.0 * t3 + 3.0 * t2,
+        t3 - t2,
+    )
 }
 
 fn read_materials(gltf: &gltf::Gltf) -> Vec<MaterialRec> {
@@ -796,9 +830,13 @@ fn read_images(
 
         let (bytes, mime) = match image.source() {
             gltf::image::Source::View { view, mime_type } => {
-                let buffer = buffers.get(view.buffer().index()).ok_or_else(|| "gltf image".to_string())?;
+                let buffer = buffers
+                    .get(view.buffer().index())
+                    .ok_or_else(|| "gltf image".to_string())?;
                 let start = view.offset();
-                let end = start.checked_add(view.length()).ok_or_else(|| "gltf image".to_string())?;
+                let end = start
+                    .checked_add(view.length())
+                    .ok_or_else(|| "gltf image".to_string())?;
 
                 if end > buffer.len() {
                     return Err("gltf image".to_string());
@@ -837,25 +875,40 @@ fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     decoder.set_limits(png::Limits { bytes: MAX_ALBEDO });
-    let mut reader = decoder.read_info().map_err(|err| format!("gltf png {err}"))?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|err| format!("gltf png {err}"))?;
     let (width, height) = {
         let info = reader.info();
 
         (info.width, info.height)
     };
 
-    if width == 0 || height == 0 || (width as usize).saturating_mul(height as usize).saturating_mul(4) > MAX_ALBEDO {
+    if width == 0
+        || height == 0
+        || (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4)
+            > MAX_ALBEDO
+    {
         return Err("gltf image".to_string());
     }
 
     let mut buf = vec![0; reader.output_buffer_size()];
-    let frame = reader.next_frame(&mut buf).map_err(|err| format!("gltf png {err}"))?;
+    let frame = reader
+        .next_frame(&mut buf)
+        .map_err(|err| format!("gltf png {err}"))?;
 
     if frame.bit_depth != png::BitDepth::Eight {
         return Err("gltf image".to_string());
     }
 
-    let pixels = rgba_from_samples(&buf[..frame.buffer_size()], frame.width, frame.height, frame.color_type)?;
+    let pixels = rgba_from_samples(
+        &buf[..frame.buffer_size()],
+        frame.width,
+        frame.height,
+        frame.color_type,
+    )?;
 
     Ok(Rgba {
         w: frame.width,
@@ -864,7 +917,12 @@ fn decode_png(bytes: &[u8]) -> Result<Rgba, String> {
     })
 }
 
-fn rgba_from_samples(samples: &[u8], width: u32, height: u32, color: png::ColorType) -> Result<Vec<u8>, String> {
+fn rgba_from_samples(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    color: png::ColorType,
+) -> Result<Vec<u8>, String> {
     let count = (width as usize).saturating_mul(height as usize);
     let mut pixels = Vec::with_capacity(count * 4);
 
@@ -928,7 +986,13 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Rgba, String> {
     let width = info.width as u32;
     let height = info.height as u32;
 
-    if width == 0 || height == 0 || (width as usize).saturating_mul(height as usize).saturating_mul(4) > MAX_ALBEDO {
+    if width == 0
+        || height == 0
+        || (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4)
+            > MAX_ALBEDO
+    {
         return Err("gltf image".to_string());
     }
 
@@ -1122,7 +1186,9 @@ fn build_bones(
     while idx < order.len() {
         let node_idx = order[idx];
         let parent = match nodes[node_idx].parent {
-            Some(parent) if used[parent] => node_bone[parent].ok_or_else(|| "gltf bones".to_string())? as i16,
+            Some(parent) if used[parent] => {
+                node_bone[parent].ok_or_else(|| "gltf bones".to_string())? as i16
+            }
             _ => -1,
         };
 
@@ -1231,7 +1297,10 @@ fn assign_binds(
 
         while joint_idx < skins[idx].joints.len() {
             let node = skins[idx].joints[joint_idx];
-            let bone = node_bone.get(node).and_then(|bone| *bone).ok_or_else(|| "gltf joint".to_string())?;
+            let bone = node_bone
+                .get(node)
+                .and_then(|bone| *bone)
+                .ok_or_else(|| "gltf joint".to_string())?;
             bones[bone].inverse_bind = convert_mat(skins[idx].ibms[joint_idx]);
             joint_idx += 1;
         }
@@ -1294,13 +1363,22 @@ fn build_atlas(
     pack_atlas(placed)
 }
 
-fn material_image(material: Option<usize>, materials: &[MaterialRec], images: &[Rgba]) -> Result<Rgba, String> {
+fn material_image(
+    material: Option<usize>,
+    materials: &[MaterialRec],
+    images: &[Rgba],
+) -> Result<Rgba, String> {
     let Some(index) = material else {
         return Ok(solid([1.0, 1.0, 1.0, 1.0]));
     };
-    let material = materials.get(index).ok_or_else(|| "gltf material".to_string())?;
+    let material = materials
+        .get(index)
+        .ok_or_else(|| "gltf material".to_string())?;
     let mut image = match material.image {
-        Some(image) => images.get(image).ok_or_else(|| "gltf image".to_string())?.clone(),
+        Some(image) => images
+            .get(image)
+            .ok_or_else(|| "gltf image".to_string())?
+            .clone(),
         None => return Ok(solid(material.factor)),
     };
     tint(&mut image, material.factor);
@@ -1349,7 +1427,9 @@ fn scale_byte(value: u8, factor: f32) -> u8 {
     (value as f32 * factor).round().clamp(0.0, 255.0) as u8
 }
 
-fn pack_atlas(images: Vec<(Option<usize>, Rgba)>) -> Result<(Rgba, Vec<(Option<usize>, Rect)>), String> {
+fn pack_atlas(
+    images: Vec<(Option<usize>, Rgba)>,
+) -> Result<(Rgba, Vec<(Option<usize>, Rect)>), String> {
     let mut x = 0u32;
     let mut y = 0u32;
     let mut row_h = 0u32;
@@ -1387,7 +1467,9 @@ fn pack_atlas(images: Vec<(Option<usize>, Rgba)>) -> Result<(Rgba, Vec<(Option<u
 
     let height = y.saturating_add(row_h).max(1);
     let width = width.max(1);
-    let bytes = (width as usize).saturating_mul(height as usize).saturating_mul(4);
+    let bytes = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
 
     if bytes == 0 || bytes > MAX_ALBEDO {
         return Err("gltf albedo".to_string());
@@ -1492,7 +1574,9 @@ fn append_prim(
 ) -> Result<(), String> {
     let base = vertices.len() / 16;
 
-    if base + prim.positions.len() > MAX_VERTICES || indices_out.len() + prim.indices.len() > MAX_INDICES {
+    if base + prim.positions.len() > MAX_VERTICES
+        || indices_out.len() + prim.indices.len() > MAX_INDICES
+    {
         return Err("gltf mesh".to_string());
     }
 
@@ -1531,7 +1615,10 @@ fn append_prim(
     };
 
     if prim.skin.is_none() {
-        let bone = node_bone.get(prim.node).and_then(|bone| *bone).ok_or_else(|| "gltf bones".to_string())?;
+        let bone = node_bone
+            .get(prim.node)
+            .and_then(|bone| *bone)
+            .ok_or_else(|| "gltf bones".to_string())?;
         let inverse = bones[bone].inverse_bind;
 
         if !is_identity(inverse) {
@@ -1564,7 +1651,14 @@ fn append_prim(
 
     while vert_idx < positions.len() {
         let uv = remap_uv(prim.uvs[vert_idx], rect, atlas_w, atlas_h);
-        push_vertex(vertices, positions[vert_idx], normals[vert_idx], uv, influences[vert_idx].0, influences[vert_idx].1);
+        push_vertex(
+            vertices,
+            positions[vert_idx],
+            normals[vert_idx],
+            uv,
+            influences[vert_idx].0,
+            influences[vert_idx].1,
+        );
         vert_idx += 1;
     }
 
@@ -1583,7 +1677,9 @@ fn skin_influences(
     skins: &[SkinRec],
     node_bone: &[Option<usize>],
 ) -> Result<Vec<([f32; 4], [f32; 4])>, String> {
-    let skin = skins.get(prim.skin.unwrap_or(usize::MAX)).ok_or_else(|| "gltf skin".to_string())?;
+    let skin = skins
+        .get(prim.skin.unwrap_or(usize::MAX))
+        .ok_or_else(|| "gltf skin".to_string())?;
     let mut out = Vec::with_capacity(prim.positions.len());
     let mut vert_idx = 0;
 
@@ -1604,7 +1700,10 @@ fn skin_influences(
                     }
 
                     let node = skin.joints[joint];
-                    let bone = node_bone.get(node).and_then(|bone| *bone).ok_or_else(|| "gltf joint".to_string())?;
+                    let bone = node_bone
+                        .get(node)
+                        .and_then(|bone| *bone)
+                        .ok_or_else(|| "gltf joint".to_string())?;
                     pairs.push((bone as u32, weight));
                 }
 
@@ -1656,8 +1755,18 @@ fn pack_influences(pairs: &[(u32, f32)]) -> ([f32; 4], [f32; 4]) {
     let inv = 1.0 / sum;
 
     (
-        [best[0].0 as f32, best[1].0 as f32, best[2].0 as f32, best[3].0 as f32],
-        [best[0].1 * inv, best[1].1 * inv, best[2].1 * inv, best[3].1 * inv],
+        [
+            best[0].0 as f32,
+            best[1].0 as f32,
+            best[2].0 as f32,
+            best[3].0 as f32,
+        ],
+        [
+            best[0].1 * inv,
+            best[1].1 * inv,
+            best[2].1 * inv,
+            best[3].1 * inv,
+        ],
     )
 }
 
@@ -1699,7 +1808,10 @@ fn build_clips(
     anims: &[AnimRec],
 ) -> Result<ClipSet, String> {
     let mut names = HashSet::new();
-    let bone_names = bones.iter().map(|bone| bone.name.clone()).collect::<Vec<_>>();
+    let bone_names = bones
+        .iter()
+        .map(|bone| bone.name.clone())
+        .collect::<Vec<_>>();
     let mut sequences = Vec::new();
     let mut idx = 0;
 
@@ -1738,7 +1850,9 @@ fn build_sequence(
                 continue;
             }
         };
-        let node = nodes.get(channel.node).ok_or_else(|| "gltf node".to_string())?;
+        let node = nodes
+            .get(channel.node)
+            .ok_or_else(|| "gltf node".to_string())?;
 
         if let Some(values) = &channel.translation {
             let mut times = Vec::with_capacity(channel.times.len());
@@ -1810,7 +1924,14 @@ fn remap_uv(uv: [f32; 2], rect: &Rect, atlas_w: u32, atlas_h: u32) -> [f32; 2] {
     ]
 }
 
-fn push_vertex(vertices: &mut Vec<f32>, position: [f32; 3], normal: [f32; 3], uv: [f32; 2], joints: [f32; 4], weights: [f32; 4]) {
+fn push_vertex(
+    vertices: &mut Vec<f32>,
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    joints: [f32; 4],
+    weights: [f32; 4],
+) {
     vertices.extend_from_slice(&[
         position[0],
         position[1],
@@ -1831,7 +1952,10 @@ fn push_vertex(vertices: &mut Vec<f32>, position: [f32; 3], normal: [f32; 3], uv
     ]);
 }
 
-fn fetch_uri(uri: &str, read_uri: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>) -> Result<Vec<u8>, String> {
+fn fetch_uri(
+    uri: &str,
+    read_uri: &mut dyn FnMut(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
     if let Some(bytes) = decode_data_uri(uri)? {
         return Ok(bytes);
     }
@@ -2035,7 +2159,10 @@ fn convert_quat(value: [f32; 4]) -> [f32; 4] {
     let change = [0.5, 0.5, 0.5, 0.5];
     let inverse = [-0.5, -0.5, -0.5, 0.5];
 
-    normalize_quat(pose::quat_mul(pose::quat_mul(change, normalize_quat(value)), inverse))
+    normalize_quat(pose::quat_mul(
+        pose::quat_mul(change, normalize_quat(value)),
+        inverse,
+    ))
 }
 
 fn convert_mat(value: [f32; 16]) -> [f32; 16] {
@@ -2141,7 +2268,9 @@ fn mul_transpose_dir(mat: [f32; 16], direction: [f32; 3]) -> [f32; 3] {
 }
 
 fn normalize_quat(value: [f32; 4]) -> [f32; 4] {
-    let len = (value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]).sqrt();
+    let len =
+        (value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3])
+            .sqrt();
 
     if !len.is_finite() || len <= 1.0e-8 {
         return [0.0, 0.0, 0.0, 1.0];
@@ -2149,7 +2278,12 @@ fn normalize_quat(value: [f32; 4]) -> [f32; 4] {
 
     let inv = 1.0 / len;
 
-    [value[0] * inv, value[1] * inv, value[2] * inv, value[3] * inv]
+    [
+        value[0] * inv,
+        value[1] * inv,
+        value[2] * inv,
+        value[3] * inv,
+    ]
 }
 
 fn normalize3(value: [f32; 3]) -> [f32; 3] {
@@ -2169,7 +2303,12 @@ fn mul_scalar(value: [f32; 3], scale: f32) -> [f32; 3] {
 }
 
 fn mul_scalar4(value: [f32; 4], scale: f32) -> [f32; 4] {
-    [value[0] * scale, value[1] * scale, value[2] * scale, value[3] * scale]
+    [
+        value[0] * scale,
+        value[1] * scale,
+        value[2] * scale,
+        value[3] * scale,
+    ]
 }
 
 fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
@@ -2303,7 +2442,11 @@ mod tests {
     fn vertex(mesh: &Mesh, index: usize) -> [f32; 3] {
         let at = index * 16;
 
-        [mesh.vertices[at], mesh.vertices[at + 1], mesh.vertices[at + 2]]
+        [
+            mesh.vertices[at],
+            mesh.vertices[at + 1],
+            mesh.vertices[at + 2],
+        ]
     }
 
     fn skinned(mesh: &Mesh, index: usize, pos: &[[f32; 3]], rot: &[[f32; 4]]) -> [f32; 3] {
@@ -2322,7 +2465,12 @@ mod tests {
         let mut palette = vec![[0.0; 12]; count];
         pose::palette(&parents, pos, rot, &inverse, &mut worlds, &mut palette);
         let at = index * 16;
-        let point = [mesh.vertices[at], mesh.vertices[at + 1], mesh.vertices[at + 2], 1.0];
+        let point = [
+            mesh.vertices[at],
+            mesh.vertices[at + 1],
+            mesh.vertices[at + 2],
+            1.0,
+        ];
         let joints = [
             mesh.vertices[at + 8],
             mesh.vertices[at + 9],
@@ -2344,7 +2492,8 @@ mod tests {
             let weight = weights[idx];
             out[0] += weight * (row[0] * point[0] + row[1] * point[1] + row[2] * point[2] + row[3]);
             out[1] += weight * (row[4] * point[0] + row[5] * point[1] + row[6] * point[2] + row[7]);
-            out[2] += weight * (row[8] * point[0] + row[9] * point[1] + row[10] * point[2] + row[11]);
+            out[2] +=
+                weight * (row[8] * point[0] + row[9] * point[1] + row[10] * point[2] + row[11]);
             idx += 1;
         }
 
@@ -2365,7 +2514,12 @@ mod tests {
             [0.0, 0.70710678, 0.0, 0.70710678],
             [0.70710678, 0.0, 0.0, 0.70710678],
         ];
-        let points = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.3, -0.2, 0.7]];
+        let points = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.3, -0.2, 0.7],
+        ];
         let mut sample_idx = 0;
 
         while sample_idx < samples.len() {
@@ -2373,7 +2527,8 @@ mod tests {
             let mut point_idx = 0;
 
             while point_idx < points.len() {
-                let turned = pose::quat_rotate(convert_quat(quat), convert_point(points[point_idx]));
+                let turned =
+                    pose::quat_rotate(convert_quat(quat), convert_point(points[point_idx]));
                 let expected = convert_point(pose::quat_rotate(quat, points[point_idx]));
 
                 assert!(near3(turned, expected));
@@ -2415,11 +2570,13 @@ mod tests {
         let mut bin = Bin::new();
         let positions = bin.push(&f32s(&[0.0, 1.0, 0.5, 0.1, 1.0, 0.5, 0.0, 1.1, 0.5]));
         let joints = bin.push(&[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
-        let weights = bin.push(&f32s(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]));
+        let weights = bin.push(&f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        ]));
         let indices = bin.push(&u16s(&[0, 1, 2]));
         let ibms = bin.push(&f32s(&[
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0,
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0,
         ]));
         let half = std::f32::consts::FRAC_PI_4.sin();
         let times = bin.push(&f32s(&[0.0, 1.0]));
@@ -2444,8 +2601,16 @@ mod tests {
         assert_ne!(sequence.flags & FLAG_LOOP, 0);
         assert!(near(sequence.duration, 1.0));
         let mut posed_rot = rot.clone();
-        posed_rot[1] = sample_quat(&sequence.tracks[1].rot_times, &sequence.tracks[1].rot, 1.0, rot[1]);
-        assert!(near3(skinned(&loaded.mesh, 0, &pos, &posed_rot), [0.0, 0.0, 0.5]));
+        posed_rot[1] = sample_quat(
+            &sequence.tracks[1].rot_times,
+            &sequence.tracks[1].rot,
+            1.0,
+            rot[1],
+        );
+        assert!(near3(
+            skinned(&loaded.mesh, 0, &pos, &posed_rot),
+            [0.0, 0.0, 0.5]
+        ));
     }
 
     #[test]
@@ -2517,7 +2682,10 @@ mod tests {
         assert_eq!(loaded.mesh.albedo_w, 64);
         assert_eq!(loaded.mesh.albedo_h, 64);
         assert_eq!(&loaded.mesh.albedo[..4], &[255, 255, 255, 255]);
-        assert_eq!(&loaded.mesh.albedo[(4 * 64 + 4) * 4..][..4], &[32, 96, 200, 255]);
+        assert_eq!(
+            &loaded.mesh.albedo[(4 * 64 + 4) * 4..][..4],
+            &[32, 96, 200, 255]
+        );
         assert_eq!(loaded.clips.sequences[0].name, "spin");
         assert!(near(loaded.clips.sequences[0].duration, 2.0));
         let (pos, rot) = bind_pose(&loaded.mesh);

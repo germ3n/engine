@@ -25,7 +25,11 @@ impl Anchor {
     }
 
     pub fn relative(self, x: f64, y: f64, z: f64) -> [f32; 3] {
-        [(x - self.x) as f32, (y - self.y) as f32, (z - self.z) as f32]
+        [
+            (x - self.x) as f32,
+            (y - self.y) as f32,
+            (z - self.z) as f32,
+        ]
     }
 
     pub fn drifted(self, x: f64, y: f64, z: f64) -> bool {

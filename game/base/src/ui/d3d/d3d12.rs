@@ -1,5 +1,5 @@
 use crate::platform::Surface;
-use crate::ui::batch::{bytes_of, push_outline, push_rect, TextFrame};
+use crate::ui::batch::{bytes_of, note_span, push_outline, push_rect, Scissor, TextFrame};
 use crate::ui::d3d::draw::{attach_desktop, Desktop};
 use crate::ui::d3d::math::view_proj;
 use crate::ui::d3d::shader::{self, blob_bytes, blob_text};
@@ -61,6 +61,8 @@ pub struct D3D12Window {
     height: u32,
     clear: [f32; 4],
     ui: Vec<f32>,
+    ui_spans: Vec<crate::ui::batch::UiSpan>,
+    scissor: Option<Scissor>,
     text: TextFrame,
     mesh_vertices: u32,
     mesh_revision: u64,
@@ -250,6 +252,8 @@ impl D3D12Window {
             height,
             clear: [0.0, 0.0, 0.0, 1.0],
             ui: Vec::new(),
+            ui_spans: Vec::new(),
+            scissor: None,
             text,
             mesh_vertices: 0,
             mesh_revision: 0,
@@ -641,6 +645,7 @@ impl D3D12Window {
                         &root,
                         &matrix,
                         false,
+                        0,
                     );
                 }
             }
@@ -777,6 +782,7 @@ impl D3D12Window {
                     &self.plain_root,
                     &self.view,
                     false,
+                    0,
                 );
             }
         }
@@ -785,15 +791,25 @@ impl D3D12Window {
             let mut screen = [0.0; 16];
             screen[0] = self.width as f32;
             screen[1] = self.height as f32;
-            self.draw(
-                ui,
-                24,
-                (self.ui.len() / 6) as u32,
-                &self.color_pso,
-                &self.plain_root,
-                &screen,
-                false,
-            );
+            let mut span_idx = 0;
+
+            while span_idx < self.ui_spans.len() {
+                let span = self.ui_spans[span_idx];
+                self.apply_dx_scissor(span.scissor, self.width, self.height);
+                self.draw(
+                    ui,
+                    24,
+                    span.count,
+                    &self.color_pso,
+                    &self.plain_root,
+                    &screen,
+                    false,
+                    span.start,
+                );
+                span_idx += 1;
+            }
+
+            self.apply_dx_scissor(None, self.width, self.height);
         }
 
         if let Some(text) = self.text_buf.as_ref() {
@@ -808,6 +824,7 @@ impl D3D12Window {
                 &self.text_root,
                 &screen,
                 true,
+                0,
             );
         }
 
@@ -821,7 +838,11 @@ impl D3D12Window {
             let count = self.user[idx].count;
             let constants = self.user[idx].constants;
             let textured = self.user[idx].textured;
-            self.draw(&resource, stride, count, &pso, &root, &constants, textured);
+            let scissor = self.user[idx].scissor;
+            self.apply_dx_scissor(scissor, self.width, self.height);
+            self.draw(
+                &resource, stride, count, &pso, &root, &constants, textured, 0,
+            );
             idx += 1;
         }
 
@@ -845,13 +866,14 @@ impl D3D12Window {
         root: &ID3D12RootSignature,
         constants: &[f32; 16],
         textured: bool,
+        start: u32,
     ) {
         if vertices == 0 {
             return;
         }
 
         let view = D3D12_VERTEX_BUFFER_VIEW {
-            BufferLocation: unsafe { buffer.GetGPUVirtualAddress() },
+            BufferLocation: unsafe { buffer.GetGPUVirtualAddress() } + start as u64 * stride as u64,
             SizeInBytes: vertices * stride,
             StrideInBytes: stride,
         };
@@ -867,6 +889,26 @@ impl D3D12Window {
 
             list.IASetVertexBuffers(0, Some(&[view]));
             list.DrawInstanced(vertices, 1, 0, 0);
+        }
+    }
+
+    fn apply_dx_scissor(&self, scissor: Option<Scissor>, width: u32, height: u32) {
+        let rect = match scissor {
+            Some(scissor) => scissor.clamp(width as i32, height as i32),
+            None => Scissor {
+                x: 0,
+                y: 0,
+                w: width as i32,
+                h: height as i32,
+            },
+        };
+        unsafe {
+            self.commands.RSSetScissorRects(&[RECT {
+                left: rect.x,
+                top: rect.y,
+                right: rect.x + rect.w,
+                bottom: rect.y + rect.h,
+            }]);
         }
     }
 
@@ -894,6 +936,8 @@ impl Window for D3D12Window {
         self.wait();
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
+        self.ui_spans.clear();
+        self.scissor = None;
         self.user.clear();
         self.bound = false;
         self.draw_mesh = false;
@@ -937,7 +981,9 @@ impl Window for D3D12Window {
     }
 
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let before = self.ui.len();
         push_rect(&mut self.ui, x, y, w, h, color.as_rgba_f32());
+        note_span(&mut self.ui_spans, self.scissor, before, self.ui.len(), 6);
     }
 
     fn draw_outlined_rectangle(
@@ -949,11 +995,33 @@ impl Window for D3D12Window {
         thickness: f32,
         color: Color,
     ) {
+        let before = self.ui.len();
         push_outline(&mut self.ui, x, y, w, h, thickness, color.as_rgba_f32());
+        note_span(&mut self.ui_spans, self.scissor, before, self.ui.len(), 6);
     }
 
     fn draw_text(&mut self, _font: &str, text: &str, x: f32, y: f32, scale: f32, color: Color) {
+        if self.scissor.is_some() {
+            crate::ui::gfx::BackendGpu::draw_text_user(
+                self,
+                text,
+                x,
+                y,
+                scale,
+                color.as_rgba_f32(),
+                None,
+                None,
+                None,
+            );
+
+            return;
+        }
+
         self.text.queue(text, x, y, scale, color.as_rgba_f32());
+    }
+
+    fn set_scissor(&mut self, rect: Option<[f32; 4]>) {
+        self.scissor = rect.map(|rect| Scissor::from_rect(rect[0], rect[1], rect[2], rect[3]));
     }
 
     fn render_text(&mut self) {
@@ -1618,6 +1686,7 @@ struct Dx12User {
     count: u32,
     constants: [f32; 16],
     textured: bool,
+    scissor: Option<Scissor>,
 }
 
 fn dx12_shader(device: &ID3D12Device, wgsl: &str) -> Result<crate::ui::gfx::Dx12Shader, String> {
@@ -1640,7 +1709,10 @@ fn dx12_upload(device: &ID3D12Device, bytes: &[u8]) -> Result<ID3D12Resource, St
 
 impl crate::ui::gfx::BackendGpu for D3D12Window {
     fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
-        Ok(crate::ui::gfx::Shader::d3d12(dx12_shader(&self.device, wgsl)?))
+        Ok(crate::ui::gfx::Shader::d3d12(dx12_shader(
+            &self.device,
+            wgsl,
+        )?))
     }
 
     fn make_texture(
@@ -1662,9 +1734,9 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
         )?;
         let _ = pixels;
 
-        Ok(crate::ui::gfx::Texture::d3d12(crate::ui::gfx::Dx12Texture {
-            resource,
-        }))
+        Ok(crate::ui::gfx::Texture::d3d12(
+            crate::ui::gfx::Dx12Texture { resource },
+        ))
     }
 
     fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
@@ -1713,10 +1785,9 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
         linear: bool,
         repeat: bool,
     ) -> Result<crate::ui::gfx::Sampler, String> {
-        Ok(crate::ui::gfx::Sampler::d3d12(crate::ui::gfx::Dx12Sampler {
-            linear,
-            repeat,
-        }))
+        Ok(crate::ui::gfx::Sampler::d3d12(
+            crate::ui::gfx::Dx12Sampler { linear, repeat },
+        ))
     }
 
     fn make_pipeline(
@@ -1756,12 +1827,14 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
             crate::ui::gfx::MESH_FLOATS as u8
         };
 
-        Ok(crate::ui::gfx::Pipeline::d3d12(crate::ui::gfx::Dx12Pipeline {
-            root,
-            state,
-            stride,
-            depth: !screen,
-        }))
+        Ok(crate::ui::gfx::Pipeline::d3d12(
+            crate::ui::gfx::Dx12Pipeline {
+                root,
+                state,
+                stride,
+                depth: !screen,
+            },
+        ))
     }
 
     fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
@@ -1824,6 +1897,7 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
             count: mesh.floats / pipeline.stride.max(1) as u32,
             constants,
             textured: false,
+            scissor: self.scissor,
         });
     }
 
@@ -1858,6 +1932,7 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
             count: 6,
             constants,
             textured: true,
+            scissor: self.scissor,
         });
     }
 
@@ -1887,7 +1962,9 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
     fn builtin_pipeline(&mut self, index: u32) -> Option<crate::ui::gfx::Pipeline> {
         let (state, root, stride, depth) = match index {
             crate::ui::gfx::IDX_MESH => (self.mesh_pso.clone(), self.plain_root.clone(), 0, true),
-            crate::ui::gfx::IDX_COLOR => (self.color_pso.clone(), self.plain_root.clone(), 6, false),
+            crate::ui::gfx::IDX_COLOR => {
+                (self.color_pso.clone(), self.plain_root.clone(), 6, false)
+            }
             crate::ui::gfx::IDX_TEXT => (
                 self.text_pso.clone(),
                 self.text_root.clone(),
@@ -1897,12 +1974,14 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
             _ => return None,
         };
 
-        Some(crate::ui::gfx::Pipeline::d3d12(crate::ui::gfx::Dx12Pipeline {
-            root,
-            state,
-            stride,
-            depth,
-        }))
+        Some(crate::ui::gfx::Pipeline::d3d12(
+            crate::ui::gfx::Dx12Pipeline {
+                root,
+                state,
+                stride,
+                depth,
+            },
+        ))
     }
 
     fn builtin_texture(&mut self, _index: u32) -> Option<crate::ui::gfx::Texture> {
@@ -1910,10 +1989,12 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
     }
 
     fn builtin_sampler(&mut self, index: u32) -> Option<crate::ui::gfx::Sampler> {
-        Some(crate::ui::gfx::Sampler::d3d12(crate::ui::gfx::Dx12Sampler {
-            linear: true,
-            repeat: index == crate::ui::gfx::IDX_WRAP,
-        }))
+        Some(crate::ui::gfx::Sampler::d3d12(
+            crate::ui::gfx::Dx12Sampler {
+                linear: true,
+                repeat: index == crate::ui::gfx::IDX_WRAP,
+            },
+        ))
     }
 
     fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
@@ -1942,6 +2023,7 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
             count: buffer.bytes as u32 / stride.max(1),
             constants,
             textured: false,
+            scissor: self.scissor,
         });
     }
 
@@ -1983,6 +2065,7 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
             count: (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as u32,
             constants,
             textured: true,
+            scissor: self.scissor,
         });
     }
 
@@ -2014,23 +2097,25 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
 
         self.make_buffer(bytes).unwrap_or_else(|_| {
             crate::ui::gfx::Buffer::d3d12(crate::ui::gfx::Dx12Buffer {
-                resource: self.ui_buf.clone().unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
+                resource: self
+                    .ui_buf
+                    .clone()
+                    .unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
                 bytes: 0,
             })
         })
     }
 
-    fn update_mesh(
-        &mut self,
-        mesh: crate::ui::gfx::Mesh,
-        verts: &[f32],
-    ) -> crate::ui::gfx::Mesh {
+    fn update_mesh(&mut self, mesh: crate::ui::gfx::Mesh, verts: &[f32]) -> crate::ui::gfx::Mesh {
         let screen = mesh.as_d3d12().map(|item| item.screen).unwrap_or(false);
         let _ = mesh.into_d3d12();
 
         self.make_mesh(verts, screen).unwrap_or_else(|_| {
             crate::ui::gfx::Mesh::d3d12(crate::ui::gfx::Dx12Mesh {
-                resource: self.ui_buf.clone().unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
+                resource: self
+                    .ui_buf
+                    .clone()
+                    .unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
                 floats: 0,
                 screen,
             })
@@ -2046,7 +2131,10 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
 
         self.make_texture(image).unwrap_or_else(|_| {
             crate::ui::gfx::Texture::d3d12(crate::ui::gfx::Dx12Texture {
-                resource: self.ui_buf.clone().unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
+                resource: self
+                    .ui_buf
+                    .clone()
+                    .unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
             })
         })
     }

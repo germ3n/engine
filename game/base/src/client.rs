@@ -308,15 +308,36 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         }
                     }
                 }
+                WindowEvent::CursorMoved { x, y } => {
+                    let mut pointer = game.script_engine.pointer.lock().unwrap();
+                    pointer.x = x;
+                    pointer.y = y;
+                }
                 WindowEvent::MouseInput { state, button } => {
-                    if state == ElementState::Pressed {
-                        if captured {
-                            mouse.insert(button);
-                        }
+                    let down = state == ElementState::Pressed;
+                    {
+                        let mut pointer = game.script_engine.pointer.lock().unwrap();
+                        pointer.set_button(button, down);
+                    }
 
-                        if button == MouseButton::Left {
-                            captured = true;
-                            host.set_cursor_grabbed(true);
+                    if down {
+                        let (x, y) = {
+                            let pointer = game.script_engine.pointer.lock().unwrap();
+                            (pointer.x, pointer.y)
+                        };
+                        let index = crate::script::libs::input::button_index(button);
+                        let handled: Option<bool> =
+                            game.run_hook("GuiMousePressed", (index, x, y));
+
+                        if handled != Some(true) {
+                            if captured {
+                                mouse.insert(button);
+                            }
+
+                            if button == MouseButton::Left {
+                                captured = true;
+                                host.set_cursor_grabbed(true);
+                            }
                         }
                     } else {
                         mouse.remove(&button);
@@ -435,6 +456,13 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         scene_anchor,
                     );
                     client_window.draw_skinned(&batch, &scene);
+
+                    {
+                        let (width, height) = host.size();
+                        let mut queue = game.script_engine.render_queue.lock().unwrap();
+                        queue.width = width;
+                        queue.height = height;
+                    }
 
                     let _: () = game.run_hook("MenuPaint", ());
 
@@ -605,6 +633,9 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                             }
                             DrawCommand::UpdateTarget { id, width, height } => {
                                 client_window.update_target(id, width, height);
+                            }
+                            DrawCommand::SetScissor { rect } => {
+                                client_window.set_scissor(rect);
                             }
                         }
                     }

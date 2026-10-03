@@ -199,7 +199,13 @@ impl Gui {
         output
     }
 
-    pub fn paint(&mut self, window: &mut GfxWindow, output: egui::FullOutput, width: u32, height: u32) {
+    pub fn paint(
+        &mut self,
+        window: &mut GfxWindow,
+        output: egui::FullOutput,
+        width: u32,
+        height: u32,
+    ) {
         for (id, delta) in &output.textures_delta.set {
             self.upload(window, *id, delta);
         }
@@ -492,7 +498,11 @@ fn edge_cross(a: &Corner, b: &Corner, edge: usize, clip: [f32; 4]) -> Corner {
         2 => (clip[1] - a.y) / (b.y - a.y),
         _ => (clip[3] - a.y) / (b.y - a.y),
     };
-    let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
+    let t = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let lerp = |from: f32, to: f32| from + (to - from) * t;
 
     Corner {
@@ -635,7 +645,11 @@ mod tests {
     #[test]
     fn inside_triangles_pass_through() {
         let mut out = Vec::new();
-        push_clipped(&mut out, quad(10.0, 10.0, 20.0, 20.0), [0.0, 0.0, 100.0, 100.0]);
+        push_clipped(
+            &mut out,
+            quad(10.0, 10.0, 20.0, 20.0),
+            [0.0, 0.0, 100.0, 100.0],
+        );
 
         assert_eq!(out.len(), 3 * gfx::SCREEN_FLOATS);
     }
@@ -643,7 +657,11 @@ mod tests {
     #[test]
     fn outside_triangles_are_dropped() {
         let mut out = Vec::new();
-        push_clipped(&mut out, quad(200.0, 10.0, 220.0, 20.0), [0.0, 0.0, 100.0, 100.0]);
+        push_clipped(
+            &mut out,
+            quad(200.0, 10.0, 220.0, 20.0),
+            [0.0, 0.0, 100.0, 100.0],
+        );
 
         assert!(out.is_empty());
     }
@@ -651,7 +669,11 @@ mod tests {
     #[test]
     fn straddling_triangles_stay_inside_the_clip() {
         let mut out = Vec::new();
-        push_clipped(&mut out, quad(50.0, 50.0, 150.0, 150.0), [0.0, 0.0, 100.0, 100.0]);
+        push_clipped(
+            &mut out,
+            quad(50.0, 50.0, 150.0, 150.0),
+            [0.0, 0.0, 100.0, 100.0],
+        );
 
         assert!(!out.is_empty());
         let mut idx = 0;
@@ -681,7 +703,12 @@ mod tests {
 
         for primitive in primitives {
             if let Primitive::Mesh(mesh) = primitive.primitive {
-                push_mesh(&mut out, &mesh, [0.0, 0.0, 800.0, 600.0], output.pixels_per_point);
+                push_mesh(
+                    &mut out,
+                    &mesh,
+                    [0.0, 0.0, 800.0, 600.0],
+                    output.pixels_per_point,
+                );
             }
         }
 
