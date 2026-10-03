@@ -78,27 +78,111 @@ struct GlyphQuad {
 
 pub struct TextFrame {
     glyphs: GlyphBrush<GlyphQuad>,
+    once: GlyphBrush<GlyphQuad>,
     pub verts: Vec<f32>,
     pub pixels: Vec<u8>,
     pub size: (u32, u32),
     pub dirty: bool,
+    once_pixels: Vec<u8>,
+    once_size: (u32, u32),
+    once_dirty: bool,
 }
 
 impl TextFrame {
     pub fn new() -> Result<Self, String> {
         let font = FontArc::try_from_slice(include_bytes!("font_default.ttf"))
             .map_err(|err| err.to_string())?;
-        let glyphs = GlyphBrushBuilder::using_font(font)
+        let glyphs = GlyphBrushBuilder::using_font(font.clone())
+            .initial_cache_size((512, 512))
+            .build();
+
+        let once = GlyphBrushBuilder::using_font(font)
             .initial_cache_size((512, 512))
             .build();
 
         Ok(Self {
             glyphs,
+            once,
             verts: Vec::new(),
             pixels: vec![0; 512 * 512],
             size: (512, 512),
             dirty: true,
+            once_pixels: vec![0; 512 * 512],
+            once_size: (512, 512),
+            once_dirty: true,
         })
+    }
+
+    pub fn capture(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) -> Vec<f32> {
+        self.once.queue(
+            Section::default()
+                .add_text(Text::new(text).with_scale(scale).with_color(color))
+                .with_screen_position((x, y)),
+        );
+
+        for _attempt in 0..4 {
+            let result = self.once.process_queued(
+                |rect, data| {
+                    let width = (rect.max[0] - rect.min[0]) as usize;
+                    let height = (rect.max[1] - rect.min[1]) as usize;
+
+                    if width == 0 || height == 0 {
+                        return;
+                    }
+
+                    let mut row = 0;
+
+                    while row < height {
+                        let dst = (rect.min[1] as usize + row) * self.once_size.0 as usize
+                            + rect.min[0] as usize;
+                        let src = row * width;
+                        self.once_pixels[dst..dst + width].copy_from_slice(&data[src..src + width]);
+                        row += 1;
+                    }
+
+                    self.once_dirty = true;
+                },
+                glyph_quad,
+            );
+
+            match result {
+                Ok(BrushAction::Draw(quads)) => {
+                    let mut verts = Vec::with_capacity(quads.len() * 48);
+
+                    for quad in quads {
+                        for idx in 0..6 {
+                            verts.extend_from_slice(&quad.verts[idx]);
+                        }
+                    }
+
+                    return verts;
+                }
+                Ok(BrushAction::ReDraw) => {
+                    return Vec::new();
+                }
+                Err(BrushError::TextureTooSmall { suggested }) => {
+                    self.once.resize_texture(suggested.0, suggested.1);
+                    self.once_pixels = vec![0; suggested.0 as usize * suggested.1 as usize];
+                    self.once_size = suggested;
+                    self.once_dirty = true;
+                }
+            }
+        }
+
+        Vec::new()
+    }
+
+    pub fn captured_atlas(&self) -> (&[u8], u32, u32, bool) {
+        (
+            &self.once_pixels,
+            self.once_size.0,
+            self.once_size.1,
+            self.once_dirty,
+        )
+    }
+
+    pub fn clear_captured_dirty(&mut self) {
+        self.once_dirty = false;
     }
 
     pub fn queue(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {

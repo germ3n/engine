@@ -70,6 +70,11 @@ pub struct MetalWindow {
     atlas_size: (u32, u32),
     user: Vec<MtlUser>,
     material_lookup: std::collections::HashMap<String, Texture>,
+    bound_color: Option<Texture>,
+    bound_depth: Option<Texture>,
+    bound_size: (u64, u64),
+    text_once: Option<crate::ui::batch::TextFrame>,
+    text_atlas: Option<Texture>,
     clear: [f64; 4],
     vr: Option<Headset>,
     vr_failed: bool,
@@ -229,6 +234,11 @@ impl MetalWindow {
             atlas_size: (512, 512),
             user: Vec::new(),
             material_lookup: std::collections::HashMap::new(),
+            bound_color: None,
+            bound_depth: None,
+            bound_size: (0, 0),
+            text_once: None,
+            text_atlas: None,
             clear: [0.0, 0.0, 0.0, 1.0],
             vr: None,
             vr_failed: false,
@@ -254,6 +264,8 @@ impl Window for MetalWindow {
         self.clear = [red as f64, green as f64, blue as f64, 1.0];
         self.ui_verts.clear();
         self.user.clear();
+        self.bound_color = None;
+        self.bound_depth = None;
         self.draw_mesh = false;
     }
 
@@ -437,6 +449,7 @@ impl Window for MetalWindow {
             pass.set_depth_attachment(Some(depth_attachment));
 
             let command = self.queue.new_command_buffer();
+            self.encode_targets(&command);
             let encoder = command.new_render_command_encoder(pass);
             let resolution = [width as f32, height as f32, 0.0, 0.0];
 
@@ -1560,6 +1573,8 @@ fn eye_depth(device: &Device, width: u64, height: u64) -> Texture {
 
 struct MtlUser {
     verts: Vec<f32>,
+    buffer: Option<Buffer>,
+    count: u64,
     pipeline: RenderPipelineState,
     texture: Option<Texture>,
     sampler: Option<SamplerState>,
@@ -1567,6 +1582,9 @@ struct MtlUser {
     constants: [f32; 16],
     constant_len: u64,
     stride: u64,
+    target_color: Option<Texture>,
+    target_depth: Option<Texture>,
+    target_size: (u64, u64),
 }
 
 impl MetalWindow {
@@ -1574,49 +1592,94 @@ impl MetalWindow {
         let mut idx = 0;
 
         while idx < self.user.len() {
-            let draw = &self.user[idx];
-            let bytes = float_bytes(&draw.verts);
-            let count = draw.verts.len() as u64 / draw.stride.max(1);
+            if self.user[idx].target_color.is_none() {
+                self.encode_one(encoder, &self.user[idx]);
+            }
 
-            if count == 0 {
+            idx += 1;
+        }
+    }
+
+    fn encode_targets(&self, command: &CommandBufferRef) {
+        let mut idx = 0;
+
+        while idx < self.user.len() {
+            let Some(color) = self.user[idx].target_color.clone() else {
                 idx += 1;
 
                 continue;
+            };
+            let depth = self.user[idx].target_depth.clone();
+            let start = idx;
+            idx += 1;
+
+            while idx < self.user.len() && same_target(&self.user[start], &self.user[idx]) {
+                idx += 1;
             }
 
-            encoder.set_render_pipeline_state(&draw.pipeline);
-            encoder.set_depth_stencil_state(if draw.depth {
-                &self.depth_write
-            } else {
-                &self.depth_off
-            });
-            encoder.set_cull_mode(MTLCullMode::None);
-            let owned = if bytes.len() <= 4096 {
+            let pass = RenderPassDescriptor::new();
+            let attachment = pass.color_attachments().object_at(0).unwrap();
+            attachment.set_texture(Some(&color));
+            attachment.set_load_action(MTLLoadAction::Load);
+            attachment.set_store_action(MTLStoreAction::Store);
+            if let Some(depth) = depth.as_ref() {
+                let depth_attachment = pass.depth_attachment().unwrap();
+                depth_attachment.set_texture(Some(depth));
+                depth_attachment.set_load_action(MTLLoadAction::Load);
+                depth_attachment.set_store_action(MTLStoreAction::Store);
+                pass.set_depth_attachment(Some(depth_attachment));
+            }
+            let encoder = command.new_render_command_encoder(pass);
+            let mut draw = start;
+
+            while draw < idx {
+                self.encode_one(&encoder, &self.user[draw]);
+                draw += 1;
+            }
+
+            encoder.end_encoding();
+        }
+    }
+
+    fn encode_one(&self, encoder: &RenderCommandEncoderRef, draw: &MtlUser) {
+        if draw.count == 0 {
+            return;
+        }
+
+        encoder.set_render_pipeline_state(&draw.pipeline);
+        encoder.set_depth_stencil_state(if draw.depth {
+            &self.depth_write
+        } else {
+            &self.depth_off
+        });
+        encoder.set_cull_mode(MTLCullMode::None);
+        let owned = if let Some(buffer) = &draw.buffer {
+            encoder.set_vertex_buffer(0, Some(buffer), 0);
+            None
+        } else {
+            let bytes = float_bytes(&draw.verts);
+
+            if bytes.len() <= 4096 {
                 encoder.set_vertex_bytes(0, bytes.len() as u64, bytes.as_ptr() as *const _);
                 None
             } else {
                 let buffer = shared_buffer(&self.device, bytes);
                 encoder.set_vertex_buffer(0, buffer.as_deref(), 0);
                 buffer
-            };
-            encoder.set_vertex_bytes(
-                1,
-                draw.constant_len,
-                draw.constants.as_ptr() as *const _,
-            );
-
-            if let Some(texture) = &draw.texture {
-                encoder.set_fragment_texture(0, Some(texture));
             }
+        };
+        encoder.set_vertex_bytes(1, draw.constant_len, draw.constants.as_ptr() as *const _);
 
-            if let Some(sampler) = &draw.sampler {
-                encoder.set_fragment_sampler_state(0, Some(sampler));
-            }
-
-            encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, count);
-            drop(owned);
-            idx += 1;
+        if let Some(texture) = &draw.texture {
+            encoder.set_fragment_texture(0, Some(texture));
         }
+
+        if let Some(sampler) = &draw.sampler {
+            encoder.set_fragment_sampler_state(0, Some(sampler));
+        }
+
+        encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, draw.count);
+        drop(owned);
     }
 
     fn push_user(
@@ -1630,8 +1693,15 @@ impl MetalWindow {
         constant_len: u64,
         stride: u64,
     ) {
+        let count = if verts.is_empty() {
+            0
+        } else {
+            verts.len() as u64 / stride.max(1)
+        };
         self.user.push(MtlUser {
             verts,
+            buffer: None,
+            count,
             pipeline: pipeline.clone(),
             texture: texture.cloned(),
             sampler: sampler.cloned(),
@@ -1639,7 +1709,46 @@ impl MetalWindow {
             constants,
             constant_len,
             stride,
+            target_color: self.bound_color.clone(),
+            target_depth: self.bound_depth.clone(),
+            target_size: self.bound_size,
         });
+    }
+
+    fn push_buffer(
+        &mut self,
+        buffer: &Buffer,
+        count: u64,
+        pipeline: &RenderPipelineState,
+        texture: Option<&Texture>,
+        sampler: Option<&SamplerState>,
+        depth: bool,
+        constants: [f32; 16],
+        constant_len: u64,
+        stride: u64,
+    ) {
+        self.user.push(MtlUser {
+            verts: Vec::new(),
+            buffer: Some(buffer.clone()),
+            count,
+            pipeline: pipeline.clone(),
+            texture: texture.cloned(),
+            sampler: sampler.cloned(),
+            depth,
+            constants,
+            constant_len,
+            stride,
+            target_color: self.bound_color.clone(),
+            target_depth: self.bound_depth.clone(),
+            target_size: self.bound_size,
+        });
+    }
+}
+
+fn same_target(left: &MtlUser, right: &MtlUser) -> bool {
+    match (&left.target_color, &right.target_color) {
+        (Some(left), Some(right)) => left.as_ptr() == right.as_ptr(),
+        _ => false,
     }
 }
 
@@ -1882,8 +1991,13 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
             .map(|item| item.state.clone())
             .unwrap_or_else(|| self.text_pipeline.clone());
         let mut constants = [0.0; 16];
-        constants[0] = self.width as f32;
-        constants[1] = self.height as f32;
+        let (width, height) = if self.bound_color.is_some() {
+            (self.bound_size.0 as f32, self.bound_size.1 as f32)
+        } else {
+            (self.width as f32, self.height as f32)
+        };
+        constants[0] = width;
+        constants[1] = height;
         let verts = crate::ui::gfx::screen_quad(x, y, w, h, color).to_vec();
         let texture = texture
             .and_then(|item| item.as_metal())
@@ -1973,5 +2087,258 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
                 texture: target.color.clone(),
             })
         })
+    }
+
+    fn draw_buffer(
+        &mut self,
+        buffer: &crate::ui::gfx::Buffer,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &crate::ui::voxel::SceneView,
+    ) {
+        let (Some(buffer), Some(pipeline)) = (buffer.as_metal(), pipeline.as_metal()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as u64;
+        let mut constants = [0.0; 16];
+        let constant_len = if pipeline.depth {
+            constants.copy_from_slice(&metal_view_proj(view));
+            64
+        } else {
+            let (width, height) = if self.bound_color.is_some() {
+                (self.bound_size.0 as f32, self.bound_size.1 as f32)
+            } else {
+                (self.width as f32, self.height as f32)
+            };
+            constants[0] = width;
+            constants[1] = height;
+            16
+        };
+        self.push_buffer(
+            &buffer.buffer,
+            buffer.bytes / (stride * 4).max(1),
+            &pipeline.state,
+            texture.and_then(|item| item.as_metal()).map(|item| &item.texture),
+            sampler.and_then(|item| item.as_metal()).map(|item| &item.state),
+            pipeline.depth,
+            constants,
+            constant_len,
+            stride,
+        );
+    }
+
+    fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if self.text_once.is_none() {
+            self.text_once = crate::ui::batch::TextFrame::new().ok();
+        }
+
+        let Some(frame) = self.text_once.as_mut() else {
+            return;
+        };
+        let verts = frame.capture(text, x, y, scale, color);
+        let pipeline = pipeline
+            .and_then(|item| item.as_metal())
+            .map(|item| item.state.clone())
+            .unwrap_or_else(|| self.text_pipeline.clone());
+        let custom = texture.and_then(|item| item.as_metal()).map(|item| item.texture.clone());
+        let sampler = sampler
+            .and_then(|item| item.as_metal())
+            .map(|item| item.state.clone())
+            .unwrap_or_else(|| self.clamp_sampler.clone());
+        let uploaded = if custom.is_none() {
+            self.metal_text_atlas()
+        } else {
+            None
+        };
+        let texture = custom.or(uploaded);
+        let mut constants = [0.0; 16];
+        let (width, height) = if self.bound_color.is_some() {
+            (self.bound_size.0 as f32, self.bound_size.1 as f32)
+        } else {
+            (self.width as f32, self.height as f32)
+        };
+        constants[0] = width;
+        constants[1] = height;
+        self.push_user(
+            verts,
+            &pipeline,
+            texture.as_ref(),
+            Some(&sampler),
+            false,
+            constants,
+            16,
+            crate::ui::gfx::SCREEN_FLOATS as u64,
+        );
+    }
+
+    fn set_target(&mut self, target: Option<&crate::ui::gfx::Target>) {
+        match target.and_then(|item| item.as_metal()) {
+            Some(target) => {
+                self.bound_color = Some(target.color.clone());
+                self.bound_depth = Some(target.depth.clone());
+                self.bound_size = (target.width, target.height);
+            }
+            None => {
+                self.bound_color = None;
+                self.bound_depth = None;
+            }
+        }
+    }
+
+    fn target_bound(&self) -> bool {
+        self.bound_color.is_some()
+    }
+
+    fn update_buffer(
+        &mut self,
+        buffer: crate::ui::gfx::Buffer,
+        bytes: &[u8],
+    ) -> crate::ui::gfx::Buffer {
+        let Some(buffer) = buffer.into_metal() else {
+            return self.make_buffer(bytes).unwrap_or_else(|_| {
+                crate::ui::gfx::Buffer::metal(crate::ui::gfx::MtlBuffer {
+                    buffer: shared_buffer(&self.device, &[0, 0, 0, 0]).unwrap(),
+                    bytes: 0,
+                })
+            });
+        };
+
+        if bytes.len() as u64 <= buffer.buffer.length() && !buffer.buffer.contents().is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    buffer.buffer.contents() as *mut u8,
+                    bytes.len(),
+                );
+            }
+
+            return crate::ui::gfx::Buffer::metal(crate::ui::gfx::MtlBuffer {
+                bytes: bytes.len() as u64,
+                ..buffer
+            });
+        }
+
+        let Some(next) = shared_buffer(&self.device, bytes) else {
+            return crate::ui::gfx::Buffer::metal(buffer);
+        };
+
+        crate::ui::gfx::Buffer::metal(crate::ui::gfx::MtlBuffer {
+            buffer: next,
+            bytes: bytes.len() as u64,
+        })
+    }
+
+    fn update_mesh(
+        &mut self,
+        mesh: crate::ui::gfx::Mesh,
+        verts: &[f32],
+    ) -> crate::ui::gfx::Mesh {
+        let bytes = float_bytes(verts);
+        let Some(mesh) = mesh.into_metal() else {
+            return self.make_mesh(verts, false).unwrap_or_else(|_| {
+                crate::ui::gfx::Mesh::metal(crate::ui::gfx::MtlMesh {
+                    buffer: shared_buffer(&self.device, &[0, 0, 0, 0]).unwrap(),
+                    floats: 0,
+                    screen: false,
+                })
+            });
+        };
+
+        if bytes.len() as u64 <= mesh.buffer.length() && !mesh.buffer.contents().is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr(),
+                    mesh.buffer.contents() as *mut u8,
+                    bytes.len(),
+                );
+            }
+
+            return crate::ui::gfx::Mesh::metal(crate::ui::gfx::MtlMesh {
+                floats: verts.len() as u64,
+                ..mesh
+            });
+        }
+
+        let Some(buffer) = shared_buffer(&self.device, bytes) else {
+            return crate::ui::gfx::Mesh::metal(mesh);
+        };
+
+        crate::ui::gfx::Mesh::metal(crate::ui::gfx::MtlMesh {
+            buffer,
+            floats: verts.len() as u64,
+            screen: mesh.screen,
+        })
+    }
+
+    fn update_texture(
+        &mut self,
+        texture: crate::ui::gfx::Texture,
+        image: &crate::world::surface::CpuImage,
+    ) -> crate::ui::gfx::Texture {
+        let _ = texture.into_metal();
+
+        self.make_texture(image).unwrap_or_else(|_| {
+            crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture {
+                texture: self.white.clone(),
+            })
+        })
+    }
+
+    fn resize_target(
+        &mut self,
+        target: crate::ui::gfx::Target,
+        width: u32,
+        height: u32,
+    ) -> Result<crate::ui::gfx::Target, String> {
+        let _ = target.into_metal();
+
+        self.make_target(width, height)
+    }
+}
+
+impl MetalWindow {
+    fn metal_text_atlas(&mut self) -> Option<Texture> {
+        let (pixels, width, height, dirty) = {
+            let frame = self.text_once.as_ref()?;
+            let (pixels, width, height, dirty) = frame.captured_atlas();
+
+            (pixels.to_vec(), width, height, dirty)
+        };
+
+        if !dirty && self.text_atlas.is_some() {
+            return self.text_atlas.clone();
+        }
+
+        let mut rgba = Vec::with_capacity(pixels.len() * 4);
+        let mut idx = 0;
+
+        while idx < pixels.len() {
+            let coverage = pixels[idx];
+            rgba.extend_from_slice(&[coverage, coverage, coverage, coverage]);
+            idx += 1;
+        }
+
+        let image = crate::world::surface::CpuImage {
+            width,
+            height,
+            format: crate::world::surface::PixelFormat::Rgba8,
+            bytes: rgba,
+            mips: Vec::new(),
+        };
+        self.text_atlas = Some(metal_image(&self.device, &image, false));
+        self.text_once.as_mut()?.clear_captured_dirty();
+
+        self.text_atlas.clone()
     }
 }

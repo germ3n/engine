@@ -45,6 +45,11 @@ pub struct VulkanWindow {
     white: Option<GpuImage>,
     wrap_sampler: Option<vk::Sampler>,
     clamp_sampler: Option<vk::Sampler>,
+    bound_frame: Option<vk::Framebuffer>,
+    bound_extent: vk::Extent2D,
+    user_target_pass: Option<vk::RenderPass>,
+    text_once: Option<crate::ui::batch::TextFrame>,
+    text_image: Option<GpuImage>,
 }
 
 impl VulkanWindow {
@@ -110,6 +115,11 @@ fn build_window(entry: ash::Entry, surface: &Surface) -> Result<VulkanWindow, St
         white: None,
         wrap_sampler: None,
         clamp_sampler: None,
+        bound_frame: None,
+        bound_extent: vk::Extent2D::default(),
+        user_target_pass: None,
+        text_once: None,
+        text_image: None,
     })
 }
 
@@ -150,6 +160,10 @@ impl Drop for VulkanWindow {
             if let Some(sampler) = self.clamp_sampler {
                 self.gpu.device.destroy_sampler(sampler, None);
             }
+
+            if let Some(pass) = self.user_target_pass {
+                self.gpu.device.destroy_render_pass(pass, None);
+            }
         }
 
         self.white.take();
@@ -177,6 +191,7 @@ impl Window for VulkanWindow {
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
+        self.bound_frame = None;
         self.draw_mesh = false;
     }
 
@@ -427,6 +442,7 @@ impl VulkanWindow {
         text_bytes: usize,
     ) -> Result<(), String> {
         let extent = self.swap.extent;
+        self.record_target_users(cmd)?;
         begin_pass(
             &self.gpu.device,
             cmd,
@@ -2354,8 +2370,22 @@ fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     GlyphQuad { verts }
 }
 
+enum VkDrawBuffer {
+    Owned(HostBuffer),
+    Borrowed(vk::Buffer),
+}
+
+impl VkDrawBuffer {
+    fn handle(&self) -> vk::Buffer {
+        match self {
+            VkDrawBuffer::Owned(buffer) => buffer.buffer,
+            VkDrawBuffer::Borrowed(buffer) => *buffer,
+        }
+    }
+}
+
 struct VkUser {
-    buffer: HostBuffer,
+    buffer: VkDrawBuffer,
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     view: vk::ImageView,
@@ -2363,6 +2393,8 @@ struct VkUser {
     count: u32,
     constants: [f32; 16],
     constant_bytes: u32,
+    target: Option<vk::Framebuffer>,
+    target_extent: vk::Extent2D,
 }
 
 impl VulkanWindow {
@@ -2426,6 +2458,12 @@ impl VulkanWindow {
         let mut idx = 0;
 
         while idx < self.user.len() {
+            if self.user[idx].target.is_some() {
+                idx += 1;
+
+                continue;
+            }
+
             let draw = &self.user[idx];
             let set = allocate_user_set(&self.gpu.device, pool, set_layout)?;
             write_user_set(&self.gpu.device, set, draw.view, draw.sampler);
@@ -2451,9 +2489,9 @@ impl VulkanWindow {
                     0,
                     bytes_of(&draw.constants[..words]),
                 );
-                self.gpu
-                    .device
-                    .cmd_bind_vertex_buffers(cmd, 0, &[draw.buffer.buffer], &[0]);
+                    self.gpu
+                        .device
+                        .cmd_bind_vertex_buffers(cmd, 0, &[draw.buffer.handle()], &[0]);
                 let _ = extent;
                 self.gpu.device.cmd_draw(cmd, draw.count, 1, 0, 0);
             }
@@ -2461,6 +2499,97 @@ impl VulkanWindow {
         }
 
         Ok(())
+    }
+
+    fn record_target_users(&mut self, cmd: vk::CommandBuffer) -> Result<(), String> {
+        let slot = self.frame_idx % FRAMES;
+        let pool = self.user_pool[slot].unwrap_or_default();
+        let set_layout = self.user_set_layout.unwrap_or_default();
+        let pass = self.user_target_pass.unwrap_or_default();
+        let mut idx = 0;
+
+        while idx < self.user.len() {
+            let Some(frame) = self.user[idx].target else {
+                idx += 1;
+
+                continue;
+            };
+            let extent = self.user[idx].target_extent;
+            let start = idx;
+            idx += 1;
+
+            while idx < self.user.len() && self.user[idx].target == Some(frame) {
+                idx += 1;
+            }
+
+            begin_pass(&self.gpu.device, cmd, pass, frame, extent, self.clear);
+            let mut draw = start;
+
+            while draw < idx {
+                let item = &self.user[draw];
+                let set = allocate_user_set(&self.gpu.device, pool, set_layout)?;
+                write_user_set(&self.gpu.device, set, item.view, item.sampler);
+                unsafe {
+                    self.gpu.device.cmd_bind_pipeline(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        item.pipeline,
+                    );
+                    self.gpu.device.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        item.layout,
+                        0,
+                        &[set],
+                        &[],
+                    );
+                    let words = (item.constant_bytes as usize / 4).min(item.constants.len());
+                    self.gpu.device.cmd_push_constants(
+                        cmd,
+                        item.layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        bytes_of(&item.constants[..words]),
+                    );
+                    self.gpu
+                        .device
+                        .cmd_bind_vertex_buffers(cmd, 0, &[item.buffer.handle()], &[0]);
+                    self.gpu.device.cmd_draw(cmd, item.count, 1, 0, 0);
+                }
+                draw += 1;
+            }
+
+            unsafe { self.gpu.device.cmd_end_render_pass(cmd) };
+        }
+
+        Ok(())
+    }
+
+    fn target_framebuffer(
+        &mut self,
+        color: vk::ImageView,
+        depth: vk::ImageView,
+        width: u32,
+        height: u32,
+    ) -> Result<vk::Framebuffer, String> {
+        if self.user_target_pass.is_none() {
+            self.user_target_pass = Some(render_pass(
+                &self.gpu.device,
+                vk::Format::R8G8B8A8_UNORM,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            )?);
+        }
+
+        let pass = self.user_target_pass.unwrap_or_default();
+        let frames = framebuffers(
+            &self.gpu.device,
+            pass,
+            &[color],
+            depth,
+            vk::Extent2D { width, height },
+        )?;
+
+        frames.into_iter().next().ok_or_else(|| "framebuffer".to_string())
     }
 
     fn user_sampler(&mut self, repeat: bool) -> Result<vk::Sampler, String> {
@@ -2513,7 +2642,7 @@ impl VulkanWindow {
         )?;
         buffer.write(bytes_of(verts));
         self.user.push(VkUser {
-            buffer,
+            buffer: VkDrawBuffer::Owned(buffer),
             pipeline,
             layout,
             view,
@@ -2521,6 +2650,8 @@ impl VulkanWindow {
             count: (verts.len() as u32 / stride.max(1)),
             constants,
             constant_bytes,
+            target: self.bound_frame,
+            target_extent: self.bound_extent,
         });
 
         Ok(())
@@ -2785,6 +2916,7 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             depth: depth.image,
             depth_memory: depth.memory,
             depth_view: depth.view,
+            frame: self.target_framebuffer(color.view, depth.view, width, height)?,
             width,
             height,
         }))
@@ -2937,6 +3069,7 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
             self.gpu.device.destroy_image_view(target.depth_view, None);
             self.gpu.device.destroy_image(target.depth, None);
             self.gpu.device.free_memory(target.depth_memory, None);
+            self.gpu.device.destroy_framebuffer(target.frame, None);
         }
     }
 
@@ -3109,6 +3242,297 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
 
     fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
         None
+    }
+
+    fn draw_buffer(
+        &mut self,
+        buffer: &crate::ui::gfx::Buffer,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &SceneView,
+    ) {
+        let (Some(buffer), Some(pipeline)) = (buffer.as_vulkan(), pipeline.as_vulkan()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as u32;
+        let mut constants = [0.0; 16];
+        let constant_bytes = if pipeline.depth {
+            let matrix = vr::view_proj(view, true);
+            constants.copy_from_slice(&matrix);
+            64
+        } else {
+            let extent = if self.bound_frame.is_some() {
+                self.bound_extent
+            } else {
+                vk::Extent2D {
+                    width: self.width,
+                    height: self.height,
+                }
+            };
+            constants[0] = extent.width as f32;
+            constants[1] = extent.height as f32;
+            16
+        };
+        let view_handle = texture
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.view)
+            .unwrap_or(vk::ImageView::null());
+        let sampler = sampler
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.sampler)
+            .or(self.clamp_sampler)
+            .unwrap_or(vk::Sampler::null());
+        self.user.push(VkUser {
+            buffer: VkDrawBuffer::Borrowed(buffer.buffer),
+            pipeline: pipeline.pipeline,
+            layout: pipeline.layout,
+            view: view_handle,
+            sampler,
+            count: buffer.bytes as u32 / (stride * 4).max(1),
+            constants,
+            constant_bytes,
+            target: self.bound_frame,
+            target_extent: self.bound_extent,
+        });
+    }
+
+    fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if self.text_once.is_none() {
+            self.text_once = crate::ui::batch::TextFrame::new().ok();
+        }
+
+        let Some(frame) = self.text_once.as_mut() else {
+            return;
+        };
+        let verts = frame.capture(text, x, y, scale, color);
+        let pipe = pipeline.and_then(|item| item.as_vulkan());
+        let pipeline_handle = pipe.map(|item| item.pipeline).unwrap_or(self.pipes.text);
+        let layout = pipe.map(|item| item.layout).unwrap_or(self.pipes.text_layout);
+        let mut constants = [0.0; 16];
+        let extent = if self.bound_frame.is_some() {
+            self.bound_extent
+        } else {
+            vk::Extent2D {
+                width: self.width,
+                height: self.height,
+            }
+        };
+        constants[0] = extent.width as f32;
+        constants[1] = extent.height as f32;
+        let view = if let Some(texture) = texture.and_then(|item| item.as_vulkan()) {
+            texture.view
+        } else if let Some(image) = self.text_image.as_ref() {
+            image.view
+        } else {
+            vk::ImageView::null()
+        };
+        let sampler = sampler
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.sampler)
+            .or(self.clamp_sampler)
+            .unwrap_or(vk::Sampler::null());
+
+        if texture.is_none() {
+            if let Some(frame) = self.text_once.as_ref() {
+                let (pixels, width, height, dirty) = frame.captured_atlas();
+
+                if dirty {
+                    let mut rgba = Vec::with_capacity(pixels.len() * 4);
+                    let mut idx = 0;
+
+                    while idx < pixels.len() {
+                        let coverage = pixels[idx];
+                        rgba.extend_from_slice(&[coverage, coverage, coverage, coverage]);
+                        idx += 1;
+                    }
+
+                    if let Ok(image) = vk_upload(self, &rgba, width, height) {
+                        self.text_image = Some(GpuImage {
+                            device: self.gpu.device.clone(),
+                            image: image.image,
+                            memory: image.memory,
+                            view: image.view,
+                        });
+                    }
+                }
+            }
+
+            if let Some(frame) = self.text_once.as_mut() {
+                frame.clear_captured_dirty();
+            }
+        }
+
+        let view = self
+            .text_image
+            .as_ref()
+            .map(|image| image.view)
+            .unwrap_or(view);
+        let _ = self.push_user(&verts, pipeline_handle, layout, view, sampler, constants, 16, 8);
+    }
+
+    fn set_target(&mut self, target: Option<&crate::ui::gfx::Target>) {
+        match target.and_then(|item| item.as_vulkan()) {
+            Some(target) => {
+                self.bound_frame = Some(target.frame);
+                self.bound_extent = vk::Extent2D {
+                    width: target.width,
+                    height: target.height,
+                };
+            }
+            None => self.bound_frame = None,
+        }
+    }
+
+    fn target_bound(&self) -> bool {
+        self.bound_frame.is_some()
+    }
+
+    fn update_buffer(
+        &mut self,
+        buffer: crate::ui::gfx::Buffer,
+        bytes: &[u8],
+    ) -> crate::ui::gfx::Buffer {
+        let Some(buffer) = buffer.into_vulkan() else {
+            return self.make_buffer(bytes).unwrap_or_else(|_| {
+                crate::ui::gfx::Buffer::vulkan(crate::ui::gfx::VkBuffer {
+                    buffer: vk::Buffer::null(),
+                    memory: vk::DeviceMemory::null(),
+                    bytes: 0,
+                })
+            });
+        };
+
+        if bytes.len() as u64 <= buffer.bytes {
+            if let Ok(ptr) = unsafe {
+                self.gpu.device.map_memory(
+                    buffer.memory,
+                    0,
+                    bytes.len().max(4) as u64,
+                    vk::MemoryMapFlags::empty(),
+                )
+            } {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
+                    self.gpu.device.unmap_memory(buffer.memory);
+                }
+            }
+
+            return crate::ui::gfx::Buffer::vulkan(crate::ui::gfx::VkBuffer {
+                bytes: bytes.len() as u64,
+                ..buffer
+            });
+        }
+
+        unsafe {
+            self.gpu.device.destroy_buffer(buffer.buffer, None);
+            self.gpu.device.free_memory(buffer.memory, None);
+        }
+
+        self.make_buffer(bytes).unwrap_or_else(|_| {
+            crate::ui::gfx::Buffer::vulkan(crate::ui::gfx::VkBuffer {
+                buffer: vk::Buffer::null(),
+                memory: vk::DeviceMemory::null(),
+                bytes: 0,
+            })
+        })
+    }
+
+    fn update_mesh(
+        &mut self,
+        mesh: crate::ui::gfx::Mesh,
+        verts: &[f32],
+    ) -> crate::ui::gfx::Mesh {
+        let bytes = bytes_of(verts);
+        let Some(mesh) = mesh.into_vulkan() else {
+            return self.make_mesh(verts, false).unwrap_or_else(|_| {
+                crate::ui::gfx::Mesh::vulkan(crate::ui::gfx::VkMesh {
+                    buffer: vk::Buffer::null(),
+                    memory: vk::DeviceMemory::null(),
+                    floats: 0,
+                    screen: false,
+                })
+            });
+        };
+        let screen = mesh.screen;
+
+        if bytes.len() as u64 <= mesh.floats as u64 * 4 {
+            if let Ok(ptr) = unsafe {
+                self.gpu.device.map_memory(
+                    mesh.memory,
+                    0,
+                    bytes.len().max(4) as u64,
+                    vk::MemoryMapFlags::empty(),
+                )
+            } {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
+                    self.gpu.device.unmap_memory(mesh.memory);
+                }
+            }
+
+            return crate::ui::gfx::Mesh::vulkan(crate::ui::gfx::VkMesh {
+                floats: verts.len() as u32,
+                ..mesh
+            });
+        }
+
+        unsafe {
+            self.gpu.device.destroy_buffer(mesh.buffer, None);
+            self.gpu.device.free_memory(mesh.memory, None);
+        }
+
+        self.make_mesh(verts, screen).unwrap_or_else(|_| {
+            crate::ui::gfx::Mesh::vulkan(crate::ui::gfx::VkMesh {
+                buffer: vk::Buffer::null(),
+                memory: vk::DeviceMemory::null(),
+                floats: 0,
+                screen,
+            })
+        })
+    }
+
+    fn update_texture(
+        &mut self,
+        texture: crate::ui::gfx::Texture,
+        image: &crate::world::surface::CpuImage,
+    ) -> crate::ui::gfx::Texture {
+        if let Some(texture) = texture.into_vulkan() {
+            unsafe {
+                self.gpu.device.destroy_image_view(texture.view, None);
+                self.gpu.device.destroy_image(texture.image, None);
+                self.gpu.device.free_memory(texture.memory, None);
+            }
+        }
+
+        self.make_texture(image).unwrap_or_else(|_| {
+            crate::ui::gfx::Texture::vulkan(crate::ui::gfx::VkTexture {
+                image: vk::Image::null(),
+                memory: vk::DeviceMemory::null(),
+                view: vk::ImageView::null(),
+            })
+        })
+    }
+
+    fn resize_target(
+        &mut self,
+        target: crate::ui::gfx::Target,
+        width: u32,
+        height: u32,
+    ) -> Result<crate::ui::gfx::Target, String> {
+        self.destroy_target(target);
+
+        self.make_target(width, height)
     }
 
     fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {

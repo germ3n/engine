@@ -41,6 +41,11 @@ pub struct OpenGLWindow {
     vr_enable: bool,
     eyes: Option<GlEyes>,
     clear: [f32; 4],
+    bound: bool,
+    bound_w: i32,
+    bound_h: i32,
+    text_once: Option<crate::ui::batch::TextFrame>,
+    text_atlas: Option<glow::Texture>,
 }
 
 struct GlEyes {
@@ -180,6 +185,11 @@ impl OpenGLWindow {
             vr_enable: false,
             eyes: None,
             clear: [0.0, 0.0, 0.0, 1.0],
+            bound: false,
+            bound_w: 0,
+            bound_h: 0,
+            text_once: None,
+            text_atlas: None,
         };
         let font_default_bytes = include_bytes!("font_default.ttf");
         let font_default =
@@ -231,6 +241,7 @@ impl Window for OpenGLWindow {
     }
 
     fn present(&mut self) {
+        self.unbind_target();
         self.surface.swap_buffers(&self.context).unwrap();
 
         if let Some(headset) = self.vr.as_mut() {
@@ -239,6 +250,7 @@ impl Window for OpenGLWindow {
     }
 
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
+        self.unbind_target();
         self.clear = [red, green, blue, 1.0];
         unsafe {
             self.gl.depth_mask(true);
@@ -3339,6 +3351,103 @@ fn bind_user(
     }
 }
 
+impl OpenGLWindow {
+    fn pixel_size(&self) -> (f32, f32) {
+        if self.bound {
+            return (self.bound_w as f32, self.bound_h as f32);
+        }
+
+        (self.width as f32, self.height as f32)
+    }
+
+    fn unbind_target(&mut self) {
+        if !self.bound {
+            return;
+        }
+
+        unsafe {
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            self.gl
+                .viewport(0, 0, self.width as i32, self.height as i32);
+        }
+        self.bound = false;
+    }
+
+    fn draw_screen_verts(
+        &mut self,
+        verts: &[f32],
+        program: glow::Program,
+        texture: Option<glow::Texture>,
+        sampler: Option<glow::Sampler>,
+    ) {
+        if verts.len() < crate::ui::gfx::SCREEN_FLOATS {
+            return;
+        }
+
+        let (width, height) = self.pixel_size();
+        unsafe {
+            self.gl.disable(glow::DEPTH_TEST);
+            self.gl.depth_mask(false);
+            self.gl.disable(glow::CULL_FACE);
+            self.gl.enable(glow::BLEND);
+            self.gl
+                .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            bind_user(&self.gl, program, true, width, height, None);
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(glow::TEXTURE_2D, texture);
+            self.gl.bind_sampler(0, sampler);
+            self.gl.bind_vertex_array(Some(self.vao));
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * 4);
+            self.gl
+                .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+            self.gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 32, 0);
+            self.gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 32, 8);
+            self.gl
+                .vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, 32, 16);
+            self.gl.enable_vertex_attrib_array(0);
+            self.gl.enable_vertex_attrib_array(1);
+            self.gl.enable_vertex_attrib_array(2);
+            self.gl
+                .draw_arrays(glow::TRIANGLES, 0, (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as i32);
+            self.gl.disable_vertex_attrib_array(1);
+            self.gl.disable_vertex_attrib_array(2);
+            self.gl
+                .vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
+        }
+    }
+
+    fn text_texture(&mut self) -> Option<glow::Texture> {
+        let (pixels, width, height, dirty) = {
+            let frame = self.text_once.as_ref()?;
+            let (pixels, width, height, dirty) = frame.captured_atlas();
+
+            (pixels.to_vec(), width, height, dirty)
+        };
+
+        if !dirty && self.text_atlas.is_some() {
+            return self.text_atlas;
+        }
+
+        let mut rgba = Vec::with_capacity(pixels.len() * 4);
+        let mut idx = 0;
+
+        while idx < pixels.len() {
+            let coverage = pixels[idx];
+            rgba.extend_from_slice(&[coverage, coverage, coverage, coverage]);
+            idx += 1;
+        }
+
+        let name = rgba_texture(&self.gl, width as i32, height as i32, &rgba).ok()?;
+        if let Some(old) = self.text_atlas.replace(name) {
+            unsafe { self.gl.delete_texture(old) }
+        }
+        self.text_once.as_mut()?.clear_captured_dirty();
+
+        self.text_atlas
+    }
+}
+
 impl crate::ui::gfx::BackendGpu for OpenGLWindow {
     fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
         let cache = gl_cache(&self.gl);
@@ -3524,12 +3633,13 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            let (width, height) = self.pixel_size();
             bind_user(
                 &self.gl,
                 pipeline.program,
                 mesh.screen,
-                self.width as f32,
-                self.height as f32,
+                width,
+                height,
                 Some(view),
             );
             self.gl.active_texture(glow::TEXTURE0);
@@ -3571,12 +3681,13 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
             self.gl.enable(glow::BLEND);
             self.gl
                 .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            let (width, height) = self.pixel_size();
             bind_user(
                 &self.gl,
                 program,
                 true,
-                self.width as f32,
-                self.height as f32,
+                width,
+                height,
                 None,
             );
             self.gl.active_texture(glow::TEXTURE0);
@@ -3678,12 +3789,253 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         })
     }
 
+    fn draw_buffer(
+        &mut self,
+        buffer: &crate::ui::gfx::Buffer,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &crate::ui::voxel::SceneView,
+    ) {
+        let (Some(buffer), Some(pipeline)) = (buffer.as_opengl(), pipeline.as_opengl()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as i32;
+        let screen = stride == crate::ui::gfx::SCREEN_FLOATS as i32;
+        let (width, height) = self.pixel_size();
+        unsafe {
+            self.gl.disable(glow::CULL_FACE);
+            if pipeline.depth {
+                self.gl.enable(glow::DEPTH_TEST);
+                self.gl.depth_mask(true);
+            } else {
+                self.gl.disable(glow::DEPTH_TEST);
+                self.gl.depth_mask(false);
+            }
+            self.gl.enable(glow::BLEND);
+            self.gl
+                .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            bind_user(&self.gl, pipeline.program, screen, width, height, Some(view));
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(
+                glow::TEXTURE_2D,
+                texture.and_then(|item| item.as_opengl()).map(|item| item.name),
+            );
+            self.gl.bind_sampler(
+                0,
+                sampler.and_then(|item| item.as_opengl()).map(|item| item.name),
+            );
+            self.gl.bind_vertex_array(Some(self.vao));
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
+            let byte_stride = stride * 4;
+
+            if screen {
+                self.gl
+                    .vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, byte_stride, 0);
+                self.gl
+                    .vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, byte_stride, 8);
+                self.gl
+                    .vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, byte_stride, 16);
+            } else {
+                self.gl
+                    .vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, byte_stride, 0);
+                self.gl
+                    .vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, byte_stride, 12);
+                self.gl
+                    .vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, byte_stride, 20);
+            }
+
+            self.gl.enable_vertex_attrib_array(0);
+            self.gl.enable_vertex_attrib_array(1);
+            self.gl.enable_vertex_attrib_array(2);
+            self.gl.draw_arrays(
+                glow::TRIANGLES,
+                0,
+                buffer.bytes as i32 / byte_stride.max(1),
+            );
+            self.gl.disable_vertex_attrib_array(1);
+            self.gl.disable_vertex_attrib_array(2);
+            self.gl
+                .vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
+            self.gl.bind_vertex_array(None);
+        }
+    }
+
+    fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if self.text_once.is_none() {
+            self.text_once = crate::ui::batch::TextFrame::new().ok();
+        }
+
+        let Some(frame) = self.text_once.as_mut() else {
+            return;
+        };
+        let verts = frame.capture(text, x, y, scale, color);
+        let program = pipeline
+            .and_then(|item| item.as_opengl())
+            .map(|item| item.program)
+            .unwrap_or(self.sprite);
+        let atlas = if texture.is_some() {
+            None
+        } else {
+            self.text_texture()
+        };
+        let texture = texture
+            .and_then(|item| item.as_opengl())
+            .map(|item| item.name)
+            .or(atlas);
+        let sampler = sampler
+            .and_then(|item| item.as_opengl())
+            .map(|item| item.name)
+            .or(Some(self.clamp_sampler));
+        self.draw_screen_verts(&verts, program, texture, sampler);
+    }
+
+    fn set_target(&mut self, target: Option<&crate::ui::gfx::Target>) {
+        match target.and_then(|item| item.as_opengl()) {
+            Some(target) => {
+                unsafe {
+                    self.gl
+                        .bind_framebuffer(glow::FRAMEBUFFER, Some(target.frame));
+                    self.gl.viewport(0, 0, target.width, target.height);
+                }
+                self.bound = true;
+                self.bound_w = target.width;
+                self.bound_h = target.height;
+            }
+            None => self.unbind_target(),
+        }
+    }
+
+    fn target_bound(&self) -> bool {
+        self.bound
+    }
+
+    fn update_buffer(
+        &mut self,
+        buffer: crate::ui::gfx::Buffer,
+        bytes: &[u8],
+    ) -> crate::ui::gfx::Buffer {
+        let Some(buffer) = buffer.into_opengl() else {
+            return self
+                .make_buffer(bytes)
+                .unwrap_or_else(|_| crate::ui::gfx::Buffer::opengl(crate::ui::gfx::GlBuffer {
+                    name: unsafe { self.gl.create_buffer().unwrap() },
+                    bytes: 0,
+                }));
+        };
+        unsafe {
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer.name));
+            self.gl
+                .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+
+        crate::ui::gfx::Buffer::opengl(crate::ui::gfx::GlBuffer {
+            name: buffer.name,
+            bytes: bytes.len() as u32,
+        })
+    }
+
+    fn update_mesh(
+        &mut self,
+        mesh: crate::ui::gfx::Mesh,
+        verts: &[f32],
+    ) -> crate::ui::gfx::Mesh {
+        let Some(mesh) = mesh.into_opengl() else {
+            return self
+                .make_mesh(verts, false)
+                .ok()
+                .and_then(|item| item.into_opengl())
+                .map(crate::ui::gfx::Mesh::opengl)
+                .unwrap_or_else(|| {
+                    crate::ui::gfx::Mesh::opengl(crate::ui::gfx::GlMesh {
+                        vao: unsafe { self.gl.create_vertex_array().unwrap() },
+                        vbo: unsafe { self.gl.create_buffer().unwrap() },
+                        floats: 0,
+                        screen: false,
+                    })
+                });
+        };
+        unsafe {
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(mesh.vbo));
+            let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * 4);
+            self.gl
+                .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+
+        crate::ui::gfx::Mesh::opengl(crate::ui::gfx::GlMesh {
+            floats: verts.len() as i32,
+            ..mesh
+        })
+    }
+
+    fn update_texture(
+        &mut self,
+        texture: crate::ui::gfx::Texture,
+        image: &crate::world::surface::CpuImage,
+    ) -> crate::ui::gfx::Texture {
+        let Some(texture) = texture.into_opengl() else {
+            return self
+                .make_texture(image)
+                .ok()
+                .unwrap_or_else(|| {
+                    crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture {
+                        name: self.colored_mesh.white,
+                    })
+                });
+        };
+        let pixels = crate::world::image_rgba(image);
+        unsafe {
+            self.gl.bind_texture(glow::TEXTURE_2D, Some(texture.name));
+            self.gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                image.width as i32,
+                image.height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                Some(&pixels),
+            );
+            self.gl.bind_texture(glow::TEXTURE_2D, None);
+        }
+
+        crate::ui::gfx::Texture::opengl(texture)
+    }
+
+    fn resize_target(
+        &mut self,
+        target: crate::ui::gfx::Target,
+        width: u32,
+        height: u32,
+    ) -> Result<crate::ui::gfx::Target, String> {
+        self.destroy_target(target);
+
+        self.make_target(width, height)
+    }
+
     fn before_destroy(&mut self) {
         let _ = self.context.make_current(&self.surface);
         unsafe {
             self.gl.delete_program(self.sprite);
             self.gl.delete_sampler(self.wrap_sampler);
             self.gl.delete_sampler(self.clamp_sampler);
+
+            if let Some(texture) = self.text_atlas {
+                self.gl.delete_texture(texture);
+            }
         }
     }
 }

@@ -59,6 +59,9 @@ pub struct D3D11Window {
     draw_mesh: bool,
     user: Vec<DxUser>,
     user_cb: Option<ID3D11Buffer>,
+    bound_rtv: Option<ID3D11RenderTargetView>,
+    bound_dsv: Option<ID3D11DepthStencilView>,
+    text_once: Option<crate::ui::batch::TextFrame>,
     vr: Option<Headset>,
     vr_failed: bool,
     vr_enable: bool,
@@ -163,6 +166,9 @@ impl D3D11Window {
             draw_mesh: false,
             user: Vec::new(),
             user_cb: None,
+            bound_rtv: None,
+            bound_dsv: None,
+            text_once: None,
             vr: None,
             vr_failed: false,
             vr_enable: false,
@@ -271,6 +277,8 @@ impl Window for D3D11Window {
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
         self.user.clear();
+        self.bound_rtv = None;
+        self.bound_dsv = None;
         self.draw_mesh = false;
     }
 
@@ -1214,6 +1222,8 @@ struct DxUser {
     count: u32,
     depth: bool,
     constants: [f32; 16],
+    rtv: Option<ID3D11RenderTargetView>,
+    dsv: Option<ID3D11DepthStencilView>,
 }
 
 impl D3D11Window {
@@ -1245,7 +1255,15 @@ impl D3D11Window {
             let texture = self.user[idx].texture.clone();
             let sampler = self.user[idx].sampler.clone();
             let words = self.user[idx].constants;
+            let rtv = self.user[idx].rtv.clone();
+            let dsv = self.user[idx].dsv.clone();
             let _ = write_constants(&self.context, &constants, &words);
+
+            if let (Some(rtv), Some(dsv)) = (rtv, dsv) {
+                unsafe {
+                    self.context.OMSetRenderTargets(Some(&[Some(rtv)]), &dsv);
+                }
+            }
             self.draw_buffer(
                 &vs,
                 &ps,
@@ -1558,6 +1576,8 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             count,
             depth: pipeline.depth,
             constants,
+            rtv: self.bound_rtv.clone(),
+            dsv: self.bound_dsv.clone(),
         });
     }
 
@@ -1598,6 +1618,8 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
             count: 6,
             depth: false,
             constants,
+            rtv: self.bound_rtv.clone(),
+            dsv: self.bound_dsv.clone(),
         });
     }
 
@@ -1661,6 +1683,218 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
 
     fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
         None
+    }
+
+    fn draw_buffer(
+        &mut self,
+        buffer: &crate::ui::gfx::Buffer,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &SceneView,
+    ) {
+        let (Some(buffer), Some(pipeline)) = (buffer.as_d3d11(), pipeline.as_d3d11()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as u32;
+        let mut constants = [0.0; 16];
+        constants.copy_from_slice(&view_proj(view));
+        self.user.push(DxUser {
+            buffer: DynBuf {
+                buffer: buffer.buffer.clone(),
+                capacity: buffer.bytes,
+                stride: stride * 4,
+            },
+            vs: pipeline.vs.clone(),
+            ps: pipeline.ps.clone(),
+            layout: pipeline.layout.clone(),
+            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            sampler: sampler.and_then(|item| item.as_d3d11()).map(|item| item.state.clone()),
+            count: buffer.bytes / (stride * 4).max(1),
+            depth: pipeline.depth,
+            constants,
+            rtv: self.bound_rtv.clone(),
+            dsv: self.bound_dsv.clone(),
+        });
+    }
+
+    fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if self.text_once.is_none() {
+            self.text_once = crate::ui::batch::TextFrame::new().ok();
+        }
+
+        let Some(frame) = self.text_once.as_mut() else {
+            return;
+        };
+        let verts = frame.capture(text, x, y, scale, color);
+        let bytes = bytes_of(&verts);
+        let Ok(buffer) = write_dynamic(&self.device, &self.context, None, bytes, 32) else {
+            return;
+        };
+        let (vs, ps, layout) = if let Some(pipeline) = pipeline.and_then(|item| item.as_d3d11()) {
+            (pipeline.vs.clone(), pipeline.ps.clone(), pipeline.layout.clone())
+        } else {
+            (self.text_vs.clone(), self.text_ps.clone(), self.text_layout.clone())
+        };
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        self.user.push(DxUser {
+            buffer,
+            vs,
+            ps,
+            layout,
+            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            sampler: sampler
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.state.clone())
+                .or_else(|| Some(self.sampler.clone())),
+            count: (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as u32,
+            depth: false,
+            constants,
+            rtv: self.bound_rtv.clone(),
+            dsv: self.bound_dsv.clone(),
+        });
+    }
+
+    fn set_target(&mut self, target: Option<&crate::ui::gfx::Target>) {
+        match target.and_then(|item| item.as_d3d11()) {
+            Some(target) => {
+                self.bound_rtv = Some(target.rtv.clone());
+                self.bound_dsv = Some(target.dsv.clone());
+            }
+            None => {
+                self.bound_rtv = None;
+                self.bound_dsv = None;
+            }
+        }
+    }
+
+    fn target_bound(&self) -> bool {
+        self.bound_rtv.is_some()
+    }
+
+    fn update_buffer(
+        &mut self,
+        buffer: crate::ui::gfx::Buffer,
+        bytes: &[u8],
+    ) -> crate::ui::gfx::Buffer {
+        let Some(buffer) = buffer.into_d3d11() else {
+            return self.make_buffer(bytes).unwrap_or_else(|_| {
+                crate::ui::gfx::Buffer::d3d11(crate::ui::gfx::Dx11Buffer {
+                    buffer: self.screen_cb.clone(),
+                    bytes: 0,
+                })
+            });
+        };
+        let next = write_dynamic(
+            &self.device,
+            &self.context,
+            Some(DynBuf {
+                buffer: buffer.buffer,
+                capacity: buffer.bytes,
+                stride: 4,
+            }),
+            bytes,
+            4,
+        );
+
+        match next {
+            Ok(next) => crate::ui::gfx::Buffer::d3d11(crate::ui::gfx::Dx11Buffer {
+                buffer: next.buffer,
+                bytes: bytes.len() as u32,
+            }),
+            Err(_) => self.make_buffer(bytes).unwrap_or_else(|_| {
+                crate::ui::gfx::Buffer::d3d11(crate::ui::gfx::Dx11Buffer {
+                    buffer: self.screen_cb.clone(),
+                    bytes: 0,
+                })
+            }),
+        }
+    }
+
+    fn update_mesh(
+        &mut self,
+        mesh: crate::ui::gfx::Mesh,
+        verts: &[f32],
+    ) -> crate::ui::gfx::Mesh {
+        let Some(mesh) = mesh.into_d3d11() else {
+            return self.make_mesh(verts, false).unwrap_or_else(|_| {
+                crate::ui::gfx::Mesh::d3d11(crate::ui::gfx::Dx11Mesh {
+                    buffer: self.screen_cb.clone(),
+                    floats: 0,
+                    screen: false,
+                })
+            });
+        };
+        let screen = mesh.screen;
+        let stride = if screen { 32 } else { 36 };
+        let next = write_dynamic(
+            &self.device,
+            &self.context,
+            Some(DynBuf {
+                buffer: mesh.buffer,
+                capacity: mesh.floats * 4,
+                stride,
+            }),
+            bytes_of(verts),
+            stride,
+        );
+
+        match next {
+            Ok(next) => crate::ui::gfx::Mesh::d3d11(crate::ui::gfx::Dx11Mesh {
+                buffer: next.buffer,
+                floats: verts.len() as u32,
+                screen,
+            }),
+            Err(_) => self.make_mesh(verts, screen).unwrap_or_else(|_| {
+                crate::ui::gfx::Mesh::d3d11(crate::ui::gfx::Dx11Mesh {
+                    buffer: self.screen_cb.clone(),
+                    floats: 0,
+                    screen,
+                })
+            }),
+        }
+    }
+
+    fn update_texture(
+        &mut self,
+        texture: crate::ui::gfx::Texture,
+        image: &crate::world::surface::CpuImage,
+    ) -> crate::ui::gfx::Texture {
+        let _ = texture.into_d3d11();
+
+        self.make_texture(image).unwrap_or_else(|_| {
+            crate::ui::gfx::Texture::d3d11(crate::ui::gfx::Dx11Texture {
+                texture: self.depth.clone().unwrap_or_else(|| self.swap.GetBuffer(0).unwrap()),
+                view: self.atlas_view.clone().unwrap_or_else(|| {
+                    dx11_texture(&self.device, &[255, 255, 255, 255], 1, 1)
+                        .unwrap()
+                        .view
+                }),
+            })
+        })
+    }
+
+    fn resize_target(
+        &mut self,
+        target: crate::ui::gfx::Target,
+        width: u32,
+        height: u32,
+    ) -> Result<crate::ui::gfx::Target, String> {
+        let _ = target.into_d3d11();
+
+        self.make_target(width, height)
     }
 
     fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {

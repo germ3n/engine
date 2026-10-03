@@ -38,6 +38,9 @@ pub enum DrawCommand {
         h: f32,
         thickness: f32,
         color: Color,
+        texture: u32,
+        pipeline: u32,
+        sampler: u32,
     },
     Text {
         font: mlua::LuaString,
@@ -46,6 +49,9 @@ pub enum DrawCommand {
         y: f32,
         scale: f32,
         color: Color,
+        texture: u32,
+        pipeline: u32,
+        sampler: u32,
     },
     CreateShader {
         id: u32,
@@ -91,6 +97,26 @@ pub enum DrawCommand {
         pipeline: u32,
         texture: u32,
         sampler: u32,
+    },
+    SetTarget {
+        id: u32,
+    },
+    UpdateBuffer {
+        id: u32,
+        bytes: Vec<u8>,
+    },
+    UpdateMesh {
+        id: u32,
+        verts: Vec<f32>,
+    },
+    UpdateTexture {
+        id: u32,
+        path: String,
+    },
+    UpdateTarget {
+        id: u32,
+        width: u32,
+        height: u32,
     },
 }
 

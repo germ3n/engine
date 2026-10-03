@@ -68,6 +68,8 @@ pub struct D3D12Window {
     view: [f32; 16],
     draw_mesh: bool,
     user: Vec<Dx12User>,
+    bound: bool,
+    text_once: Option<crate::ui::batch::TextFrame>,
     vr: Option<Headset>,
     vr_failed: bool,
     vr_enable: bool,
@@ -255,6 +257,8 @@ impl D3D12Window {
             view: [0.0; 16],
             draw_mesh: false,
             user: Vec::new(),
+            bound: false,
+            text_once: None,
             vr: None,
             vr_failed: false,
             vr_enable: false,
@@ -891,6 +895,7 @@ impl Window for D3D12Window {
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
         self.user.clear();
+        self.bound = false;
         self.draw_mesh = false;
     }
 
@@ -1903,6 +1908,148 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
 
     fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
         None
+    }
+
+    fn draw_buffer(
+        &mut self,
+        buffer: &crate::ui::gfx::Buffer,
+        pipeline: &crate::ui::gfx::Pipeline,
+        _texture: Option<&crate::ui::gfx::Texture>,
+        _sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &SceneView,
+    ) {
+        let (Some(buffer), Some(pipeline)) = (buffer.as_d3d12(), pipeline.as_d3d12()) else {
+            return;
+        };
+        let stride = (pipeline.stride.max(1) as u32) * 4;
+        let mut constants = [0.0; 16];
+        constants.copy_from_slice(&view_proj(view));
+        self.user.push(Dx12User {
+            resource: buffer.resource.clone(),
+            pso: pipeline.state.clone(),
+            root: pipeline.root.clone(),
+            stride,
+            count: buffer.bytes as u32 / stride.max(1),
+            constants,
+            textured: false,
+        });
+    }
+
+    fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+        _texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        _sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if self.text_once.is_none() {
+            self.text_once = crate::ui::batch::TextFrame::new().ok();
+        }
+
+        let Some(frame) = self.text_once.as_mut() else {
+            return;
+        };
+        let verts = frame.capture(text, x, y, scale, color);
+        let Ok(resource) = dx12_upload(&self.device, bytes_of(&verts)) else {
+            return;
+        };
+        let (pso, root) = if let Some(pipeline) = pipeline.and_then(|item| item.as_d3d12()) {
+            (pipeline.state.clone(), pipeline.root.clone())
+        } else {
+            (self.text_pso.clone(), self.text_root.clone())
+        };
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        self.user.push(Dx12User {
+            resource,
+            pso,
+            root,
+            stride: 32,
+            count: (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as u32,
+            constants,
+            textured: true,
+        });
+    }
+
+    fn set_target(&mut self, target: Option<&crate::ui::gfx::Target>) {
+        self.bound = target.and_then(|item| item.as_d3d12()).is_some();
+    }
+
+    fn target_bound(&self) -> bool {
+        self.bound
+    }
+
+    fn update_buffer(
+        &mut self,
+        buffer: crate::ui::gfx::Buffer,
+        bytes: &[u8],
+    ) -> crate::ui::gfx::Buffer {
+        if let Some(buffer) = buffer.as_d3d12() {
+            if bytes.len() as u64 <= buffer.bytes {
+                let _ = write_mapped(&buffer.resource, bytes);
+
+                return crate::ui::gfx::Buffer::d3d12(crate::ui::gfx::Dx12Buffer {
+                    resource: buffer.resource.clone(),
+                    bytes: bytes.len() as u64,
+                });
+            }
+        }
+
+        let _ = buffer.into_d3d12();
+
+        self.make_buffer(bytes).unwrap_or_else(|_| {
+            crate::ui::gfx::Buffer::d3d12(crate::ui::gfx::Dx12Buffer {
+                resource: self.ui_buf.clone().unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
+                bytes: 0,
+            })
+        })
+    }
+
+    fn update_mesh(
+        &mut self,
+        mesh: crate::ui::gfx::Mesh,
+        verts: &[f32],
+    ) -> crate::ui::gfx::Mesh {
+        let screen = mesh.as_d3d12().map(|item| item.screen).unwrap_or(false);
+        let _ = mesh.into_d3d12();
+
+        self.make_mesh(verts, screen).unwrap_or_else(|_| {
+            crate::ui::gfx::Mesh::d3d12(crate::ui::gfx::Dx12Mesh {
+                resource: self.ui_buf.clone().unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
+                floats: 0,
+                screen,
+            })
+        })
+    }
+
+    fn update_texture(
+        &mut self,
+        texture: crate::ui::gfx::Texture,
+        image: &crate::world::surface::CpuImage,
+    ) -> crate::ui::gfx::Texture {
+        let _ = texture.into_d3d12();
+
+        self.make_texture(image).unwrap_or_else(|_| {
+            crate::ui::gfx::Texture::d3d12(crate::ui::gfx::Dx12Texture {
+                resource: self.ui_buf.clone().unwrap_or_else(|| upload_buffer(&self.device, 4).unwrap()),
+            })
+        })
+    }
+
+    fn resize_target(
+        &mut self,
+        target: crate::ui::gfx::Target,
+        width: u32,
+        height: u32,
+    ) -> Result<crate::ui::gfx::Target, String> {
+        let _ = target.into_d3d12();
+
+        self.make_target(width, height)
     }
 
     fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {

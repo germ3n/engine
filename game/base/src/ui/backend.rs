@@ -443,6 +443,12 @@ impl GfxWindow {
         sampler: u32,
         view: &SceneView,
     ) {
+        if gfx::kind_of(mesh) == gfx::KIND_BUFFER {
+            self.draw_buffer(mesh, pipeline, texture, sampler, view);
+
+            return;
+        }
+
         let mesh_screen = self.gpu.mesh_slot(mesh).map(|slot| slot.screen);
         let pipe_screen = self.gpu.pipeline_slot(pipeline).map(|slot| slot.screen);
         let (Some(mesh_screen), Some(pipe_screen)) = (mesh_screen, pipe_screen) else {
@@ -511,6 +517,135 @@ impl GfxWindow {
                 texture_item.as_ref(),
                 pipe_item.as_ref(),
                 sampler_item.as_ref(),
+            );
+        });
+    }
+
+    pub fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: Color,
+        texture: u32,
+        pipeline: u32,
+        sampler: u32,
+    ) {
+        let pipe_item = if pipeline == 0 {
+            self.gpu.pipeline(gfx::PIPE_TEXT).cloned()
+        } else {
+            self.gpu.pipeline(pipeline).cloned()
+        };
+        let texture_item = if texture == 0 {
+            None
+        } else {
+            self.resolve_texture(texture)
+        };
+        let sampler_item = self.resolve_sampler(sampler);
+
+        self.with_backend(|window| {
+            window.draw_text_user(
+                text,
+                x,
+                y,
+                scale,
+                color.as_rgba_f32(),
+                texture_item.as_ref(),
+                pipe_item.as_ref(),
+                sampler_item.as_ref(),
+            );
+        });
+    }
+
+    pub fn set_target(&mut self, id: u32) {
+        if id == 0 || gfx::kind_of(id) != gfx::KIND_TARGET {
+            self.with_backend(|window| window.set_target(None));
+
+            return;
+        }
+
+        let target = self.gpu.target(id).cloned();
+        self.with_backend(|window| window.set_target(target.as_ref()));
+    }
+
+    pub fn target_bound(&mut self) -> bool {
+        self.with_backend(|window| window.target_bound())
+    }
+
+    pub fn update_buffer(&mut self, id: u32, bytes: &[u8]) {
+        let Some(slot) = self.gpu.take_buffer(id) else {
+            return;
+        };
+        let owned = slot.owned;
+        let item = self.with_backend(|window| window.update_buffer(slot.item, bytes));
+        self.gpu.put_buffer(id, item, owned);
+    }
+
+    pub fn update_mesh(&mut self, id: u32, verts: &[f32]) {
+        let Some(slot) = self.gpu.take_mesh(id) else {
+            return;
+        };
+        let owned = slot.owned;
+        let screen = slot.screen;
+        let item = self.with_backend(|window| window.update_mesh(slot.item, verts));
+        self.gpu.put_mesh(id, item, owned, screen);
+    }
+
+    pub fn update_texture(&mut self, id: u32, path: &str) {
+        let image = match gfx::image_file(path) {
+            Ok(image) => image,
+            Err(err) => {
+                log::warn!("[gfx] texture {err}");
+
+                return;
+            }
+        };
+        let Some(slot) = self.gpu.take_texture(id) else {
+            return;
+        };
+        let owned = slot.owned;
+        let builtin = slot.builtin;
+        let material = slot.material;
+        let item = self.with_backend(|window| window.update_texture(slot.item, &image));
+        self.gpu.put_texture(id, item, owned, builtin, material);
+    }
+
+    pub fn update_target(&mut self, id: u32, width: u32, height: u32) {
+        let Some(slot) = self.gpu.take_target(id) else {
+            return;
+        };
+        let owned = slot.owned;
+
+        match self.with_backend(|window| window.resize_target(slot.item, width, height)) {
+            Ok(target) => self.gpu.put_target(id, target, owned),
+            Err(err) => log::warn!("[gfx] target {err}"),
+        }
+    }
+
+    fn draw_buffer(
+        &mut self,
+        buffer: u32,
+        pipeline: u32,
+        texture: u32,
+        sampler: u32,
+        view: &SceneView,
+    ) {
+        let buffer_item = self.gpu.buffer(buffer).cloned();
+        let pipe_item = self.gpu.pipeline(pipeline).cloned();
+        let texture_item = self.resolve_texture(texture);
+        let sampler_item = self.resolve_sampler(sampler);
+        let (Some(buffer_item), Some(pipe_item)) = (buffer_item, pipe_item) else {
+            return;
+        };
+
+        self.with_backend(|window| {
+            window.draw_buffer(
+                &buffer_item,
+                &pipe_item,
+                texture_item.as_ref(),
+                sampler_item.as_ref(),
+                view,
             );
         });
     }

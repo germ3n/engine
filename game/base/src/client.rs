@@ -441,7 +441,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 pipeline,
                                 sampler,
                             } => {
-                                if texture == 0 && pipeline == 0 {
+                                if texture == 0 && pipeline == 0 && !client_window.target_bound() {
                                     client_window.draw_rectangle(x, y, w, h, color);
                                 } else {
                                     client_window.draw_sprite(
@@ -456,8 +456,56 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 h,
                                 thickness,
                                 color,
+                                texture,
+                                pipeline,
+                                sampler,
                             } => {
-                                client_window.draw_outlined_rectangle(x, y, w, h, thickness, color);
+                                if texture == 0 && pipeline == 0 && !client_window.target_bound() {
+                                    client_window.draw_outlined_rectangle(
+                                        x, y, w, h, thickness, color,
+                                    );
+                                } else {
+                                    client_window.draw_sprite(
+                                        x,
+                                        y,
+                                        w,
+                                        thickness,
+                                        color,
+                                        texture,
+                                        pipeline,
+                                        sampler,
+                                    );
+                                    client_window.draw_sprite(
+                                        x,
+                                        y + h - thickness,
+                                        w,
+                                        thickness,
+                                        color,
+                                        texture,
+                                        pipeline,
+                                        sampler,
+                                    );
+                                    client_window.draw_sprite(
+                                        x,
+                                        y + thickness,
+                                        thickness,
+                                        h - thickness * 2.0,
+                                        color,
+                                        texture,
+                                        pipeline,
+                                        sampler,
+                                    );
+                                    client_window.draw_sprite(
+                                        x + w - thickness,
+                                        y + thickness,
+                                        thickness,
+                                        h - thickness * 2.0,
+                                        color,
+                                        texture,
+                                        pipeline,
+                                        sampler,
+                                    );
+                                }
                             }
                             DrawCommand::Text {
                                 font,
@@ -466,15 +514,26 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 y,
                                 scale,
                                 color,
+                                texture,
+                                pipeline,
+                                sampler,
                             } => {
-                                client_window.draw_text(
-                                    &font.to_str().unwrap().to_owned(),
-                                    &text.to_str().unwrap().to_owned(),
-                                    x,
-                                    y,
-                                    scale,
-                                    color,
-                                );
+                                let text = text.to_str().unwrap().to_owned();
+
+                                if texture == 0 && pipeline == 0 && !client_window.target_bound() {
+                                    client_window.draw_text(
+                                        &font.to_str().unwrap().to_owned(),
+                                        &text,
+                                        x,
+                                        y,
+                                        scale,
+                                        color,
+                                    );
+                                } else {
+                                    client_window.draw_text_user(
+                                        &text, x, y, scale, color, texture, pipeline, sampler,
+                                    );
+                                }
                             }
                             DrawCommand::CreateShader { id, source } => {
                                 client_window.create_shader(id, &source);
@@ -516,6 +575,21 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                 sampler,
                             } => {
                                 client_window.draw_mesh(mesh, pipeline, texture, sampler, &scene);
+                            }
+                            DrawCommand::SetTarget { id } => {
+                                client_window.set_target(id);
+                            }
+                            DrawCommand::UpdateBuffer { id, bytes } => {
+                                client_window.update_buffer(id, &bytes);
+                            }
+                            DrawCommand::UpdateMesh { id, verts } => {
+                                client_window.update_mesh(id, &verts);
+                            }
+                            DrawCommand::UpdateTexture { id, path } => {
+                                client_window.update_texture(id, &path);
+                            }
+                            DrawCommand::UpdateTarget { id, width, height } => {
+                                client_window.update_target(id, width, height);
                             }
                         }
                     }

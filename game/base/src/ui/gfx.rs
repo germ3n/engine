@@ -889,6 +889,7 @@ pub struct VkTarget {
     pub depth: ash::vk::Image,
     pub depth_memory: ash::vk::DeviceMemory,
     pub depth_view: ash::vk::ImageView,
+    pub frame: ash::vk::Framebuffer,
     pub width: u32,
     pub height: u32,
 }
@@ -1228,6 +1229,31 @@ pub trait BackendGpu {
         pipeline: Option<&Pipeline>,
         sampler: Option<&Sampler>,
     );
+    fn draw_buffer(
+        &mut self,
+        buffer: &Buffer,
+        pipeline: &Pipeline,
+        texture: Option<&Texture>,
+        sampler: Option<&Sampler>,
+        view: &SceneView,
+    );
+    fn draw_text_user(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+        texture: Option<&Texture>,
+        pipeline: Option<&Pipeline>,
+        sampler: Option<&Sampler>,
+    );
+    fn set_target(&mut self, target: Option<&Target>);
+    fn target_bound(&self) -> bool;
+    fn update_buffer(&mut self, buffer: Buffer, bytes: &[u8]) -> Buffer;
+    fn update_mesh(&mut self, mesh: Mesh, verts: &[f32]) -> Mesh;
+    fn update_texture(&mut self, texture: Texture, image: &CpuImage) -> Texture;
+    fn resize_target(&mut self, target: Target, width: u32, height: u32) -> Result<Target, String>;
     fn builtin_shader(&mut self, index: u32) -> Option<Shader>;
     fn builtin_pipeline(&mut self, index: u32) -> Option<Pipeline>;
     fn builtin_texture(&mut self, index: u32) -> Option<Texture>;

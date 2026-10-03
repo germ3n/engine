@@ -67,7 +67,7 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
             "draw_outlined_rect",
             lua.create_function(
                 move |_,
-                      (x, y, w, h, thickness, r, g, b, a): (
+                      (x, y, w, h, thickness, r, g, b, a, texture, pipeline, sampler): (
                     f32,
                     f32,
                     f32,
@@ -77,7 +77,18 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
                     f32,
                     f32,
                     f32,
+                    Option<u32>,
+                    Option<u32>,
+                    Option<u32>,
                 )| {
+                    let texture = texture.unwrap_or(0);
+                    let pipeline = pipeline.unwrap_or(0);
+                    let sampler = sampler.unwrap_or(0);
+
+                    if !ids_live(&render_queue_, &[texture, pipeline, sampler]) {
+                        return Ok(());
+                    }
+
                     render_queue_
                         .lock()
                         .expect("Couldn't lock render queue")
@@ -94,6 +105,9 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
                                 b: b / 255.0,
                                 a: a / 255.0,
                             },
+                            texture,
+                            pipeline,
+                            sampler,
                         });
 
                     Ok(())
@@ -109,7 +123,7 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
             "draw_text",
             lua.create_function(
                 move |_,
-                      (font, text, x, y, scale, r, g, b, a): (
+                      (font, text, x, y, scale, r, g, b, a, texture, pipeline, sampler): (
                     mlua::LuaString,
                     mlua::LuaString,
                     f32,
@@ -119,7 +133,18 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
                     f32,
                     f32,
                     f32,
+                    Option<u32>,
+                    Option<u32>,
+                    Option<u32>,
                 )| {
+                    let texture = texture.unwrap_or(0);
+                    let pipeline = pipeline.unwrap_or(0);
+                    let sampler = sampler.unwrap_or(0);
+
+                    if !ids_live(&render_queue_, &[texture, pipeline, sampler]) {
+                        return Ok(());
+                    }
+
                     render_queue_
                         .lock()
                         .expect("Couldn't lock render queue")
@@ -136,6 +161,9 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
                                 b: b / 255.0,
                                 a: a / 255.0,
                             },
+                            texture,
+                            pipeline,
+                            sampler,
                         });
 
                     Ok(())
@@ -236,13 +264,7 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
         .set(
             "create_buffer",
             lua.create_function(move |_, values: Vec<f32>| {
-                let mut bytes = Vec::with_capacity(values.len() * 4);
-                let mut idx = 0;
-
-                while idx < values.len() {
-                    bytes.extend_from_slice(&values[idx].to_le_bytes());
-                    idx += 1;
-                }
+                let bytes = f32_bytes(&values);
 
                 Ok(queue_create(&render_queue_, gfx::KIND_BUFFER, |id| {
                     DrawCommand::CreateBuffer { id, bytes }
@@ -369,9 +391,131 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
             )
             .expect("[surface] Failed to create draw_mesh function"),
         )
-        .expect("[surface] Failed setting draw_mesh function");
+            .expect("[surface] Failed setting draw_mesh function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "set_target",
+            lua.create_function(move |_, id: Option<u32>| {
+                let id = id.unwrap_or(0);
+
+                if id != 0 && !book_live(&render_queue_, id) {
+                    return Ok(());
+                }
+
+                render_queue_
+                    .lock()
+                    .expect("Couldn't lock render queue")
+                    .commands
+                    .push(DrawCommand::SetTarget { id });
+
+                Ok(())
+            })
+            .expect("[surface] Failed to create set_target function"),
+        )
+        .expect("[surface] Failed setting set_target function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "update_buffer",
+            lua.create_function(move |_, (id, values): (u32, Vec<f32>)| {
+                if !book_live(&render_queue_, id) {
+                    return Ok(());
+                }
+
+                render_queue_
+                    .lock()
+                    .expect("Couldn't lock render queue")
+                    .commands
+                    .push(DrawCommand::UpdateBuffer {
+                        id,
+                        bytes: f32_bytes(&values),
+                    });
+
+                Ok(())
+            })
+            .expect("[surface] Failed to create update_buffer function"),
+        )
+        .expect("[surface] Failed setting update_buffer function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "update_mesh",
+            lua.create_function(move |_, (id, verts): (u32, Vec<f32>)| {
+                if !book_live(&render_queue_, id) {
+                    return Ok(());
+                }
+
+                render_queue_
+                    .lock()
+                    .expect("Couldn't lock render queue")
+                    .commands
+                    .push(DrawCommand::UpdateMesh { id, verts });
+
+                Ok(())
+            })
+            .expect("[surface] Failed to create update_mesh function"),
+        )
+        .expect("[surface] Failed setting update_mesh function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "update_texture",
+            lua.create_function(move |_, (id, path): (u32, String)| {
+                if !book_live(&render_queue_, id) {
+                    return Ok(());
+                }
+
+                render_queue_
+                    .lock()
+                    .expect("Couldn't lock render queue")
+                    .commands
+                    .push(DrawCommand::UpdateTexture { id, path });
+
+                Ok(())
+            })
+            .expect("[surface] Failed to create update_texture function"),
+        )
+        .expect("[surface] Failed setting update_texture function");
+
+    let render_queue_ = render_queue.clone();
+    surface_table
+        .set(
+            "update_target",
+            lua.create_function(move |_, (id, width, height): (u32, u32, u32)| {
+                if !book_live(&render_queue_, id) {
+                    return Ok(());
+                }
+
+                render_queue_
+                    .lock()
+                    .expect("Couldn't lock render queue")
+                    .commands
+                    .push(DrawCommand::UpdateTarget { id, width, height });
+
+                Ok(())
+            })
+            .expect("[surface] Failed to create update_target function"),
+        )
+        .expect("[surface] Failed setting update_target function");
 
     lua.globals().set("surface", surface_table).unwrap();
+}
+
+fn f32_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    let mut idx = 0;
+
+    while idx < values.len() {
+        bytes.extend_from_slice(&values[idx].to_le_bytes());
+        idx += 1;
+    }
+
+    bytes
 }
 
 fn shader_text(text: &str) -> String {
