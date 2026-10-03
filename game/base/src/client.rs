@@ -767,6 +767,7 @@ pub fn client_loop(
                 last_frame = now;
                 let frame_dt = (dt as f32).min(0.1);
 
+                crate::console::poll_autocomplete(Realm::Client, &game.script_engine.lua);
                 poll_client_demo(
                     &mut game,
                     &mut recorder,

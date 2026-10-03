@@ -102,6 +102,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         accumulated_time += dt;
 
+        crate::console::poll_autocomplete(Realm::Server, &game.script_engine.lua);
         poll_demo(&mut game, &players, &mut recording);
         joined.clear();
         let mut ticked = false;

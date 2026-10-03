@@ -3,6 +3,12 @@ pub mod convar;
 use crate::input::{binds_path, Action, Binding, Binds};
 use clap::Parser;
 pub use convar::{ConVar, ConVarValue};
+
+mod terminal;
+
+pub use terminal::{poll_autocomplete, spawn_terminal, ConsoleSide};
+
+pub(crate) const AUTOCOMPLETE_KEY: &str = "console_autocomplete";
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -187,14 +193,14 @@ pub fn exec_file(path: &Path, binds: &mut Binds) -> Result<(), String> {
     Ok(())
 }
 
-fn strip_comment(line: &str) -> &str {
+pub(super) fn strip_comment(line: &str) -> &str {
     match line.find("//") {
         Some(idx) => &line[..idx],
         None => line,
     }
 }
 
-fn tokenize(line: &str) -> Vec<String> {
+pub(super) fn tokenize(line: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut chars = line.chars().peekable();

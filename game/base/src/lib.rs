@@ -100,7 +100,7 @@ pub fn run() {
     log::info!("[fs] global filesystem installed");
 
     #[cfg(feature = "server")]
-    {
+    let terminal_server = {
         log::info!("Starting server network loop");
         let (server_tx, server_rx) = std::sync::mpsc::channel();
         let (server_out_tx, server_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
@@ -127,11 +127,21 @@ pub fn run() {
             log::info!("[map] {map_name} scale {}", server_game.brush_world.scale());
         }
 
+        let side = console::ConsoleSide {
+            cvars: Arc::clone(&server_game.cvars),
+            binds: Arc::clone(&server_game.binds),
+        };
+
         std::thread::spawn(move || {
             log::info!("Starting Server loop");
             server::server_loop(server_game);
         });
-    }
+
+        Some(side)
+    };
+
+    #[cfg(not(feature = "server"))]
+    let terminal_server = None;
 
     #[cfg(feature = "client")]
     {
@@ -171,8 +181,16 @@ pub fn run() {
             let _ = client_game.brush_world.set_scale(cmdargs.map_scale);
             log::info!("[map] {map_name} scale {}", client_game.brush_world.scale());
         }
+        let terminal_client = console::ConsoleSide {
+            cvars: Arc::clone(&client_game.cvars),
+            binds: Arc::clone(&client_game.binds),
+        };
+        console::spawn_terminal(terminal_server, Some(terminal_client));
         log::info!("Entering Client loop");
         client::client_loop(client_game, shutdown, resync);
         let _ = net.join();
     }
+
+    #[cfg(not(feature = "client"))]
+    drop(terminal_server);
 }
