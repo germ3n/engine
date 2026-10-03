@@ -547,6 +547,7 @@ dependencies = [
  "cc",
  "clap",
  "core-graphics-types",
+ "egui",
  "env_logger",
  "gilrs",
  "glow 0.12.3",

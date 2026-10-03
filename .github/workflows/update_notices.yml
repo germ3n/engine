@@ -24,9 +24,6 @@ jobs:
       - name: Fetch crates
         run: cargo fetch --locked
 
-      - name: Write cargo metadata
-        run: cargo metadata --format-version 1 --locked > /tmp/meta.json
-
       - name: Generate notices
         run: python3 gen_notices.py
 

@@ -38,6 +38,7 @@ source-vtf = "0.5.0"
 source-vmt = "0.5.0"
 source-vpk = "0.5.0"
 lzma-rs = "0.3"
+egui = "0.31.1"
 
 [build-dependencies]
 cc = "1"
