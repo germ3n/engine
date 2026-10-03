@@ -63,9 +63,12 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=Foundation");
     }
 
-    if target_os == "linux" {
+    if target_os == "linux" || target_os == "freebsd" || target_os == "dragonfly" {
         openvr.define("LINUX", None).define("POSIX", None);
-        println!("cargo:rustc-link-lib=dylib=dl");
+
+        if target_os != "dragonfly" {
+            println!("cargo:rustc-link-lib=dylib=dl");
+        }
 
         if std::env::var("CARGO_CFG_TARGET_ARCH").unwrap() == "aarch64" {
             openvr.define("LINUXARM64", None);
@@ -240,8 +243,12 @@ fn compile_sound_device() {
             println!("cargo:rustc-link-lib=dl");
             println!("cargo:rustc-link-lib=m");
         }
-        "linux" => {
+        "linux" | "freebsd" => {
             println!("cargo:rustc-link-lib=dl");
+            println!("cargo:rustc-link-lib=pthread");
+            println!("cargo:rustc-link-lib=m");
+        }
+        "dragonfly" => {
             println!("cargo:rustc-link-lib=pthread");
             println!("cargo:rustc-link-lib=m");
         }

@@ -221,3 +221,117 @@ jobs:
           files: wiki.html
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-bsd:
+    name: Build (${{ matrix.asset_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: freebsd
+            binary_name: base
+            asset_name: base-freebsd-x86_64
+            editor_binary: editor
+            editor_asset: editor-freebsd-x86_64
+            rustflags: -C target-cpu=x86-64-v3
+          - kind: dragonfly
+            binary_name: base
+            asset_name: base-dragonfly-x86_64
+            editor_binary: editor
+            editor_asset: editor-dragonfly-x86_64
+            rustflags: -C target-cpu=x86-64-v3
+
+    env:
+      RUSTFLAGS: ${{ matrix.rustflags }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.ref }}
+
+      - name: Build in FreeBSD
+        if: matrix.kind == 'freebsd'
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          copyback: true
+          mem: '10240'
+          cpu: '3'
+          envs: RUSTFLAGS
+          prepare: |
+            set -eu
+            pkg install -y curl ca_root_nss pkgconf gmake
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+            sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable
+          run: |
+            set -eu
+            . "$HOME/.cargo/env"
+            cargo test --bin base --bin editor
+            cargo build --release --bin base --bin editor
+
+      - name: Build in DragonFly
+        if: matrix.kind == 'dragonfly'
+        uses: vmactions/dragonflybsd-vm@v1
+        with:
+          usesh: true
+          copyback: true
+          mem: '10240'
+          cpu: '3'
+          envs: RUSTFLAGS
+          prepare: |
+            set -eu
+            pkg install -y rust pkgconf gmake
+          run: |
+            set -eu
+            cargo test --bin base --bin editor --ignore-rust-version
+            cargo build --release --bin base --bin editor --ignore-rust-version
+
+      - name: Determine Release Tag
+        id: tag
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            TAG="${{ inputs.release_tag }}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            SHORT_SHA=$(git rev-parse --short HEAD)
+            TAG="build-${SHORT_SHA}"
+          fi
+          echo "tag_name=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Prepare Asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
+          cp target/release/${{ matrix.editor_binary }} dist/${{ matrix.editor_asset }}
+          PAK_NAME="${{ matrix.asset_name }}"
+          PAK_NAME="${PAK_NAME%.exe}.pak"
+          if [ -f target/release/base.pak ]; then
+            cp target/release/base.pak "dist/${PAK_NAME}"
+          elif [ -f target/release/game/base.pak ]; then
+            cp target/release/game/base.pak "dist/${PAK_NAME}"
+          elif [ -f game/base/base.pak ]; then
+            cp game/base/base.pak "dist/${PAK_NAME}"
+          else
+            echo "base.pak was not produced by the build"
+            exit 1
+          fi
+          echo "Prepared ${PAK_NAME}"
+
+      - name: Upload Asset to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          files: dist/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

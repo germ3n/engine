@@ -10,7 +10,10 @@
 
 #[allow(dead_code)]
 #[cfg_attr(
-    all(target_arch = "aarch64", not(windows)),
+    all(
+        target_arch = "aarch64",
+        any(target_os = "linux", target_os = "macos")
+    ),
     link(name = "VirtualizerARM64SDK", kind = "dylib")
 )]
 #[cfg_attr(
@@ -18,7 +21,10 @@
     link(name = "VirtualizerArm64SDK", kind = "dylib")
 )]
 #[cfg_attr(
-    not(target_arch = "aarch64"),
+    all(
+        not(target_arch = "aarch64"),
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    ),
     link(name = "VirtualizerSDK64", kind = "dylib")
 )]
 extern "C" {
