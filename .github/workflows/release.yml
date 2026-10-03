@@ -282,7 +282,7 @@ jobs:
               exit 1
             fi
             export PKG_CONFIG_PATH="$(dirname "$udev_pc")"
-            cargo test --bin base --bin editor
+            cargo test
             echo "cargo test finished"
             cargo build --release --bin base --bin editor
             echo "cargo build finished"
