@@ -25,7 +25,7 @@ const ERROR: Color32 = Color32::from_rgb(216, 88, 78);
 const RAIL_COLLAPSED: f32 = 52.0;
 const RAIL_EXPANDED: f32 = 248.0;
 const DRAWER_H: f32 = 68.0;
-const SLIDE_SECS: f32 = 0.2;
+const SLIDE_SECS: f32 = 0.26;
 const HOVER_GRACE: f64 = 0.35;
 
 fn main() -> eframe::Result<()> {
@@ -133,7 +133,7 @@ impl eframe::App for LauncherApp {
             return;
         }
 
-        self.appear = (self.appear + ctx.input(|i| i.stable_dt) / 0.45).min(1.0);
+        self.appear = (self.appear + ctx.input(|input| input.stable_dt) / 0.45).min(1.0);
 
         if self.appear < 1.0 {
             ctx.request_repaint();
@@ -141,6 +141,11 @@ impl eframe::App for LauncherApp {
 
         let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter))
             && ctx.memory(|m| m.focused().is_none() && !m.any_popup_open());
+        let dim = ctx.animate_bool_with_time(
+            egui::Id::new("brand-dim"),
+            self.hovered.is_some() || self.pinned.is_some(),
+            0.18,
+        );
 
         egui::CentralPanel::default()
             .frame(Frame::NONE.fill(BG))
@@ -163,7 +168,7 @@ impl eframe::App for LauncherApp {
                 let mut launch = false;
 
                 ui.scope_builder(egui::UiBuilder::new().max_rect(brand), |ui| {
-                    launch = brand_panel(ui, appear, &status);
+                    launch = brand_panel(ui, appear, dim, &status);
                 });
 
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rail), |ui| {
@@ -283,7 +288,7 @@ impl LauncherApp {
         let mut focused = None;
         let mut toggled = None;
 
-        for (drawer, hit) in drawers.iter().zip(slots.iter()) {
+        for (idx, (drawer, hit)) in drawers.iter().zip(slots.iter()).enumerate() {
             let pinned = self.pinned == Some(drawer.id);
             let open = pinned || self.hovered == Some(drawer.id) || self.focused == Some(drawer.id);
             let t = ui.ctx().animate_bool_with_time(
@@ -297,9 +302,10 @@ impl LauncherApp {
                 animating = true;
             }
 
+            let arrive = ease_out_cubic(((self.appear * 1.25) - idx as f32 * 0.055).clamp(0.0, 1.0));
             let width = egui::lerp(RAIL_COLLAPSED..=RAIL_EXPANDED, eased);
             let rect = Rect::from_min_size(
-                Pos2::new(right - width, hit.min.y),
+                Pos2::new(right - width + (1.0 - arrive) * 18.0, hit.min.y),
                 Vec2::new(width, DRAWER_H),
             );
 
@@ -368,23 +374,38 @@ fn draw_drawer(
 
     let fill = lerp_color(SURFACE, FIELD_HOVER, t);
     let edge = lerp_color(LINE, ACCENT, t);
+    let corner = CornerRadius {
+        nw: 8,
+        ne: 0,
+        sw: 8,
+        se: 0,
+    };
+    let shadow = rect.translate(Vec2::new(0.0, 3.0));
 
+    ui.painter().rect_filled(
+        shadow,
+        corner,
+        Color32::from_rgba_unmultiplied(0, 0, 0, (22.0 + 18.0 * t) as u8),
+    );
     ui.painter().rect(
         rect,
-        CornerRadius {
-            nw: 8,
-            ne: 0,
-            sw: 8,
-            se: 0,
-        },
+        corner,
         fill,
         Stroke::new(1.0_f32, edge),
         egui::StrokeKind::Inside,
     );
+    ui.painter().hline(
+        (rect.min.x + 10.0)..=(rect.max.x - 6.0),
+        rect.min.y + 1.0,
+        Stroke::new(
+            1.0_f32,
+            Color32::from_rgba_unmultiplied(255, 236, 214, (16.0 + 18.0 * t) as u8),
+        ),
+    );
 
     let accent_bar = Rect::from_min_max(
-        Pos2::new(rect.max.x - 3.0, rect.min.y + 8.0),
-        Pos2::new(rect.max.x, rect.max.y - 8.0),
+        Pos2::new(rect.max.x - 2.0, rect.min.y + 12.0),
+        Pos2::new(rect.max.x, rect.max.y - 12.0),
     );
     ui.painter().rect_filled(
         accent_bar,
@@ -393,11 +414,13 @@ fn draw_drawer(
     );
 
     let tab_center = tab.center().x - 1.5;
-    ui.painter().text(
+    paint_tracked(
+        ui.painter(),
         Pos2::new(tab_center, tab.center().y - 8.0),
         egui::Align2::CENTER_CENTER,
         drawer.label,
-        FontId::proportional(10.0),
+        10.0,
+        1.0,
         lerp_color(MUTED, ACCENT, t),
     );
 
@@ -505,18 +528,30 @@ fn drawer_value(drawer: &Drawer, settings: &Settings) -> String {
     }
 }
 
-fn brand_panel(ui: &mut Ui, appear: f32, status: &Option<String>) -> bool {
-    ui.set_opacity(0.35 + 0.65 * appear);
+fn brand_panel(ui: &mut Ui, appear: f32, dim: f32, status: &Option<String>) -> bool {
+    let presence = 0.35 + 0.65 * appear;
+    ui.set_opacity(presence * (1.0 - 0.14 * dim));
     let shift = (1.0 - appear) * 14.0;
     ui.add_space(shift);
 
     ui.label(
         RichText::new("ENGINE")
             .font(FontId::proportional(42.0))
+            .extra_letter_spacing(3.0)
             .color(TEXT)
             .strong(),
     );
-    ui.add_space(6.0);
+    ui.add_space(10.0);
+
+    let (slot, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    let drawn = 56.0 * appear;
+    ui.painter().hline(
+        slot.min.x..=slot.min.x + drawn,
+        slot.center().y,
+        Stroke::new(1.0_f32, ACCENT),
+    );
+
+    ui.add_space(12.0);
     ui.label(
         RichText::new("Hover a tab to tune the session, click it to keep it open.")
             .size(13.0)
@@ -528,7 +563,12 @@ fn brand_panel(ui: &mut Ui, appear: f32, status: &Option<String>) -> bool {
     let clicked = launch_button(ui);
 
     ui.add_space(8.0);
-    ui.label(RichText::new("or press Enter").size(11.0).color(MUTED));
+    ui.label(
+        RichText::new("or press Enter")
+            .size(11.0)
+            .extra_letter_spacing(0.4)
+            .color(MUTED),
+    );
 
     if let Some(status) = status {
         ui.add_space(12.0);
@@ -560,11 +600,22 @@ fn launch_button(ui: &mut Ui) -> bool {
         );
     }
 
-    ui.painter().text(
+    let sheen = Rect::from_min_max(
+        rect.min + Vec2::new(10.0, 1.0),
+        Pos2::new(rect.max.x - 10.0, rect.min.y + 2.0),
+    );
+    ui.painter().rect_filled(
+        sheen,
+        CornerRadius::ZERO,
+        Color32::from_rgba_unmultiplied(255, 244, 230, 48),
+    );
+    paint_tracked(
+        ui.painter(),
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "Launch",
-        FontId::proportional(15.0),
+        15.0,
+        0.8,
         ACCENT_INK,
     );
 
@@ -577,14 +628,12 @@ fn paint_atmosphere(ui: &mut Ui, full: Rect) {
     let painter = ui.painter();
     painter.rect_filled(full, CornerRadius::ZERO, BG);
 
-    let wash = Rect::from_min_size(
-        Pos2::new(full.max.x - 280.0, full.min.y),
-        Vec2::new(280.0, full.height()),
-    );
-    painter.rect_filled(
-        wash,
-        CornerRadius::ZERO,
-        Color32::from_rgba_unmultiplied(214, 132, 58, 18),
+    let glow = Pos2::new(full.max.x - 96.0, full.center().y);
+    painter.circle_filled(glow, 170.0, Color32::from_rgba_unmultiplied(214, 132, 58, 16));
+    painter.circle_filled(
+        glow + Vec2::new(24.0, 36.0),
+        88.0,
+        Color32::from_rgba_unmultiplied(214, 132, 58, 14),
     );
 
     painter.line_segment(
@@ -681,6 +730,31 @@ fn display_host(name: &str) -> &str {
         "xbox" => "Xbox",
         other => other,
     }
+}
+
+fn paint_tracked(
+    painter: &egui::Painter,
+    pos: Pos2,
+    anchor: egui::Align2,
+    text: &str,
+    size: f32,
+    spacing: f32,
+    color: Color32,
+) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::proportional(size),
+            extra_letter_spacing: spacing,
+            color,
+            ..Default::default()
+        },
+    );
+    let galley = painter.layout_job(job);
+    let rect = anchor.anchor_size(pos, galley.size());
+    painter.galley(rect.min, galley, color);
 }
 
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
