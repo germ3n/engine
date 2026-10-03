@@ -9,5 +9,5 @@ end
 
 function ENT:log(message)
     local realm = SERVER and "SERVER" or "CLIENT";
-    print("[" .. realm .. "] " .. self:get_class() .. " #" .. self:index() .. ": " .. message);
+    --print("[" .. realm .. "] " .. self:get_class() .. " #" .. self:index() .. ": " .. message);
 end

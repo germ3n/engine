@@ -129,7 +129,7 @@ return function(native)
     local attach_owned;
 
     local function report(ent, name, err)
-        print("[ents] " .. tostring(ent._class) .. ":" .. name .. " error: " .. tostring(err));
+        --print("[ents] " .. tostring(ent._class) .. ":" .. name .. " error: " .. tostring(err));
     end
 
     local function is_class_table(value)
