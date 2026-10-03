@@ -266,7 +266,7 @@ jobs:
           envs: RUSTFLAGS
           prepare: |
             set -eu
-            pkg install -y curl ca_root_nss pkgconf gmake
+            pkg install -y curl ca_root_nss pkgconf gmake libudev-devd
             curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
             sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable
           run: |
@@ -288,7 +288,7 @@ jobs:
           envs: RUSTFLAGS
           prepare: |
             set -eu
-            pkg install -y rust pkgconf gmake
+            pkg install -y rust pkgconf gmake libudev-devd
           run: |
             set -eu
             export CC=cc
