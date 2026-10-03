@@ -146,6 +146,7 @@ jobs:
 
       - name: Build Release Binaries
         if: matrix.kind != 'android' && matrix.kind != 'ios'
+        shell: bash
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
