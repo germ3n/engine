@@ -181,6 +181,7 @@ pub fn exec_line(line: &str, binds: &mut Binds) -> Result<(), String> {
 
             binds.write_cfg(&binds_path())
         }
+        "nav_build" | "nav_show" | "nav_path" => crate::world::nav::console_line(&tokens),
         "record" | "stop" | "playdemo" | "demo_pause" | "demo_timescale" | "demo_seek"
         | "demo_loop" | "demo_cam" | "demo_view" => crate::demo::console_line(&tokens),
         other => Err(format!("unknown command '{other}'")),

@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod angle3;
 pub mod biome;
 pub mod chunk;
@@ -7,6 +8,7 @@ pub mod demo;
 pub mod engine;
 pub mod ents;
 pub mod input;
+pub mod nav;
 pub mod net;
 pub mod noise;
 pub mod pad;
@@ -15,6 +17,7 @@ pub mod sound;
 pub mod surface;
 pub mod vector3;
 
+pub use ai::register_ai_lib;
 pub use angle3::register_angle3_lib;
 pub use biome::register_biome_lib;
 pub use console::register_console_lib;
@@ -23,6 +26,7 @@ pub use demo::register_demo_lib;
 pub use engine::register_engine_lib;
 pub use ents::register_ents_lib;
 pub use input::register_input_lib;
+pub use nav::register_nav_lib;
 pub use net::register_net_lib;
 pub use noise::register_noise_lib;
 pub use pad::register_pad_lib;

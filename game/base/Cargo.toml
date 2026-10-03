@@ -39,6 +39,7 @@ source-vmt = "0.5.0"
 source-vpk = "0.5.0"
 lzma-rs = "0.3"
 egui = "0.31.1"
+llama-cpp-2 = { version = "0.1.158", optional = true, default-features = false }
 
 [build-dependencies]
 cc = "1"
@@ -81,9 +82,13 @@ default = ["client", "server"]
 client = []
 server = []
 steam = ["dep:steamworks"]
+ai = ["dep:llama-cpp-2"]
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 steamworks = { version = "0.13.1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+llama-cpp-2 = { version = "0.1.158", optional = true, default-features = false, features = ["metal"] }
 
 [profile.release]
 opt-level = 3

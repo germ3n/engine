@@ -1,3 +1,4 @@
+mod ai;
 mod anchor;
 mod anim;
 mod platform;
@@ -132,6 +133,8 @@ pub fn run() {
             let _ = server_game.brush_world.set_scale(cmdargs.map_scale);
             log::info!("[map] {map_name} scale {}", server_game.brush_world.scale());
         }
+
+        server_game.nav.load_saved(&map_name);
 
         let side = console::ConsoleSide {
             cvars: Arc::clone(&server_game.cvars),

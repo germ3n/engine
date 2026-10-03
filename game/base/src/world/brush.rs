@@ -533,6 +533,36 @@ impl BrushMap {
         out
     }
 
+    pub fn nav_brushes(&self) -> Vec<super::nav::NavBrush> {
+        let mut out = Vec::with_capacity(self.brushes.len());
+        let mut idx = 0;
+
+        while idx < self.brushes.len() {
+            let brush = &self.brushes[idx];
+            let bounds = &self.bounds[idx];
+            let mut planes = Vec::with_capacity(brush.planes.len());
+            let mut plane = 0;
+
+            while plane < brush.planes.len() {
+                let src = &brush.planes[plane];
+                planes.push(BrushPlane {
+                    normal: src.normal,
+                    distance: src.distance,
+                });
+                plane += 1;
+            }
+
+            out.push(super::nav::NavBrush {
+                planes,
+                min: bounds.min,
+                max: bounds.max,
+            });
+            idx += 1;
+        }
+
+        out
+    }
+
     pub fn add_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
         self.add_box_index(min, max, material).is_some()
     }

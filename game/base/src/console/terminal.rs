@@ -97,6 +97,9 @@ const COMMANDS: &[&str] = &[
     "demo_loop",
     "demo_cam",
     "demo_view",
+    "nav_build",
+    "nav_show",
+    "nav_path",
     "quit",
     "exit",
 ];
@@ -561,6 +564,8 @@ fn builtin_args(
             "free".to_string(),
         ],
         ("demo_loop", 0) => vec!["0".to_string(), "1".to_string()],
+        ("nav_build", 0) => vec!["brush".to_string(), "voxel".to_string(), "both".to_string()],
+        ("nav_show", 0) => vec!["0".to_string(), "1".to_string()],
         _ => Vec::new(),
     }
 }

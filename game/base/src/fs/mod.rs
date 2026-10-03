@@ -488,7 +488,7 @@ fn mount_name(path: &Path) -> Result<String, String> {
     return Ok(stem.to_string());
 }
 
-fn search_roots() -> Vec<PathBuf> {
+pub(crate) fn search_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
     if let Ok(cwd) = std::env::current_dir() {

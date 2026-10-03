@@ -8,6 +8,10 @@ fn main() {
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
+    if std::env::var_os("CARGO_FEATURE_AI").is_some() && target_os == "macos" {
+        println!("cargo:rustc-link-arg=-Wl,-no_compact_unwind");
+    }
+
     if target_os == "android" || target_os == "ios" {
         cc::Build::new().file("src/ui/vr_stub.c").compile("vr_stub");
 
@@ -420,6 +424,13 @@ fn write_base_pak() {
         panic!("failed to read {}: {err}", wiki_path.display());
     });
     owned.push(("wiki/index.html".to_string(), wiki_bytes));
+
+    let model = manifest_dir.join("../../models/qwen.gguf");
+    println!("cargo:rerun-if-changed={}", model.display());
+    let model_bytes = std::fs::read(&model).unwrap_or_else(|err| {
+        panic!("failed to read {}: {err}", model.display());
+    });
+    owned.push(("models/qwen.gguf".to_string(), model_bytes));
 
     for (name, bytes) in &owned {
         files.push((name.as_str(), bytes.as_slice()));

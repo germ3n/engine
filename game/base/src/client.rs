@@ -250,6 +250,10 @@ pub fn client_loop(
     let mut scene_brushes = u64::MAX;
     let mut scene_revision = 0u64;
     let mut scene_anchor = Anchor::ZERO;
+    let mut shown_mesh = Vec::new();
+    let mut shown_ranges = Vec::new();
+    let mut shown_revision = 0u64;
+    let mut shown_key = (u64::MAX, u64::MAX, true);
     let mut voxel_mesh_time = Instant::now();
     let mut camera = FlyCamera::new();
     let mut prediction = Prediction::new();
@@ -491,11 +495,39 @@ pub fn client_loop(
                     let draw_scale = (game.voxel_world.scale() as f32).max(game.brush_world.scale() as f32);
                     let mut scene = camera.scene_at(aspect, draw_scale, scene_anchor);
                     scene.time = accumulated_time as f32;
+                    let nav_key = (scene_revision, game.nav.state.draw_gen, game.nav.state.show);
+
+                    if nav_key != shown_key {
+                        shown_mesh.clone_from(&scene_mesh);
+                        shown_ranges.clone_from(&scene_ranges);
+
+                        if game.nav.state.show {
+                            let nav_verts =
+                                crate::world::nav::debug_vertices(&game.nav.state, scene_anchor);
+
+                            if !nav_verts.is_empty() {
+                                let first = (shown_mesh.len() / crate::world::STRIDE) as u32;
+                                let count = (nav_verts.len() / crate::world::STRIDE) as u32;
+                                shown_mesh.extend(nav_verts);
+                                shown_ranges.push(crate::world::SurfaceRange {
+                                    first,
+                                    count,
+                                    material: crate::world::MATERIAL_NONE,
+                                    cubemap: crate::world::CUBEMAP_NONE,
+                                    pass: crate::world::PASS_OPAQUE,
+                                });
+                            }
+                        }
+
+                        shown_key = nav_key;
+                        shown_revision = shown_revision.wrapping_add(1);
+                    }
+
                     client_window.draw_colored_mesh(
-                        &scene_mesh,
-                        &scene_ranges,
+                        &shown_mesh,
+                        &shown_ranges,
                         &scene_graphics,
-                        scene_revision,
+                        shown_revision,
                         &scene,
                     );
                     let skin_alpha = if game.tick_interval > 0.0 {
@@ -2663,7 +2695,8 @@ fn apply_server_event(
         | ServerToClient::NetworkedUpdate { .. }
         | ServerToClient::Pong { .. }
         | ServerToClient::ServerTick { .. }
-        | ServerToClient::VoxelChunk(_) => {
+        | ServerToClient::VoxelChunk(_)
+        | ServerToClient::NavMesh { .. } => {
             log::debug!("[cl] {}", message.summary());
         }
         _ => {
@@ -2789,6 +2822,21 @@ fn apply_server_event(
                 if !game.brush_world.set_scale(scale) {
                     log::warn!("[cl] bad brush scale {scale}");
                 }
+            }
+
+            game.nav.state.clear_mesh();
+        }
+        ServerToClient::NavMesh { part, parts, bytes } => {
+            game.nav.state.push_part(part, parts, bytes);
+        }
+        ServerToClient::NavShow { enabled } => {
+            game.nav.state.set_show(enabled);
+        }
+        ServerToClient::NavPath { follow, points } => {
+            if follow {
+                game.nav.state.set_follow(points);
+            } else {
+                game.nav.state.set_debug_path(points);
             }
         }
         ServerToClient::EntitySpawned {

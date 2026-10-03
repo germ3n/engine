@@ -318,6 +318,16 @@ out += [
 out += section("The Apache License, Version 2.0")
 out.append(apache_text())
 
+out += section("Qwen")
+out += [
+    "Source: models/qwen.gguf",
+    "Packed into base.pak as models/qwen.gguf.",
+    "Name: Qwen2.5-0.5B-Instruct, Q4_K_M GGUF",
+    "Copyright 2024 Alibaba Cloud",
+    "License: Apache License, Version 2.0, reproduced above.",
+    "http://www.apache.org/licenses/LICENSE-2.0",
+]
+
 def wiki_font_parts(path):
     text = read(path)
     marker = "SIL OPEN FONT LICENSE"

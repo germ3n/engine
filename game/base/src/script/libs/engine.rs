@@ -297,6 +297,20 @@ fn engine_set_voxel_seed() {}
 
 #[document(
     parent = "engine",
+    name = "voxel_gen",
+    kind = "function",
+    realm = "server",
+    summary = "Turns procedural chunk streaming on or off. It is off until this is called.",
+    params = {
+        enabled = { ty = "boolean", desc = "True starts generating around players and spawns." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server." },
+    example = "engine.voxel_gen(true)",
+)]
+fn engine_voxel_gen() {}
+
+#[document(
+    parent = "engine",
     name = "voxel_gen_radius",
     kind = "function",
     realm = "server",
@@ -616,6 +630,22 @@ pub fn register_engine_lib(
             .expect("[engine] Failed to create set_voxel_seed"),
         )
         .expect("[engine] Failed setting set_voxel_seed");
+    let gen = Arc::clone(&gen_settings);
+    engine_table
+        .set(
+            "voxel_gen",
+            lua.create_function(move |_, enabled: bool| {
+                if !server {
+                    return Ok(false);
+                }
+
+                gen.lock().expect("gen settings").set_enabled(enabled);
+
+                Ok(true)
+            })
+            .expect("[engine] Failed to create voxel_gen"),
+        )
+        .expect("[engine] Failed setting voxel_gen");
     let gen = Arc::clone(&gen_settings);
     engine_table
         .set(

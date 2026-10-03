@@ -11,10 +11,12 @@ use crate::physics::{PhysicsScope, PhysicsWorld};
 use crate::platform::PadCache;
 use crate::script::libs::engine::{publish_clock, WorldScope};
 use crate::script::libs::ents::{AnimScope, EntityScope};
+use crate::script::libs::nav::NavScope;
 use crate::script::libs::vector3::Vector3;
 use crate::script::{Realm, ScriptEngine};
 use crate::sound::{Buses, SoundScope, SoundWorld};
 use crate::world::gen::{ChunkHandle, VoxelGen};
+use crate::world::nav::NavHost;
 use crate::world::{BrushMap, ChunkPos, VoxelWorld};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,6 +29,7 @@ pub struct GameState<In, Out> {
     pub voxel_world: VoxelWorld,
     pub brush_world: BrushMap,
     voxel_gen: Option<VoxelGen>,
+    pub nav: NavHost,
     pub map_name: String,
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub binds: Arc<Mutex<Binds>>,
@@ -128,6 +131,7 @@ impl<In, Out> GameState<In, Out> {
             voxel_world: VoxelWorld::new(),
             brush_world: BrushMap::new(),
             voxel_gen: None,
+            nav: NavHost::new(),
             map_name: String::new(),
             cvars,
             binds,
@@ -163,6 +167,7 @@ impl<In, Out> GameState<In, Out> {
         let brush: *mut crate::world::BrushMap = &mut self.brush_world;
         let voxels: *mut crate::world::VoxelWorld = &mut self.voxel_world;
         let motion: *mut f64 = &mut self.motion_ratio;
+        let nav_state: *mut crate::world::nav::NavState = &mut self.nav.state;
         let _scope = EntityScope::new(&self.script_engine.entity_access, entities);
         let _anim_scope = AnimScope::new(&self.script_engine.anim_access, anims);
         let _sound_scope = SoundScope::new(&self.script_engine.sound_access, sound);
@@ -175,6 +180,7 @@ impl<In, Out> GameState<In, Out> {
             &self.script_engine.motion_access,
             motion,
         );
+        let _nav_scope = NavScope::new(&self.script_engine.nav_access, nav_state);
 
         if !removed.is_empty() {
             if matches!(self.realm, Realm::Server) {
@@ -263,7 +269,7 @@ impl<In, Out> GameState<In, Out> {
     }
 
     pub fn begin_terrain(&mut self) {
-        if !matches!(self.realm, Realm::Server) || self.voxel_gen.is_some() {
+        if !matches!(self.realm, Realm::Server) {
             return;
         }
 
@@ -301,24 +307,54 @@ impl<In, Out> GameState<In, Out> {
             self.voxel_world.set_seed(settings.seed);
             self.voxel_world.replace_nonsolid(&settings.nonsolid);
         }
+    }
 
-        let settings = Arc::clone(&self.script_engine.gen_settings);
-        self.voxel_gen = Some(VoxelGen::start(settings));
-        self.script_engine
-            .gen_settings
-            .lock()
-            .expect("gen settings")
-            .running = true;
-        log::info!("[voxel] generating seed {}", self.voxel_world.seed());
+    pub fn poll_nav(&mut self, centers: &[ChunkPos]) -> bool {
+        let settled = if self.nav.needs_settled() {
+            self.voxel_gen
+                .as_ref()
+                .map(|gen| gen.is_settled(&self.voxel_world, centers))
+                .unwrap_or(true)
+        } else {
+            true
+        };
+        let map_name = self.map_name.clone();
+
+        self.nav
+            .poll(&map_name, &self.brush_world, &self.voxel_world, settled)
     }
 
     pub fn poll_voxel_gen(&mut self, centers: &[ChunkPos]) {
+        let enabled = self
+            .script_engine
+            .gen_settings
+            .lock()
+            .expect("gen settings")
+            .enabled;
+
+        if self.voxel_gen.is_none() {
+            if !enabled {
+                return;
+            }
+
+            let settings = Arc::clone(&self.script_engine.gen_settings);
+            self.voxel_gen = Some(VoxelGen::start(settings));
+            self.script_engine
+                .gen_settings
+                .lock()
+                .expect("gen settings")
+                .running = true;
+            log::info!("[voxel] generating seed {}", self.voxel_world.seed());
+        }
+
         let Some(mut gen) = self.voxel_gen.take() else {
             return;
         };
 
-        gen.prepare(&mut self.voxel_world);
-        gen.enqueue(&self.voxel_world, centers);
+        if enabled {
+            gen.prepare(&mut self.voxel_world);
+            gen.enqueue(&self.voxel_world, centers);
+        }
         let mut ready = gen.take_commits(4);
         self.voxel_gen = Some(gen);
         let mut idx = 0;
@@ -696,6 +732,18 @@ impl<In, Out> GameState<In, Out> {
 
     pub fn send_state_to(&self, addr: SocketAddr, event: Out) {
         self.enqueue(NetSend::StateTo(addr, event));
+    }
+
+    pub fn try_send_state_to(&self, addr: SocketAddr, event: Out) -> bool {
+        match self.network_sender.try_send(NetSend::StateTo(addr, event)) {
+            Ok(()) => {
+                self.wake.poke();
+
+                true
+            }
+            Err(TrySendError::Full(_)) => false,
+            Err(TrySendError::Disconnected(_)) => false,
+        }
     }
 
     fn enqueue(&self, message: NetSend<Out>) {

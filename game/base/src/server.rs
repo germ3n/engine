@@ -92,6 +92,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut joined = Vec::new();
     let mut players: Vec<RemotePlayer> = Vec::new();
     let mut recording: Option<DemoSession> = None;
+    let mut nav_feed = NavFeed::new();
     let mut next_slot: u16 = 0;
     let _: () = game.run_hook("Initialize", ());
     let _ = game.take_motion();
@@ -106,6 +107,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         crate::console::poll_autocomplete(Realm::Server, &game.script_engine.lua);
         poll_demo(&mut game, &players, &mut recording);
+        poll_nav_commands(&mut game, &peers);
         joined.clear();
         let mut ticked = false;
         while accumulated_time >= game.tick_interval {
@@ -222,7 +224,6 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                                 joined_player.name
                             );
                             game.send_reliable(ServerToClient::PlayerConnected { handle, name });
-                            let _: () = game.run_hook("PlayerSpawned", handle);
                             let mut idx = 0;
 
                             while idx < players.len() {
@@ -271,19 +272,21 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                         },
                     );
                     emit_brush_baseline(&game, addr);
+                    // emit_nav_to(&game, addr, &mut nav_feed);
 
                     if let Some(player) = players.iter().find(|player| player.addr == addr) {
+                        let handle = player.player;
                         game.send_state_to(
                             addr,
-                            ServerToClient::PlayerSpawned {
-                                handle: player.player,
-                            },
+                            ServerToClient::PlayerSpawned { handle },
                         );
+                        let _: () = game.run_hook("PlayerSpawned", handle);
                     }
                 }
                 FromClient::Disconnected { addr } => {
                     log::info!("[sv] peer left {}", addr);
                     peers.retain(|peer| *peer != addr);
+                    nav_feed.drop_peer(addr);
 
                     if let Some(session) = recording.as_mut() {
                         let mut idx = 0;
@@ -386,6 +389,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         emit_motion(&mut game, &peers, &joined);
         let centers = terrain_centers(&game, &players);
         game.poll_voxel_gen(&centers);
+        poll_nav_bake(&mut game, &centers, &peers, &mut nav_feed);
+        // nav_feed.pump(&game);
 
         if ticked {
             emit_tick_state(&game, &players);
@@ -1226,6 +1231,234 @@ fn player_ack(players: &[RemotePlayer], handle: EntityHandle) -> u64 {
     }
 
     0
+}
+
+//send nav
+fn poll_nav_commands(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
+    let _ = peers;
+    let commands = crate::world::nav::drain();
+    let mut idx = 0;
+
+    while idx < commands.len() {
+        match &commands[idx] {
+            crate::world::nav::NavCommand::Build { input, params } => {
+                game.nav.request_build(*input, *params);
+            }
+            crate::world::nav::NavCommand::Show { enabled } => {
+                let changed = game.nav.state.show != *enabled;
+                game.nav.state.set_show(*enabled);
+
+                if changed {
+                    // emit_nav_show(game, peers);
+                }
+            }
+            crate::world::nav::NavCommand::Path { start, goal } => {
+                let points = game.nav.state.query(*start, *goal);
+                game.nav.state.set_debug_path(points.clone());
+                // emit_nav_path(game, peers, false, points);
+                let _ = points;
+            }
+        }
+
+        idx += 1;
+    }
+}
+
+fn poll_nav_bake(
+    game: &mut GameState<FromClient, ServerToClient>,
+    centers: &[crate::world::ChunkPos],
+    peers: &[SocketAddr],
+    feed: &mut NavFeed,
+) {
+    let _ = (feed, peers);
+
+    if game.poll_nav(centers) {
+        // feed.set_parts(nav_wire_parts(game), peers);
+    }
+
+    if let Some(points) = game.nav.take_follow() {
+        // emit_nav_path(game, peers, true, points);
+        let _ = points;
+    }
+}
+
+struct NavFeed {
+    parts: Vec<Vec<u8>>,
+    cursor: Vec<(SocketAddr, usize)>,
+}
+
+impl NavFeed {
+    fn new() -> Self {
+        Self {
+            parts: Vec::new(),
+            cursor: Vec::new(),
+        }
+    }
+
+    fn set_parts(&mut self, parts: Vec<Vec<u8>>, peers: &[SocketAddr]) {
+        self.parts = parts;
+        self.cursor.clear();
+        let mut idx = 0;
+
+        while idx < peers.len() {
+            self.cursor.push((peers[idx], 0));
+            idx += 1;
+        }
+
+        if !self.parts.is_empty() {
+            log::info!("[nav] sending mesh in {} parts", self.parts.len());
+        }
+    }
+
+    fn add_peer(&mut self, addr: SocketAddr) {
+        if self.parts.is_empty() {
+            return;
+        }
+
+        self.cursor.retain(|item| item.0 != addr);
+        self.cursor.push((addr, 0));
+    }
+
+    fn drop_peer(&mut self, addr: SocketAddr) {
+        self.cursor.retain(|item| item.0 != addr);
+    }
+
+    fn pump(&mut self, game: &GameState<FromClient, ServerToClient>) {
+        let batch = 8usize;
+        let mut idx = 0;
+
+        while idx < self.cursor.len() {
+            let mut sent = 0;
+
+            while sent < batch && self.cursor[idx].1 < self.parts.len() {
+                let part = self.cursor[idx].1;
+                let addr = self.cursor[idx].0;
+                let ok = game.try_send_state_to(
+                    addr,
+                    ServerToClient::NavMesh {
+                        part: part as u16,
+                        parts: self.parts.len() as u16,
+                        bytes: self.parts[part].clone(),
+                    },
+                );
+
+                if !ok {
+                    return;
+                }
+
+                self.cursor[idx].1 += 1;
+                sent += 1;
+
+                if self.cursor[idx].1 == self.parts.len() || self.cursor[idx].1 % 512 == 0 {
+                    log::info!(
+                        "[nav] mesh {}/{} to {addr}",
+                        self.cursor[idx].1,
+                        self.parts.len()
+                    );
+                }
+            }
+
+            idx += 1;
+        }
+
+        let total = self.parts.len();
+        self.cursor.retain(|item| item.1 < total);
+    }
+}
+
+fn nav_wire_parts(game: &GameState<FromClient, ServerToClient>) -> Vec<Vec<u8>> {
+    if !game.nav.state.loaded || game.nav.state.file_bytes.is_empty() {
+        return Vec::new();
+    }
+
+    let packed = crate::world::nav::compress_nav(&game.nav.state.file_bytes);
+    let limit = crate::network::packet::reliable_payload_limit()
+        .saturating_sub(256)
+        .max(256);
+    let parts = crate::world::nav::split_wire(&packed, limit);
+
+    if parts.len() > u16::MAX as usize {
+        log::warn!("[nav] mesh is too large to send");
+
+        return Vec::new();
+    }
+
+    parts
+}
+
+fn emit_nav_to(
+    game: &GameState<FromClient, ServerToClient>,
+    addr: SocketAddr,
+    feed: &mut NavFeed,
+) {
+    if game.nav.state.loaded {
+        if feed.parts.is_empty() {
+            feed.set_parts(nav_wire_parts(game), &[addr]);
+        } else {
+            feed.add_peer(addr);
+        }
+    }
+
+    game.send_state_to(
+        addr,
+        ServerToClient::NavShow {
+            enabled: game.nav.state.show,
+        },
+    );
+
+    if !game.nav.state.debug_path.is_empty() {
+        game.send_state_to(
+            addr,
+            ServerToClient::NavPath {
+                follow: false,
+                points: game.nav.state.debug_path.clone(),
+            },
+        );
+    }
+
+    if !game.nav.state.follow_path.is_empty() {
+        game.send_state_to(
+            addr,
+            ServerToClient::NavPath {
+                follow: true,
+                points: game.nav.state.follow_path.clone(),
+            },
+        );
+    }
+}
+
+fn emit_nav_show(game: &GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
+    let mut idx = 0;
+
+    while idx < peers.len() {
+        game.send_state_to(
+            peers[idx],
+            ServerToClient::NavShow {
+                enabled: game.nav.state.show,
+            },
+        );
+        idx += 1;
+    }
+}
+
+fn emit_nav_path(
+    game: &GameState<FromClient, ServerToClient>,
+    peers: &[SocketAddr],
+    follow: bool,
+    points: Vec<Vector3>,
+) {
+    let mut idx = 0;
+
+    while idx < peers.len() {
+        game.send_state_to(
+            peers[idx],
+            ServerToClient::NavPath {
+                follow,
+                points: points.clone(),
+            },
+        );
+        idx += 1;
+    }
 }
 
 fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {

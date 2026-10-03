@@ -5,7 +5,7 @@ use wincode::{SchemaRead, SchemaWrite};
 const MAGIC: &[u8; 4] = b"PAK\0";
 const VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 65_536;
-const MAX_RAW_SIZE: u64 = 256 * 1024 * 1024;
+const MAX_RAW_SIZE: u64 = 1024 * 1024 * 1024;
 
 #[derive(SchemaWrite, SchemaRead)]
 struct Entry {
@@ -475,6 +475,13 @@ mod tests {
         assert!(archive.is_empty());
         assert!(archive.read("missing.lua").is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn base_pak_contains_the_model() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("base.pak");
+        let archive = Archive::open(&path).unwrap();
+        assert!(archive.contains("models/qwen.gguf"));
     }
 
     #[test]

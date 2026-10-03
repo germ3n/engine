@@ -49,6 +49,7 @@ pub struct GenSettings {
     pub nonsolid: Vec<u16>,
     pub map_name: String,
     pub epoch: u64,
+    pub enabled: bool,
     pub running: bool,
     pub reseed: bool,
     pub forget: bool,
@@ -214,6 +215,7 @@ impl GenSettings {
             nonsolid: vec![Block::WATER.0],
             map_name: String::new(),
             epoch: 0,
+            enabled: false,
             running: false,
             reseed: false,
             forget: false,
@@ -247,6 +249,10 @@ impl GenSettings {
 
     pub fn set_radius(&mut self, radius: i32) {
         self.radius = radius.clamp(1, 32);
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
     }
 
     pub fn set_bounds(&mut self, min_z: i32, max_z: i32) -> bool {
@@ -426,6 +432,16 @@ impl VoxelGen {
         let config = self.settings.lock().expect("gen settings").snapshot();
 
         self.submit_work(pos, config)
+    }
+
+    pub fn is_settled(&self, world: &VoxelWorld, centers: &[ChunkPos]) -> bool {
+        if self.inflight != 0 || !self.pending.is_empty() {
+            return false;
+        }
+
+        let config = self.settings.lock().expect("gen settings").snapshot();
+
+        wanted_chunks(&config, centers, world, &self.done, &self.pending).is_empty()
     }
 
     pub fn take_commits(&mut self, limit: usize) -> Vec<ChunkDraft> {

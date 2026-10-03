@@ -2,6 +2,7 @@ mod brush;
 mod bspvis;
 pub mod gen;
 mod material;
+pub mod nav;
 pub mod surface;
 mod voxel;
 

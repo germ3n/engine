@@ -334,6 +334,44 @@ impl VoxelWorld {
         block.is_solid() && !self.nonsolid.contains(&block.0)
     }
 
+    pub fn nav_blocks(&self) -> Vec<super::nav::NavBlock> {
+        let mut out = Vec::new();
+        let scale = self.scale;
+
+        for (pos, chunk) in &self.chunks {
+            let mut idx = 0;
+
+            while idx < VOLUME {
+                let id = chunk.blocks[idx];
+
+                if id != 0 {
+                    let water = id == Block::WATER.0;
+                    let solid = !self.nonsolid.contains(&id);
+
+                    if water || solid {
+                        let local_z = idx as i32 / (CHUNK_EDGE * CHUNK_EDGE);
+                        let rem = idx as i32 % (CHUNK_EDGE * CHUNK_EDGE);
+                        let local_y = rem / CHUNK_EDGE;
+                        let local_x = rem % CHUNK_EDGE;
+                        let x = pos.x * CHUNK_EDGE + local_x;
+                        let y = pos.y * CHUNK_EDGE + local_y;
+                        let z = pos.z * CHUNK_EDGE + local_z;
+                        let min = Vector3::new(x as f64 * scale, y as f64 * scale, z as f64 * scale);
+                        out.push(super::nav::NavBlock {
+                            min,
+                            max: Vector3::new(min.x + scale, min.y + scale, min.z + scale),
+                            water,
+                        });
+                    }
+                }
+
+                idx += 1;
+            }
+        }
+
+        out
+    }
+
     pub fn occludes(&self, pos: BlockPos) -> bool {
         !self.get(pos).is_air()
     }

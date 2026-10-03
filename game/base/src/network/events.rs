@@ -274,6 +274,18 @@ pub enum ServerToClient {
     WorldMotion {
         ratio: f64,
     },
+    NavMesh {
+        part: u16,
+        parts: u16,
+        bytes: Vec<u8>,
+    },
+    NavShow {
+        enabled: bool,
+    },
+    NavPath {
+        follow: bool,
+        points: Vec<Vector3>,
+    },
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
@@ -594,6 +606,13 @@ impl ServerToClient {
             ServerToClient::BrushScale { scale } => format!("BrushScale({scale})"),
             ServerToClient::BrushEdit(edit) => format!("BrushEdit({})", edit_summary(edit)),
             ServerToClient::WorldMotion { ratio } => format!("WorldMotion({ratio})"),
+            ServerToClient::NavMesh { part, parts, bytes } => {
+                format!("NavMesh({part}/{parts} {} bytes)", bytes.len())
+            }
+            ServerToClient::NavShow { enabled } => format!("NavShow({enabled})"),
+            ServerToClient::NavPath { follow, points } => {
+                format!("NavPath(follow={follow} pts={})", points.len())
+            }
         }
     }
 }
