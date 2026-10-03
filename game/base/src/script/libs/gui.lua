@@ -94,15 +94,41 @@ local function restore_scissor(saved)
     apply_top();
 end
 
+--[=[document
+kind = "class",
+name = "Panel",
+realm = "client",
+summary = "A retained rectangle. Children paint inside it. set_paint replaces the default draw. A cached panel paints into a texture until invalidate.",
+]=]
 local Panel = {};
 Panel.__index = Panel;
 
+--[=[document
+parent = "Panel",
+name = "set_pos",
+realm = "client",
+summary = "Moves the panel and marks it dirty.",
+params = {
+    x = { ty = "number", desc = "Left edge in parent pixels." },
+    y = { ty = "number", desc = "Top edge in parent pixels." },
+},
+]=]
 function Panel:set_pos(x, y)
     self.x = x;
     self.y = y;
     self:invalidate();
 end
 
+--[=[document
+parent = "Panel",
+name = "set_size",
+realm = "client",
+summary = "Resizes the panel. A cached panel also resizes its render target.",
+params = {
+    w = { ty = "number", desc = "Width in pixels." },
+    h = { ty = "number", desc = "Height in pixels." },
+},
+]=]
 function Panel:set_size(w, h)
     self.w = w;
     self.h = h;
@@ -114,10 +140,26 @@ function Panel:set_size(w, h)
     self:invalidate();
 end
 
+--[=[document
+parent = "Panel",
+name = "set_visible",
+realm = "client",
+summary = "Shows or hides the panel. A hidden panel is skipped by paint and by gui.hit.",
+params = {
+    visible = { ty = "boolean", desc = "False hides it." },
+},
+see_also = "gui.hit",
+]=]
 function Panel:set_visible(visible)
     self.visible = visible and true or false;
 end
 
+--[=[document
+parent = "Panel",
+name = "detach",
+realm = "client",
+summary = "Removes the panel from its parent, or from the root list when it has no parent. The panel stays alive.",
+]=]
 function Panel:detach()
     if self.parent then
         local kids = self.parent.children;
@@ -147,6 +189,16 @@ function Panel:detach()
     end
 end
 
+--[=[document
+parent = "Panel",
+name = "set_parent",
+realm = "client",
+summary = "Detaches the panel and adds it as the last child of parent.",
+params = {
+    parent = { ty = "Panel", desc = "The new parent." },
+},
+see_also = "Panel:detach",
+]=]
 function Panel:set_parent(parent)
     self:detach();
     self.parent = parent;
@@ -154,11 +206,30 @@ function Panel:set_parent(parent)
     parent:invalidate();
 end
 
+--[=[document
+parent = "Panel",
+name = "set_paint",
+realm = "client",
+summary = "Replaces the panel's own draw. Children still paint after the callback.",
+params = {
+    callback = { ty = "function", desc = "function(panel, x, y, w, h)" },
+},
+]=]
 function Panel:set_paint(callback)
     self.paint_fn = callback;
     self:invalidate();
 end
 
+--[=[document
+parent = "Panel",
+name = "set_cached",
+realm = "client",
+summary = "When true, the panel paints into a render target and later frames draw that texture until invalidate.",
+params = {
+    cached = { ty = "boolean", desc = "True turns caching on." },
+},
+see_also = "Panel:invalidate",
+]=]
 function Panel:set_cached(cached)
     self.cached = cached and true or false;
 
@@ -169,6 +240,12 @@ function Panel:set_cached(cached)
     self:invalidate();
 end
 
+--[=[document
+parent = "Panel",
+name = "invalidate",
+realm = "client",
+summary = "Marks this panel and its parents dirty so a cached panel paints again.",
+]=]
 function Panel:invalidate()
     self.dirty = true;
     local parent = self.parent;
@@ -179,15 +256,40 @@ function Panel:invalidate()
     end
 end
 
+--[=[document
+parent = "Panel",
+name = "set_text",
+realm = "client",
+summary = "Sets the text string and marks the panel dirty.",
+params = {
+    text = { ty = "string", desc = "The new text." },
+},
+]=]
 function Panel:set_text(text)
     self.text = text;
     self:invalidate();
 end
 
+--[=[document
+parent = "Panel",
+name = "on_click",
+realm = "client",
+summary = "Sets the left-click callback. It is called as callback(panel) when gui.hit finds this panel.",
+params = {
+    callback = { ty = "function", desc = "function(panel)" },
+},
+see_also = "gui.hit",
+]=]
 function Panel:on_click(callback)
     self.click = callback;
 end
 
+--[=[document
+parent = "Panel",
+name = "remove",
+realm = "client",
+summary = "Hides the panel, detaches it, and frees its cache texture.",
+]=]
 function Panel:remove()
     self.alive = false;
     self.visible = false;
@@ -304,6 +406,13 @@ function Panel:hit(px, py, ox, oy)
     return self;
 end
 
+--[=[document
+kind = "class",
+name = "Label",
+realm = "client",
+summary = "A Panel that draws its text. scale is the pixel height. r, g, b, and a are the color, 0 to 255.",
+see_also = "Panel:set_text",
+]=]
 local Label = setmetatable({}, { __index = Panel });
 Label.__index = Label;
 
@@ -311,6 +420,13 @@ function Label:draw_self(x, y, w, h)
     surface.draw_text("default", self.text, x, y, self.scale, self.r, self.g, self.b, self.a);
 end
 
+--[=[document
+kind = "class",
+name = "Button",
+realm = "client",
+summary = "A Panel that fills itself and draws its text. br, bg, bb, and ba are the fill, 0 to 255. A white wash is drawn while the cursor is inside it.",
+see_also = "Panel:set_text, Panel:on_click",
+]=]
 local Button = setmetatable({}, { __index = Panel });
 Button.__index = Button;
 
@@ -416,6 +532,13 @@ local function release_keys()
     end
 end
 
+--[=[document
+kind = "class",
+name = "Html",
+realm = "client",
+summary = "A Panel that shows a webview. The page is created on the first load. Mouse, wheel, and keys are forwarded while the cursor is over it.",
+see_also = "webview.create, Panel",
+]=]
 local Html = setmetatable({}, { __index = Panel });
 Html.__index = Html;
 
@@ -438,6 +561,17 @@ function Html:ensure()
     html_list[#html_list + 1] = self;
 end
 
+--[=[document
+parent = "Html",
+name = "set_size",
+realm = "client",
+summary = "Resizes the panel and the webview.",
+params = {
+    w = { ty = "number", desc = "Width in pixels." },
+    h = { ty = "number", desc = "Height in pixels." },
+},
+see_also = "Panel:set_size",
+]=]
 function Html:set_size(w, h)
     Panel.set_size(self, w, h);
 
@@ -446,6 +580,16 @@ function Html:set_size(w, h)
     end
 end
 
+--[=[document
+parent = "Html",
+name = "load_html",
+realm = "client",
+summary = "Creates the page if needed and loads an HTML document.",
+params = {
+    html = { ty = "string", desc = "Document source." },
+},
+see_also = "WebView:load_html",
+]=]
 function Html:load_html(html)
     self:ensure();
 
@@ -454,6 +598,16 @@ function Html:load_html(html)
     end
 end
 
+--[=[document
+parent = "Html",
+name = "load_url",
+realm = "client",
+summary = "Creates the page if needed and loads a URL.",
+params = {
+    url = { ty = "string", desc = "http or https URL." },
+},
+see_also = "WebView:load_url",
+]=]
 function Html:load_url(url)
     self:ensure();
 
@@ -462,6 +616,16 @@ function Html:load_url(url)
     end
 end
 
+--[=[document
+parent = "Html",
+name = "run_js",
+realm = "client",
+summary = "Creates the page if needed and runs JavaScript in it.",
+params = {
+    code = { ty = "string", desc = "Script source." },
+},
+see_also = "WebView:run_js",
+]=]
 function Html:run_js(code)
     self:ensure();
 
@@ -470,6 +634,16 @@ function Html:run_js(code)
     end
 end
 
+--[=[document
+parent = "Html",
+name = "on_message",
+realm = "client",
+summary = "Sets the callback for window.engine.post. The callback is called as callback(panel, text).",
+params = {
+    callback = { ty = "function", desc = "function(panel, text)" },
+},
+see_also = "WebView:on_message",
+]=]
 function Html:on_message(callback)
     self:ensure();
 
@@ -534,6 +708,13 @@ function Html:feed(hovered, mx, my)
     end
 end
 
+--[=[document
+parent = "Html",
+name = "remove",
+realm = "client",
+summary = "Closes the webview, then removes the panel.",
+see_also = "Panel:remove, WebView:remove",
+]=]
 function Html:remove()
     if self.view then
         local name = next(held_keys);

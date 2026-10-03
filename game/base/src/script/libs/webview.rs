@@ -287,12 +287,101 @@ fn webview_on_message() {}
 
 #[document(
     parent = "WebView",
+    name = "id",
+    kind = "method",
+    realm = "client",
+    summary = "Id of this page.",
+    returns = { ty = "number", desc = "Stable id for the life of the view." },
+)]
+fn webview_id() {}
+
+#[document(
+    parent = "WebView",
     name = "remove",
     kind = "method",
     realm = "client",
     summary = "Closes the page and frees its texture.",
 )]
 fn webview_remove() {}
+
+#[document(
+    parent = "WebView",
+    name = "mouse_move",
+    kind = "method",
+    realm = "client",
+    summary = "Moves the cursor inside the page.",
+    params = {
+        x = { ty = "number", desc = "X in page pixels." },
+        y = { ty = "number", desc = "Y in page pixels." },
+    },
+)]
+fn webview_mouse_move() {}
+
+#[document(
+    parent = "WebView",
+    name = "mouse_button",
+    kind = "method",
+    realm = "client",
+    summary = "Presses or releases a mouse button. 1 is left, 2 is right, 3 is middle.",
+    params = {
+        button = { ty = "number", desc = "Button index, the same numbers as input.mouse_down." },
+        down = { ty = "boolean", desc = "True on press, false on release." },
+    },
+    see_also = "input.mouse_down",
+)]
+fn webview_mouse_button() {}
+
+#[document(
+    parent = "WebView",
+    name = "mouse_wheel",
+    kind = "method",
+    realm = "client",
+    summary = "Scrolls the page.",
+    params = {
+        x = { ty = "number", desc = "Horizontal ticks." },
+        y = { ty = "number", desc = "Vertical ticks." },
+    },
+)]
+fn webview_mouse_wheel() {}
+
+#[document(
+    parent = "WebView",
+    name = "key",
+    kind = "method",
+    realm = "client",
+    summary = "Sends a key. The name matches input.key_down. Shift, control, alt, and command are read from the current input state.",
+    params = {
+        name = { ty = "string", desc = "Key name, such as a, escape, or leftarrow." },
+        down = { ty = "boolean", desc = "True on press, false on release." },
+        repeat = { ty = "boolean", desc = "True when the key is repeating. Omit it for false.", optional = true },
+    },
+    see_also = "input.key_down",
+)]
+fn webview_key() {}
+
+#[document(
+    parent = "WebView",
+    name = "text",
+    kind = "method",
+    realm = "client",
+    summary = "Inserts text into the focused field.",
+    params = {
+        text = { ty = "string", desc = "Characters to insert." },
+    },
+)]
+fn webview_text() {}
+
+#[document(
+    parent = "WebView",
+    name = "focus",
+    kind = "method",
+    realm = "client",
+    summary = "Gives or takes keyboard focus.",
+    params = {
+        on = { ty = "boolean", desc = "True focuses the page." },
+    },
+)]
+fn webview_focus() {}
 
 pub fn register_webview_lib(
     lua: &Lua,

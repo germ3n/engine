@@ -28,6 +28,36 @@ fn voxel_chunk_generated() {}
 
 #[document(
     parent = "Chunk",
+    name = "x",
+    kind = "method",
+    realm = "server",
+    summary = "Chunk X in the world grid.",
+    returns = { ty = "number", desc = "Chunk coordinate, not a local block coordinate." },
+)]
+fn chunk_x() {}
+
+#[document(
+    parent = "Chunk",
+    name = "y",
+    kind = "method",
+    realm = "server",
+    summary = "Chunk Y in the world grid.",
+    returns = { ty = "number", desc = "Chunk coordinate, not a local block coordinate." },
+)]
+fn chunk_y() {}
+
+#[document(
+    parent = "Chunk",
+    name = "z",
+    kind = "method",
+    realm = "server",
+    summary = "Chunk Z in the world grid.",
+    returns = { ty = "number", desc = "Chunk coordinate, not a local block coordinate." },
+)]
+fn chunk_z() {}
+
+#[document(
+    parent = "Chunk",
     name = "get",
     kind = "method",
     realm = "server",

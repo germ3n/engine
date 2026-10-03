@@ -1,4 +1,223 @@
 use mlua::{UserData, UserDataMethods};
+use r#macro::document;
+
+#[document(
+    kind = "class",
+    name = "UserMsgWriter",
+    realm = "shared",
+    summary = "Bytes for net.send. Writes are little-endian. Created by net.writer.",
+    see_also = "net.writer, net.send",
+)]
+fn usermsg_writer_class() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_u8",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends an unsigned byte.",
+    params = { value = { ty = "number", desc = "0 to 255." } },
+)]
+fn usermsg_write_u8() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_i8",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends a signed byte.",
+    params = { value = { ty = "number", desc = "-128 to 127." } },
+)]
+fn usermsg_write_i8() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_u16",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends an unsigned 16-bit integer.",
+    params = { value = { ty = "number", desc = "0 to 65535." } },
+)]
+fn usermsg_write_u16() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_i16",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends a signed 16-bit integer.",
+    params = { value = { ty = "number", desc = "Signed 16-bit value." } },
+)]
+fn usermsg_write_i16() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_u32",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends an unsigned 32-bit integer.",
+    params = { value = { ty = "number", desc = "Unsigned 32-bit value." } },
+)]
+fn usermsg_write_u32() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_i32",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends a signed 32-bit integer.",
+    params = { value = { ty = "number", desc = "Signed 32-bit value." } },
+)]
+fn usermsg_write_i32() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_u64",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends an unsigned 64-bit integer.",
+    params = { value = { ty = "number", desc = "Unsigned 64-bit value." } },
+)]
+fn usermsg_write_u64() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_i64",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends a signed 64-bit integer.",
+    params = { value = { ty = "number", desc = "Signed 64-bit value." } },
+)]
+fn usermsg_write_i64() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_f32",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends a 32-bit float.",
+    params = { value = { ty = "number", desc = "The float." } },
+)]
+fn usermsg_write_f32() {}
+
+#[document(
+    parent = "UserMsgWriter",
+    name = "write_f64",
+    kind = "method",
+    realm = "shared",
+    summary = "Appends a 64-bit float.",
+    params = { value = { ty = "number", desc = "The float." } },
+)]
+fn usermsg_write_f64() {}
+
+#[document(
+    kind = "class",
+    name = "UserMsgReader",
+    realm = "shared",
+    summary = "The userdata passed to a usermessage callback. Reads are little-endian and return nil when the buffer runs out.",
+    see_also = "net.add_callback",
+)]
+fn usermsg_reader_class() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_u8",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads an unsigned byte.",
+    returns = { ty = "number", desc = "The byte, or nil at the end of the buffer." },
+)]
+fn usermsg_read_u8() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_i8",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a signed byte.",
+    returns = { ty = "number", desc = "The byte, or nil at the end of the buffer." },
+)]
+fn usermsg_read_i8() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_u16",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads an unsigned 16-bit integer.",
+    returns = { ty = "number", desc = "The integer, or nil when fewer than 2 bytes remain." },
+)]
+fn usermsg_read_u16() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_i16",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a signed 16-bit integer.",
+    returns = { ty = "number", desc = "The integer, or nil when fewer than 2 bytes remain." },
+)]
+fn usermsg_read_i16() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_u32",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads an unsigned 32-bit integer.",
+    returns = { ty = "number", desc = "The integer, or nil when fewer than 4 bytes remain." },
+)]
+fn usermsg_read_u32() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_i32",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a signed 32-bit integer.",
+    returns = { ty = "number", desc = "The integer, or nil when fewer than 4 bytes remain." },
+)]
+fn usermsg_read_i32() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_u64",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads an unsigned 64-bit integer.",
+    returns = { ty = "number", desc = "The integer, or nil when fewer than 8 bytes remain." },
+)]
+fn usermsg_read_u64() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_i64",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a signed 64-bit integer.",
+    returns = { ty = "number", desc = "The integer, or nil when fewer than 8 bytes remain." },
+)]
+fn usermsg_read_i64() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_f32",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a 32-bit float.",
+    returns = { ty = "number", desc = "The float, or nil when fewer than 4 bytes remain." },
+)]
+fn usermsg_read_f32() {}
+
+#[document(
+    parent = "UserMsgReader",
+    name = "read_f64",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a 64-bit float.",
+    returns = { ty = "number", desc = "The float, or nil when fewer than 8 bytes remain." },
+)]
+fn usermsg_read_f64() {}
 
 pub fn hash_usermessage_name(name: &str) -> u32 {
     let bytes = name.as_bytes();

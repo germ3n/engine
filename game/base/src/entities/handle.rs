@@ -1,5 +1,6 @@
 use mlua::MetaMethod;
 use mlua::{Error, FromLua, Lua, Result, UserData, UserDataMethods, Value};
+use r#macro::document;
 use wincode::{SchemaRead, SchemaWrite};
 
 const INDEX_BITS: u32 = 21;
@@ -61,6 +62,57 @@ impl FromLua for EntityHandle {
         }
     }
 }
+
+#[document(
+    kind = "class",
+    name = "EntityHandle",
+    realm = "shared",
+    summary = "Packed entity id passed to hooks. ents.get accepts it.",
+    note = "Two handles compare equal when their packed ids match.",
+    see_also = "ents.get",
+)]
+fn entity_handle_class() {}
+
+#[document(
+    parent = "EntityHandle",
+    name = "index",
+    kind = "method",
+    realm = "shared",
+    summary = "Slot index inside the packed id.",
+    returns = { ty = "number", desc = "The index bits." },
+)]
+fn entity_handle_index() {}
+
+#[document(
+    parent = "EntityHandle",
+    name = "generation",
+    kind = "method",
+    realm = "shared",
+    summary = "Generation stored in the packed id. It changes when the slot is reused.",
+    returns = { ty = "number", desc = "The generation bits." },
+)]
+fn entity_handle_generation() {}
+
+#[document(
+    parent = "EntityHandle",
+    name = "raw",
+    kind = "method",
+    realm = "shared",
+    summary = "Packed id as an integer.",
+    returns = { ty = "number", desc = "The raw handle." },
+    see_also = "ents.get",
+)]
+fn entity_handle_raw() {}
+
+#[document(
+    parent = "EntityHandle",
+    name = "is_null",
+    kind = "method",
+    realm = "shared",
+    summary = "True when the handle is empty.",
+    returns = { ty = "boolean", desc = "True for the zero handle." },
+)]
+fn entity_handle_is_null() {}
 
 impl UserData for EntityHandle {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {

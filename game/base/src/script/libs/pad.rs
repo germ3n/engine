@@ -2,7 +2,361 @@ use crate::input::PadButton;
 use crate::platform::{GamepadState, PadCache, PadPower, PAD_COUNT};
 use mlua::prelude::LuaUserDataMethods;
 use mlua::{Error, Lua, UserData};
+use r#macro::document;
 use std::sync::{Arc, Mutex};
+
+#[document(
+    kind = "library",
+    name = "pad",
+    realm = "shared",
+    summary = "Reads up to four gamepads. An empty slot reports zeros and released buttons."
+)]
+fn pad_lib() {}
+
+#[document(
+    parent = "pad",
+    name = "get",
+    kind = "function",
+    realm = "shared",
+    summary = "Reads one gamepad.",
+    params = {
+        index = { ty = "number", desc = "Slot from 0 to pad.count - 1." },
+    },
+    returns = { ty = "Pad", desc = "The current state of that slot." },
+    panics = "Errors when the index is outside 0 to pad.count - 1.",
+)]
+fn pad_get() {}
+
+#[document(
+    parent = "pad",
+    name = "count",
+    kind = "field",
+    realm = "shared",
+    summary = "Number of gamepad slots.",
+    returns = { ty = "number", desc = "Always 4." },
+)]
+fn pad_count() {}
+
+#[document(
+    kind = "class",
+    name = "Pad",
+    realm = "shared",
+    summary = "One gamepad sample. Sticks are about -1 to 1. Pedal axes are 0 to 1. Button methods are true while held."
+)]
+fn pad_class() {}
+
+#[document(
+    parent = "Pad",
+    name = "forward",
+    kind = "method",
+    realm = "shared",
+    summary = "Left stick Y.",
+    returns = { ty = "number", desc = "About -1 to 1. Positive is forward." },
+)]
+fn pad_forward() {}
+
+#[document(
+    parent = "Pad",
+    name = "right",
+    kind = "method",
+    realm = "shared",
+    summary = "Left stick X.",
+    returns = { ty = "number", desc = "About -1 to 1. Positive is right." },
+)]
+fn pad_right() {}
+
+#[document(
+    parent = "Pad",
+    name = "look_x",
+    kind = "method",
+    realm = "shared",
+    summary = "Right stick X.",
+    returns = { ty = "number", desc = "About -1 to 1." },
+)]
+fn pad_look_x() {}
+
+#[document(
+    parent = "Pad",
+    name = "look_y",
+    kind = "method",
+    realm = "shared",
+    summary = "Right stick Y.",
+    returns = { ty = "number", desc = "About -1 to 1." },
+)]
+fn pad_look_y() {}
+
+#[document(
+    parent = "Pad",
+    name = "gas",
+    kind = "method",
+    realm = "shared",
+    summary = "Gas pedal axis.",
+    returns = { ty = "number", desc = "0 to 1." },
+)]
+fn pad_gas() {}
+
+#[document(
+    parent = "Pad",
+    name = "brake",
+    kind = "method",
+    realm = "shared",
+    summary = "Brake pedal axis.",
+    returns = { ty = "number", desc = "0 to 1." },
+)]
+fn pad_brake() {}
+
+#[document(
+    parent = "Pad",
+    name = "clutch",
+    kind = "method",
+    realm = "shared",
+    summary = "Clutch pedal axis.",
+    returns = { ty = "number", desc = "0 to 1." },
+)]
+fn pad_clutch() {}
+
+#[document(
+    parent = "Pad",
+    name = "a",
+    kind = "method",
+    realm = "shared",
+    summary = "South face button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_a() {}
+
+#[document(
+    parent = "Pad",
+    name = "b",
+    kind = "method",
+    realm = "shared",
+    summary = "East face button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_b() {}
+
+#[document(
+    parent = "Pad",
+    name = "x",
+    kind = "method",
+    realm = "shared",
+    summary = "West face button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_x() {}
+
+#[document(
+    parent = "Pad",
+    name = "y",
+    kind = "method",
+    realm = "shared",
+    summary = "North face button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_y() {}
+
+#[document(
+    parent = "Pad",
+    name = "lb",
+    kind = "method",
+    realm = "shared",
+    summary = "Left bumper.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_lb() {}
+
+#[document(
+    parent = "Pad",
+    name = "lt",
+    kind = "method",
+    realm = "shared",
+    summary = "Left trigger button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_lt() {}
+
+#[document(
+    parent = "Pad",
+    name = "rb",
+    kind = "method",
+    realm = "shared",
+    summary = "Right bumper.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_rb() {}
+
+#[document(
+    parent = "Pad",
+    name = "rt",
+    kind = "method",
+    realm = "shared",
+    summary = "Right trigger button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_rt() {}
+
+#[document(
+    parent = "Pad",
+    name = "ls",
+    kind = "method",
+    realm = "shared",
+    summary = "Left stick click.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_ls() {}
+
+#[document(
+    parent = "Pad",
+    name = "rs",
+    kind = "method",
+    realm = "shared",
+    summary = "Right stick click.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_rs() {}
+
+#[document(
+    parent = "Pad",
+    name = "select",
+    kind = "method",
+    realm = "shared",
+    summary = "Back or select button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_select() {}
+
+#[document(
+    parent = "Pad",
+    name = "start",
+    kind = "method",
+    realm = "shared",
+    summary = "Start button.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_start() {}
+
+#[document(
+    parent = "Pad",
+    name = "dpad_up",
+    kind = "method",
+    realm = "shared",
+    summary = "D-pad up.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_dpad_up() {}
+
+#[document(
+    parent = "Pad",
+    name = "dpad_down",
+    kind = "method",
+    realm = "shared",
+    summary = "D-pad down.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_dpad_down() {}
+
+#[document(
+    parent = "Pad",
+    name = "dpad_left",
+    kind = "method",
+    realm = "shared",
+    summary = "D-pad left.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_dpad_left() {}
+
+#[document(
+    parent = "Pad",
+    name = "dpad_right",
+    kind = "method",
+    realm = "shared",
+    summary = "D-pad right.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_dpad_right() {}
+
+#[document(
+    parent = "Pad",
+    name = "gas_pressed",
+    kind = "method",
+    realm = "shared",
+    summary = "Gas pedal as a button.",
+    returns = { ty = "boolean", desc = "True while held." },
+    see_also = "Pad:gas",
+)]
+fn pad_gas_pressed() {}
+
+#[document(
+    parent = "Pad",
+    name = "brake_pressed",
+    kind = "method",
+    realm = "shared",
+    summary = "Brake pedal as a button.",
+    returns = { ty = "boolean", desc = "True while held." },
+    see_also = "Pad:brake",
+)]
+fn pad_brake_pressed() {}
+
+#[document(
+    parent = "Pad",
+    name = "clutch_pressed",
+    kind = "method",
+    realm = "shared",
+    summary = "Clutch pedal as a button.",
+    returns = { ty = "boolean", desc = "True while held." },
+    see_also = "Pad:clutch",
+)]
+fn pad_clutch_pressed() {}
+
+#[document(
+    parent = "Pad",
+    name = "paddle1",
+    kind = "method",
+    realm = "shared",
+    summary = "First wheel paddle.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_paddle1() {}
+
+#[document(
+    parent = "Pad",
+    name = "paddle2",
+    kind = "method",
+    realm = "shared",
+    summary = "Second wheel paddle.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_paddle2() {}
+
+#[document(
+    parent = "Pad",
+    name = "paddle3",
+    kind = "method",
+    realm = "shared",
+    summary = "Third wheel paddle.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_paddle3() {}
+
+#[document(
+    parent = "Pad",
+    name = "paddle4",
+    kind = "method",
+    realm = "shared",
+    summary = "Fourth wheel paddle.",
+    returns = { ty = "boolean", desc = "True while held." },
+)]
+fn pad_paddle4() {}
+
+#[document(
+    parent = "Pad",
+    name = "power",
+    kind = "method",
+    realm = "shared",
+    summary = "Battery or cable state.",
+    returns = { ty = "string", desc = "unknown, wired, discharging, charging, or charged. A second number is the percent while charging or discharging." },
+)]
+fn pad_power() {}
 
 struct LuaPad {
     state: GamepadState,

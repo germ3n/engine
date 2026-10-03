@@ -1,6 +1,7 @@
 use crate::input::{key_name, parse_key};
 use crate::platform::{KeyCode, MouseButton};
 use mlua::Lua;
+use r#macro::document;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -127,6 +128,146 @@ fn down(buttons: u32, index: i32) -> bool {
 
     bit != 0 && buttons & bit != 0
 }
+
+#[document(
+    kind = "library",
+    name = "input",
+    realm = "client",
+    summary = "Cursor, keys, and modifiers for this frame. key_pressed, typed, and wheel clear at the end of the frame."
+)]
+fn input_lib() {}
+
+#[document(
+    parent = "input",
+    name = "cursor",
+    kind = "function",
+    realm = "client",
+    summary = "Cursor position in window pixels.",
+    returns = { ty = "number", desc = "X, then Y." },
+)]
+fn input_cursor() {}
+
+#[document(
+    parent = "input",
+    name = "mouse_down",
+    kind = "function",
+    realm = "client",
+    summary = "True while a mouse button is held. 1 is left, 2 is right, 3 is middle, 4 and 5 are the extra buttons.",
+    params = {
+        button = { ty = "number", desc = "Button index." },
+    },
+    returns = { ty = "boolean", desc = "False for an unknown index." },
+)]
+fn input_mouse_down() {}
+
+#[document(
+    parent = "input",
+    name = "key_down",
+    kind = "function",
+    realm = "client",
+    summary = "True while a key is held.",
+    params = {
+        name = { ty = "string", desc = "Lowercase name, such as a, escape, space, lshift, or leftarrow." },
+    },
+    returns = { ty = "boolean", desc = "False when the name is unknown or the key is up." },
+)]
+fn input_key_down() {}
+
+#[document(
+    parent = "input",
+    name = "key_pressed",
+    kind = "function",
+    realm = "client",
+    summary = "True on the frame a key goes down.",
+    params = {
+        name = { ty = "string", desc = "Same names as input.key_down." },
+    },
+    returns = { ty = "boolean", desc = "False when the name is unknown or the key did not go down this frame." },
+    see_also = "input.key_down",
+)]
+fn input_key_pressed() {}
+
+#[document(
+    parent = "input",
+    name = "typed",
+    kind = "function",
+    realm = "client",
+    summary = "Text inserted this frame.",
+    returns = { ty = "string", desc = "Empty after the frame ends." },
+)]
+fn input_typed() {}
+
+#[document(
+    parent = "input",
+    name = "shift",
+    kind = "function",
+    realm = "client",
+    summary = "True while either shift key is held.",
+    returns = { ty = "boolean", desc = "The modifier state." },
+)]
+fn input_shift() {}
+
+#[document(
+    parent = "input",
+    name = "control",
+    kind = "function",
+    realm = "client",
+    summary = "True while either control key is held.",
+    returns = { ty = "boolean", desc = "The modifier state." },
+)]
+fn input_control() {}
+
+#[document(
+    parent = "input",
+    name = "alt",
+    kind = "function",
+    realm = "client",
+    summary = "True while either alt key is held.",
+    returns = { ty = "boolean", desc = "The modifier state." },
+)]
+fn input_alt() {}
+
+#[document(
+    parent = "input",
+    name = "super",
+    kind = "function",
+    realm = "client",
+    summary = "True while either super or command key is held.",
+    returns = { ty = "boolean", desc = "The modifier state." },
+)]
+fn input_super() {}
+
+#[document(
+    parent = "input",
+    name = "wheel",
+    kind = "function",
+    realm = "client",
+    summary = "Scroll accumulated this frame.",
+    returns = { ty = "number", desc = "Horizontal delta, then vertical delta. Both are 0 after the frame ends." },
+)]
+fn input_wheel() {}
+
+#[document(
+    parent = "input",
+    name = "block_look",
+    kind = "function",
+    realm = "client",
+    summary = "When true, a left click does not capture the cursor.",
+    params = {
+        blocked = { ty = "boolean", desc = "True keeps the cursor free." },
+    },
+)]
+fn input_block_look() {}
+
+#[document(
+    parent = "input",
+    name = "captured",
+    kind = "function",
+    realm = "client",
+    summary = "True while the cursor is grabbed for look.",
+    returns = { ty = "boolean", desc = "The grab state." },
+)]
+fn input_captured() {}
 
 pub fn register_input_lib(lua: &Lua, pointer: Arc<Mutex<Pointer>>) {
     let table = lua.create_table().expect("Failed to create input table");

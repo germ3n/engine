@@ -1,8 +1,99 @@
 use crate::console::{ConVar, ConVarValue};
 use mlua::prelude::LuaUserDataMethods;
 use mlua::{Error, Function, Lua, UserData, Value};
+use r#macro::document;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+#[document(
+    kind = "library",
+    name = "cvar",
+    realm = "shared",
+    summary = "Looks up console variables on this realm."
+)]
+fn cvar_lib() {}
+
+#[document(
+    parent = "cvar",
+    name = "get",
+    kind = "function",
+    realm = "shared",
+    summary = "Finds a console variable by name.",
+    params = {
+        name = { ty = "string", desc = "ConVar name." },
+    },
+    returns = { ty = "ConVar", desc = "The variable." },
+    panics = "Errors when the name is not registered.",
+)]
+fn cvar_get() {}
+
+#[document(
+    kind = "class",
+    name = "ConVar",
+    realm = "shared",
+    summary = "One console variable. Integer and float values have separate getters and setters."
+)]
+fn convar_class() {}
+
+#[document(
+    parent = "ConVar",
+    name = "get_value_int",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads an integer value.",
+    returns = { ty = "number", desc = "The stored integer." },
+    panics = "Errors when the variable is not an integer.",
+)]
+fn convar_get_value_int() {}
+
+#[document(
+    parent = "ConVar",
+    name = "get_value_float",
+    kind = "method",
+    realm = "shared",
+    summary = "Reads a float value.",
+    returns = { ty = "number", desc = "The stored float." },
+    panics = "Errors when the variable is not a float.",
+)]
+fn convar_get_value_float() {}
+
+#[document(
+    parent = "ConVar",
+    name = "set_value_int",
+    kind = "method",
+    realm = "shared",
+    summary = "Writes an integer and runs change callbacks with that number.",
+    params = {
+        value = { ty = "number", desc = "New integer." },
+    },
+    panics = "Errors when a callback fails.",
+)]
+fn convar_set_value_int() {}
+
+#[document(
+    parent = "ConVar",
+    name = "set_value_float",
+    kind = "method",
+    realm = "shared",
+    summary = "Writes a float and runs change callbacks with that number.",
+    params = {
+        value = { ty = "number", desc = "New float." },
+    },
+    panics = "Errors when a callback fails.",
+)]
+fn convar_set_value_float() {}
+
+#[document(
+    parent = "ConVar",
+    name = "add_change_callback",
+    kind = "method",
+    realm = "shared",
+    summary = "Calls a function after set_value_int or set_value_float. The function receives the new number.",
+    params = {
+        callback = { ty = "function", desc = "function(value)" },
+    },
+)]
+fn convar_add_change_callback() {}
 
 pub struct LuaConVar {
     pub cvar: Arc<ConVar>,

@@ -80,6 +80,20 @@ summary = "Called once when the entity is removed.",
 returns = { ty = "nil", desc = "" },
 see_also = "Entity:remove",
 ]=]
+--[=[document
+parent = "Entity",
+name = "on_networked_changed",
+kind = "hook",
+realm = "client",
+summary = "Called when a replicated networked value changes, including after prediction reconcile.",
+params = {
+    key = { ty = "string", desc = "Value name." },
+    old = { ty = "any", desc = "Previous value, or nil." },
+    value = { ty = "any", desc = "New value." },
+},
+returns = { ty = "nil", desc = "" },
+see_also = "Entity:set_networked, Entity:get_networked",
+]=]
 return function(native)
     ents = {};
     ents._storage = ents._storage or {};
