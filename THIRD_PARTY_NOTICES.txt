@@ -2907,7 +2907,7 @@ rustix 0.38.44
   Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
   Authors: Dan Gohman, Jakub Konka. The package has no separate copyright line.
 
-rustix 1.1.4
+rustix 1.1.5
   Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
   Authors: Dan Gohman, Jakub Konka. The package has no separate copyright line.
 
