@@ -18,6 +18,7 @@ mod sound;
 mod state;
 mod ui;
 mod world;
+mod third_party;
 
 use crate::network::{wake_pair, NetWake, OUTBOUND_CAP};
 use crate::script::Realm;
@@ -125,17 +126,10 @@ pub fn run() {
             log::info!("[map] {map_name} scale {}", server_game.brush_world.scale());
         }
 
-        #[cfg(feature = "client")]
         std::thread::spawn(move || {
             log::info!("Starting Server loop");
             server::server_loop(server_game);
         });
-
-        #[cfg(not(feature = "client"))]
-        {
-            log::info!("Entering Server loop");
-            server::server_loop(server_game);
-        }
     }
 
     #[cfg(feature = "client")]

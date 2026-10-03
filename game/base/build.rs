@@ -1,6 +1,7 @@
 fn main() {
     write_wiki();
     stage_steam();
+    link_virtualizer();
     compile_bundled_lua();
     write_base_pak();
     compile_sound_device();
@@ -150,6 +151,80 @@ fn stage_steam() {
 
     if target_os == "linux" {
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    }
+}
+
+fn link_virtualizer()
+{
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let lib_dir = manifest_dir.join("src/third_party/code_virtualizer/lib");
+    println!("cargo:rerun-if-changed={}", lib_dir.display());
+    println!("cargo:rustc-link-search=native={}", lib_dir.display());
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let file_name = match (target_os.as_str(), target_arch.as_str())
+    {
+        ("macos", "aarch64") => "libVirtualizerARM64SDK.dylib",
+        ("linux", "aarch64") => "libVirtualizerARM64SDK.so",
+        ("linux", _) => "libVirtualizerSDK64.so",
+        ("windows", "aarch64") => "VirtualizerArm64SDK.lib",
+        ("windows", _) => "VirtualizerSDK64.lib",
+        _ =>
+        {
+
+            return;
+        }
+    };
+    let lib_path = lib_dir.join(file_name);
+
+    if !lib_path.exists()
+    {
+        println!(
+            "cargo:warning=virtualizer library {} was not found",
+            lib_path.display()
+        );
+
+        return;
+    }
+
+    if target_os == "macos"
+    {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
+    }
+
+    if target_os == "linux"
+    {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    }
+
+    if target_os == "windows"
+    {
+        let lib_name = match target_arch.as_str()
+        {
+            "aarch64" => "VirtualizerArm64SDK",
+            _ => "VirtualizerSDK64",
+        };
+
+        println!("cargo:rustc-link-lib={lib_name}");
+    }
+
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let Some(dest_dir) = out_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+    else
+    {
+
+        return;
+    };
+    let dest = dest_dir.join(file_name);
+
+    if let Err(err) = std::fs::copy(&lib_path, &dest)
+    {
+        println!("cargo:warning=failed to copy {file_name}: {err}");
     }
 }
 
