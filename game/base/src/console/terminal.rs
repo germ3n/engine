@@ -9,17 +9,59 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct ConsoleSide {
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub binds: Arc<Mutex<Binds>>,
 }
 
-struct Outcome {
-    side: &'static str,
-    line: String,
-    detail: Option<String>,
-    error: Option<String>,
-    quit: bool,
+struct Sides {
+    server: Option<ConsoleSide>,
+    client: Option<ConsoleSide>,
+}
+
+static SIDES: Mutex<Sides> = Mutex::new(Sides {
+    server: None,
+    client: None,
+});
+
+pub fn bind_sides(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
+    let mut sides = SIDES.lock().unwrap();
+    sides.server = server;
+    sides.client = client;
+}
+
+fn snapshot_sides() -> (Option<ConsoleSide>, Option<ConsoleSide>) {
+    let sides = SIDES.lock().unwrap();
+
+    (sides.server.clone(), sides.client.clone())
+}
+
+pub(crate) fn submit_shared(line: &str) -> Vec<Outcome> {
+    let (server, client) = snapshot_sides();
+
+    dispatch(line, server.as_ref(), client.as_ref())
+}
+
+pub(crate) fn complete_shared(line: &str, lua: &mlua::Lua, realm: Realm) -> (String, Vec<String>) {
+    let (server, client) = snapshot_sides();
+    let matches = suggest_with(
+        line,
+        server.as_ref(),
+        client.as_ref(),
+        Some((lua, realm)),
+    );
+    let applied = apply_completion(line, &matches);
+
+    (applied.line, applied.list)
+}
+
+pub(crate) struct Outcome {
+    pub side: &'static str,
+    pub line: String,
+    pub detail: Option<String>,
+    pub error: Option<String>,
+    pub quit: bool,
 }
 
 enum Hit {
@@ -362,26 +404,52 @@ struct Applied {
 }
 
 fn suggest_live(line: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSide>) -> Vec<String> {
+    suggest_with(line, server, client, None)
+}
+
+fn suggest_with(
+    line: &str,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+    local: Option<(&mlua::Lua, Realm)>,
+) -> Vec<String> {
     let span = completion_span(line);
-    let server_rx = if server.is_some() {
+    let local_realm = local.map(|(_, realm)| realm);
+    let server_rx = if server.is_some() && local_realm != Some(Realm::Server) {
         post_autocomplete(Realm::Server, &span.segment, &span.prefix)
     } else {
         None
     };
-    let client_rx = if client.is_some() {
+    let client_rx = if client.is_some() && local_realm != Some(Realm::Client) {
         post_autocomplete(Realm::Client, &span.segment, &span.prefix)
     } else {
         None
     };
-    let mut extra = Vec::new();
+    let mut server_extra = Vec::new();
+    let mut client_extra = Vec::new();
+
+    if local_realm == Some(Realm::Server) {
+        if let Some((lua, _)) = local {
+            server_extra = autocomplete_from_lua(lua, &span.segment, &span.prefix);
+        }
+    }
+
+    if local_realm == Some(Realm::Client) {
+        if let Some((lua, _)) = local {
+            client_extra = autocomplete_from_lua(lua, &span.segment, &span.prefix);
+        }
+    }
 
     if let Some(rx) = server_rx {
-        extra.extend(rx.recv_timeout(Duration::from_millis(80)).unwrap_or_default());
+        server_extra = rx.recv_timeout(Duration::from_millis(80)).unwrap_or_default();
     }
 
     if let Some(rx) = client_rx {
-        extra.extend(rx.recv_timeout(Duration::from_millis(80)).unwrap_or_default());
+        client_extra = rx.recv_timeout(Duration::from_millis(80)).unwrap_or_default();
     }
+
+    let mut extra = server_extra;
+    extra.extend(client_extra);
 
     suggest(line, server, client, &extra)
 }
@@ -771,6 +839,14 @@ fn dispatch(line: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSid
 }
 
 fn run_part(part: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSide>) -> Outcome {
+    let previous = demo::realm();
+    let outcome = run_part_realm(part, server, client);
+    demo::set_realm(previous);
+
+    outcome
+}
+
+fn run_part_realm(part: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSide>) -> Outcome {
     if let Some(server) = server {
         demo::bind_realm(Realm::Server);
 
@@ -1190,7 +1266,7 @@ mod tests {
         assert!(missing.recv().unwrap().is_empty());
 
         let binds = Arc::new(Mutex::new(Binds::new()));
-        crate::script::libs::console::register_console_lib(&lua, binds);
+        crate::script::libs::console::register_console_lib(&lua, binds, Realm::Client);
         lua.load(
             r#"console.autocomplete(function(line, prefix) return {"hall", "hallway", "other"} end)"#,
         )
@@ -1206,5 +1282,15 @@ mod tests {
             matches,
             vec!["hall".to_string(), "hallway".to_string()]
         );
+    }
+
+    #[test]
+    fn dispatch_restores_the_demo_realm() {
+        demo::bind_realm(Realm::Client);
+        let server = side(Vec::new());
+        let client = side(Vec::new());
+        let _ = dispatch("bind e use", Some(&server), Some(&client));
+
+        assert!(matches!(demo::realm(), Some(Realm::Client)));
     }
 }

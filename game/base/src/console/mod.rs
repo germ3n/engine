@@ -6,7 +6,8 @@ pub use convar::{ConVar, ConVarValue};
 
 mod terminal;
 
-pub use terminal::{poll_autocomplete, spawn_terminal, ConsoleSide};
+pub use terminal::{bind_sides, poll_autocomplete, spawn_terminal, ConsoleSide};
+pub(crate) use terminal::{complete_shared, submit_shared, Outcome};
 
 pub(crate) const AUTOCOMPLETE_KEY: &str = "console_autocomplete";
 use std::collections::HashMap;

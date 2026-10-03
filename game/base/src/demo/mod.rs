@@ -158,7 +158,15 @@ thread_local! {
 static QUEUE: Mutex<Vec<Queued>> = Mutex::new(Vec::new());
 
 pub fn bind_realm(realm: Realm) {
-    REALM.with(|cell| cell.set(Some(realm)));
+    set_realm(Some(realm));
+}
+
+pub fn realm() -> Option<Realm> {
+    REALM.with(|cell| cell.get())
+}
+
+pub fn set_realm(realm: Option<Realm>) {
+    REALM.with(|cell| cell.set(realm));
 }
 
 pub fn request(command: DemoCommand) -> Result<(), String> {

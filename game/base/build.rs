@@ -275,6 +275,7 @@ fn compile_bundled_lua() {
         "src/script/libs/sound.lua",
         "src/script/libs/gui.lua",
         "src/lua/menu/menu.lua",
+        "src/lua/menu/console.lua",
     ];
 
     for source in sources {
@@ -384,6 +385,7 @@ fn write_base_pak() {
         ("lua/libs/sound.luac", "sound.luac"),
         ("lua/libs/gui.luac", "gui.luac"),
         ("lua/menu/menu.luac", "menu.luac"),
+        ("lua/menu/console.luac", "console.luac"),
     ];
     let mut owned = Vec::new();
     let mut files = Vec::new();

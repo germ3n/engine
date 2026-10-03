@@ -185,6 +185,7 @@ pub fn run() {
             cvars: Arc::clone(&client_game.cvars),
             binds: Arc::clone(&client_game.binds),
         };
+        console::bind_sides(terminal_server.clone(), Some(terminal_client.clone()));
         console::spawn_terminal(terminal_server, Some(terminal_client));
         log::info!("Entering Client loop");
         client::client_loop(client_game, shutdown, resync);

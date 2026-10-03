@@ -227,6 +227,11 @@ pub fn client_loop(
     let binds = game.binds.clone();
 
     crate::script::exec(&game.script_engine.lua, "menu.lua", "lua/menu/menu.luac");
+    crate::script::exec(
+        &game.script_engine.lua,
+        "console.lua",
+        "lua/menu/console.luac",
+    );
 
     let mut last_frame = std::time::Instant::now();
     let mut fps_sample = std::time::Instant::now();
@@ -395,8 +400,12 @@ pub fn client_loop(
                             }
 
                             if button == MouseButton::Left {
-                                captured = true;
-                                host.set_cursor_grabbed(true);
+                                let blocked = game.script_engine.pointer.lock().unwrap().block_look;
+
+                                if !blocked {
+                                    captured = true;
+                                    host.set_cursor_grabbed(true);
+                                }
                             }
                         }
                     } else {
@@ -741,7 +750,16 @@ pub fn client_loop(
                 }
             },
             Event::Device(DeviceEvent::MouseMotion { delta }) => {
-                if let Some(play) = play.as_mut() {
+                let blocked = game.script_engine.pointer.lock().unwrap().block_look;
+
+                if blocked {
+                    if captured {
+                        captured = false;
+                        keys.clear();
+                        mouse.clear();
+                        host.set_cursor_grabbed(false);
+                    }
+                } else if let Some(play) = play.as_mut() {
                     if captured && !client_window.vr_input().active {
                         if play.cam == CamMode::Free {
                             camera.look(delta.0 as f32, delta.1 as f32);
@@ -762,6 +780,15 @@ pub fn client_loop(
                 }
             }
             Event::AboutToWait => {
+                let blocked = game.script_engine.pointer.lock().unwrap().block_look;
+
+                if blocked && captured {
+                    captured = false;
+                    keys.clear();
+                    mouse.clear();
+                    host.set_cursor_grabbed(false);
+                }
+
                 let now = std::time::Instant::now();
                 let dt = now.duration_since(last_frame).as_secs_f64();
                 last_frame = now;

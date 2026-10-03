@@ -107,6 +107,7 @@ mod tests {
             "lua/libs/scripted_ents.luac",
             "lua/libs/gui.luac",
             "lua/menu/menu.luac",
+            "lua/menu/console.luac",
         ];
 
         for path in scripts {
