@@ -9,7 +9,7 @@ use crate::network::events::{
 };
 use crate::network::packet::{
     bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT,
-    KEEPALIVE_INTERVAL, STREAM_STATE,
+    KEEPALIVE_INTERVAL, MAX_DATAGRAM, STREAM_STATE,
 };
 use crate::network::usermessage::UserMsgReader;
 use crate::network::wait_socket;
@@ -25,8 +25,8 @@ use crate::platform::{
 use crate::r#enum::InputButtons;
 use crate::script::engine::DrawCommand;
 use crate::script::libs::angle3::Angle3;
-use crate::script::Realm;
 use crate::script::libs::vector3::Vector3;
+use crate::script::Realm;
 use crate::state::GameState;
 use crate::ui::backend;
 use crate::ui::voxel::FlyCamera;
@@ -1337,12 +1337,7 @@ fn poll_client_demo(
 
                             let tick = game.tick_count;
                             let local = prediction.local;
-                            let shot = demo::capture_world(
-                                game,
-                                tick,
-                                local,
-                                &listed,
-                            );
+                            let shot = demo::capture_world(game, tick, local, &listed);
                             session.write_mark(&demo::DemoFrame::Keyframe(shot));
                             session.next_shot = game.cur_time + demo::SHOT_INTERVAL;
                             log::info!("[demo] recording {name}");
@@ -1976,11 +1971,7 @@ fn apply_slot_input(
     remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
     input: demo::SlotInput,
 ) {
-    let Some(link_idx) = play
-        .slots
-        .iter()
-        .position(|link| link.slot == input.slot)
-    else {
+    let Some(link_idx) = play.slots.iter().position(|link| link.slot == input.slot) else {
         return;
     };
     let handle = play.slots[link_idx].handle;
@@ -2064,7 +2055,10 @@ fn apply_world_shot(
 
     while idx < shot.entities.len() {
         let entity = &shot.entities[idx];
-        let vars = states.get(&entity.handle).map(|vars| vars.as_slice()).unwrap_or(&[]);
+        let vars = states
+            .get(&entity.handle)
+            .map(|vars| vars.as_slice())
+            .unwrap_or(&[]);
         let owner = owners
             .get(&entity.handle)
             .copied()
@@ -3037,6 +3031,8 @@ pub fn client_network_loop(
 
     let _ = client.send_message(&connect_packet(None));
     let mut challenge_response_bytes: Option<Vec<u8>> = None;
+    let mut pending_auth: Option<(u64, u64)> = None;
+    let mut auth_stopped = false;
     let mut session: Option<u64> = None;
     let mut last_sent = Instant::now();
     let mut last_server_seen = Instant::now();
@@ -3062,6 +3058,9 @@ pub fn client_network_loop(
             generation = None;
             replace_session = None;
             challenge_response_bytes = None;
+            pending_auth = None;
+            auth_stopped = false;
+            crate::network::steam::cancel_ticket();
             unreliable_out = 0;
             unreliable_in = UnreliableInbox::new();
             unreliable_assembly = UnreliableAssembly::new();
@@ -3111,6 +3110,8 @@ pub fn client_network_loop(
                 &mut last_sent,
             );
             unreliable_parts.clear();
+            pending_auth = None;
+            auth_stopped = false;
 
             if was_connected {
                 let _ = tx.send(FromServer::Disconnected);
@@ -3145,14 +3146,29 @@ pub fn client_network_loop(
 
             match packet {
                 PacketType::Connect { .. } => {}
-                PacketType::Challenge { token } => {
-                    if !connected {
-                        let bytes =
-                            wincode::serialize(&PacketType::ChallengeResponse { token }).unwrap();
-                        challenge_response_bytes = Some(bytes.clone());
-                        let _ = client.send_message(&bytes);
-                        last_sent = Instant::now();
-                        log::info!("[cl] challenge {token}");
+                PacketType::Challenge {
+                    token,
+                    secure,
+                    host_steam_id,
+                } => {
+                    if !connected && !auth_stopped {
+                        if !secure {
+                            crate::network::steam::cancel_ticket();
+                            pending_auth = None;
+                            if let Some(bytes) = auth_response(token, 0, Vec::new(), String::new())
+                            {
+                                challenge_response_bytes = Some(bytes.clone());
+                                let _ = client.send_message(&bytes);
+                                last_sent = Instant::now();
+                                log::info!("[cl] challenge {token}");
+                            }
+                        } else if host_steam_id == 0 {
+                            challenge_response_bytes = None;
+                        } else {
+                            crate::network::steam::request_ticket(host_steam_id);
+                            pending_auth = Some((token, host_steam_id));
+                            challenge_response_bytes = None;
+                        }
                     }
                 }
                 PacketType::ChallengeResponse { .. } => {
@@ -3209,6 +3225,8 @@ pub fn client_network_loop(
                             &mut unreliable_assembly,
                             &mut last_sent,
                         );
+                        pending_auth = None;
+                        auth_stopped = false;
                         log::info!("[cl] disconnect");
                         let _ = tx.send(FromServer::Disconnected);
                     }
@@ -3352,6 +3370,34 @@ pub fn client_network_loop(
             }
         }
 
+        if let Some((token, host)) = pending_auth {
+            match crate::network::steam::take_ticket() {
+                Some(Ok(ticket)) if ticket.host == host => {
+                    if let Some(bytes) =
+                        auth_response(token, ticket.steam_id, ticket.ticket, ticket.name)
+                    {
+                        challenge_response_bytes = Some(bytes.clone());
+                        let _ = client.send_message(&bytes);
+                        last_sent = Instant::now();
+                        pending_auth = None;
+                        log::info!("[cl] challenge {token}");
+                    } else {
+                        log::warn!("[cl] auth ticket does not fit");
+                        pending_auth = None;
+                        auth_stopped = true;
+                        crate::network::steam::cancel_ticket();
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(())) => {
+                    log::warn!("[cl] steam auth unavailable");
+                    pending_auth = None;
+                    auth_stopped = true;
+                }
+                None => {}
+            }
+        }
+
         if connected {
             if let Some(current_generation) = generation {
                 reliable_chan.set_generation(current_generation);
@@ -3396,6 +3442,9 @@ pub fn client_network_loop(
             connected = false;
             replace_session = None;
             challenge_response_bytes = None;
+            pending_auth = None;
+            auth_stopped = false;
+            crate::network::steam::cancel_ticket();
             log::warn!("[cl] server timeout");
             let _ = tx.send(FromServer::Disconnected);
             let _ = client.send_message(&connect_packet(None));
@@ -3484,6 +3533,22 @@ fn reliable_backlog(local_reliable: &VecDeque<Vec<u8>>, reliable_chan: &Reliable
 }
 
 #[cfg(feature = "client")]
+fn auth_response(token: u64, steam_id: u64, ticket: Vec<u8>, name: String) -> Option<Vec<u8>> {
+    let bytes = wincode::serialize(&PacketType::ChallengeResponse {
+        token,
+        steam_id,
+        ticket,
+        name,
+    })
+    .unwrap();
+    if bytes.len() > MAX_DATAGRAM {
+        return None;
+    }
+
+    Some(bytes)
+}
+
+#[cfg(feature = "client")]
 fn connect_packet(replace: Option<u64>) -> Vec<u8> {
     wincode::serialize(&PacketType::Connect { replace }).unwrap()
 }
@@ -3510,6 +3575,7 @@ fn begin_reconnect(
     *session = None;
     *generation = None;
     *challenge_response_bytes = None;
+    crate::network::steam::cancel_ticket();
     *unreliable_out = 0;
     *unreliable_in = UnreliableInbox::new();
     *unreliable_assembly = UnreliableAssembly::new();

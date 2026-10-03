@@ -122,9 +122,14 @@ pub enum PacketType {
     },
     Challenge {
         token: u64,
+        secure: bool,
+        host_steam_id: u64,
     },
     ChallengeResponse {
         token: u64,
+        steam_id: u64,
+        ticket: Vec<u8>,
+        name: String,
     },
     Connected {
         session: u64,

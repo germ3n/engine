@@ -175,7 +175,9 @@ pub fn set_realm(realm: Option<Realm>) {
 }
 
 pub fn request(command: DemoCommand) -> Result<(), String> {
-    let realm = REALM.with(|cell| cell.get()).ok_or("demo command has no realm")?;
+    let realm = REALM
+        .with(|cell| cell.get())
+        .ok_or("demo command has no realm")?;
     let playback = matches!(
         command,
         DemoCommand::Play { .. }
@@ -344,10 +346,7 @@ pub fn warn_header(
     voxel_scale: f64,
 ) {
     if header.map_name != map_name {
-        log::warn!(
-            "[demo] map is {map_name}, demo has {}",
-            header.map_name
-        );
+        log::warn!("[demo] map is {map_name}, demo has {}", header.map_name);
     }
 
     if header.tickrate != tickrate {
@@ -831,7 +830,11 @@ pub fn capture_world<In, Out>(
         }
 
         if let Some((mesh, clips)) = model {
-            models.push(EntityModel { handle, mesh, clips });
+            models.push(EntityModel {
+                handle,
+                mesh,
+                clips,
+            });
         }
     }
 
@@ -973,7 +976,11 @@ impl DemoPlay {
             idx += 1;
         }
 
-        if let Some(found) = self.players.iter().position(|player| player.handle == prefer) {
+        if let Some(found) = self
+            .players
+            .iter()
+            .position(|player| player.handle == prefer)
+        {
             self.view_index = found;
         }
 
@@ -1018,7 +1025,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("engine-demo-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        (dir.join(format!("{name}.dem")), dir.join(format!("{name}.idx")))
+        (
+            dir.join(format!("{name}.dem")),
+            dir.join(format!("{name}.idx")),
+        )
     }
 
     fn shot(tick: u64, position: Vector3) -> WorldShot {
@@ -1127,10 +1137,7 @@ mod tests {
         let (file, index) = temp_pair("seek");
         let mut writer = DemoWriter::create_at(&file, &index, &header()).unwrap();
         writer
-            .write_mark(&DemoFrame::Checkpoint(shot(
-                0,
-                Vector3::new(0.0, 0.0, 0.0),
-            )))
+            .write_mark(&DemoFrame::Checkpoint(shot(0, Vector3::new(0.0, 0.0, 0.0))))
             .unwrap();
         writer
             .write_frame(&DemoFrame::ServerTick {
@@ -1208,7 +1215,10 @@ mod tests {
             writer
                 .write_frame(&DemoFrame::ServerTick {
                     tick: cmd.tick,
-                    inputs: vec![SlotInput { slot: 0, command: cmd }],
+                    inputs: vec![SlotInput {
+                        slot: 0,
+                        command: cmd,
+                    }],
                     events: Vec::new(),
                 })
                 .unwrap();
@@ -1217,9 +1227,7 @@ mod tests {
                 let mut marked = shot(4, position);
                 marked.entities[0].velocity = velocity;
                 marked.entities[0].angles = angles;
-                writer
-                    .write_mark(&DemoFrame::Checkpoint(marked))
-                    .unwrap();
+                writer.write_mark(&DemoFrame::Checkpoint(marked)).unwrap();
             }
 
             idx += 1;
@@ -1381,9 +1389,7 @@ mod tests {
         let mut marked = shot(0, Vector3::new(0.0, 0.0, 0.0));
         marked.networked = vec![baseline.clone()];
         let mut writer = DemoWriter::create_at(&file, &index, &header()).unwrap();
-        writer
-            .write_mark(&DemoFrame::Checkpoint(marked))
-            .unwrap();
+        writer.write_mark(&DemoFrame::Checkpoint(marked)).unwrap();
         writer
             .write_frame(&DemoFrame::ServerTick {
                 tick: 6,

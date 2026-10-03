@@ -14,6 +14,7 @@ try {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scripting Wiki</title>
 <style>
+/*__WIKI_FONTS__*/
 :root {
   color-scheme: dark;
   --nav: #10151f;
@@ -31,6 +32,9 @@ try {
   --card-2: #1c2636;
   --type: #9ec1ff;
   --shadow: rgba(0, 0, 0, 0.28);
+  --sans: "Source Sans 3", "Segoe UI", sans-serif;
+  --serif: "Source Serif 4", Georgia, serif;
+  --mono: "Source Code Pro", ui-monospace, Menlo, Consolas, monospace;
 }
 html[data-theme="light"] {
   color-scheme: light;
@@ -53,9 +57,10 @@ html[data-theme="light"] {
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
-  font-family: "Segoe UI", system-ui, sans-serif;
+  font-family: var(--sans);
   color: var(--ink);
   background: var(--paper);
+  font-synthesis: none;
 }
 button, input { font: inherit; }
 #app { display: flex; align-items: flex-start; min-height: 100vh; }
@@ -95,7 +100,9 @@ aside::-webkit-scrollbar-thumb { background: #31425c; border-radius: 99px; }
 .brand strong {
   display: block;
   color: white;
-  font-size: 20px;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 22px;
   letter-spacing: 0.01em;
 }
 .brand span {
@@ -183,7 +190,7 @@ article {
   justify-content: space-between;
   gap: 16px;
 }
-h1 { margin: 0; font-size: 30px; letter-spacing: -0.02em; }
+h1 { margin: 0; font-family: var(--serif); font-weight: 400; font-size: 34px; letter-spacing: -0.02em; }
 .realms { display: flex; gap: 6px; flex: none; padding-top: 6px; }
 .realm {
   font-size: 11px;
@@ -207,7 +214,7 @@ h1 { margin: 0; font-size: 30px; letter-spacing: -0.02em; }
 }
 .lang.rust { background: #fde8e4; color: #b93824; }
 .lang.lua { background: #e5f6ee; color: #1c7a4d; }
-.nav-link .lang, .nav-link .access { font-size: 9px; padding: 2px 5px; }
+.nav-link .lang, .nav-link .realm, .nav-link .access, .member-name .realm { font-size: 9px; padding: 2px 5px; }
 .access {
   font-size: 11px;
   letter-spacing: 0.08em;
@@ -221,7 +228,7 @@ h1 { margin: 0; font-size: 30px; letter-spacing: -0.02em; }
 .access.internal { background: #f3e8f8; color: #6d3484; }
 .badges { display: flex; gap: 4px; align-items: center; flex: none; }
 pre.sig, pre.code {
-  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  font-family: var(--mono);
   overflow-x: auto;
 }
 pre.sig {
@@ -261,7 +268,7 @@ table.args td {
   border-bottom: 1px solid var(--row);
   line-height: 1.45;
 }
-table.args td.name { font-family: ui-monospace, monospace; font-weight: 650; white-space: nowrap; }
+table.args td.name { font-family: var(--mono); font-weight: 400; white-space: nowrap; }
 em.opt {
   font-style: normal;
   font-size: 10px;
@@ -270,9 +277,9 @@ em.opt {
   color: var(--muted);
   margin-left: 6px;
 }
-a.type { color: var(--accent); text-decoration: none; font-family: ui-monospace, monospace; }
+a.type { color: var(--accent); text-decoration: none; font-family: var(--mono); }
 a.type:hover { text-decoration: underline; }
-span.type { font-family: ui-monospace, monospace; color: var(--type); }
+span.type { font-family: var(--mono); color: var(--type); }
 pre.code {
   margin: 0;
   padding: 14px 16px;
@@ -299,10 +306,10 @@ ul.members li {
   align-items: center;
 }
 .member-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-ul.members a { font-family: ui-monospace, monospace; color: var(--accent); text-decoration: none; }
+ul.members a { font-family: var(--mono); color: var(--accent); text-decoration: none; }
 ul.members span { color: var(--soft); }
 ul.seealso li { padding: 4px 0; }
-ul.seealso a { color: var(--accent); text-decoration: none; font-family: ui-monospace, monospace; }
+ul.seealso a { color: var(--accent); text-decoration: none; font-family: var(--mono); }
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -318,7 +325,7 @@ ul.seealso a { color: var(--accent); text-decoration: none; font-family: ui-mono
   padding: 14px 16px 16px;
 }
 .card:hover { border-color: #8eb0ef; }
-.card strong { display: block; font-size: 16px; }
+.card strong { display: block; font-family: var(--serif); font-weight: 400; font-size: 20px; }
 .card em {
   display: block;
   margin-top: 2px;
@@ -455,16 +462,6 @@ const TAIL: &str = r####"</script>
     return out;
   }
 
-  function langPill(page) {
-    if (!page.lang) {
-      return "";
-    }
-
-    var label = page.lang === "rust" ? "Rust" : "Lua";
-
-    return '<span class="lang ' + page.lang + '">' + label + "</span>";
-  }
-
   function accessPill(page) {
     var kind = page.access === "internal" ? "internal" : "public";
     var label = kind === "internal" ? "Internal" : "Public";
@@ -475,7 +472,7 @@ const TAIL: &str = r####"</script>
   function link(page, label) {
     var active = currentId() === page.id ? " active" : "";
 
-    return '<a class="nav-link' + active + '" href="#' + encodeURIComponent(page.id) + '"><span>' + esc(label) + '</span><span class="badges">' + langPill(page) + "</span></a>";
+    return '<a class="nav-link' + active + '" href="#' + encodeURIComponent(page.id) + '"><span>' + esc(label) + '</span><span class="badges">' + realms(page.realm) + "</span></a>";
   }
 
   function accessOf(page) {
@@ -807,7 +804,7 @@ const TAIL: &str = r####"</script>
 
     for (itemIdx = 0; itemIdx < pages.length; itemIdx++) {
       var page = pages[itemIdx];
-      html += "<li><span class='member-name'><a href='#" + encodeURIComponent(page.id) + "'>" + esc(page.name) + "</a>" + langPill(page) + "</span><span>" + esc(page.summary) + "</span></li>";
+      html += "<li><span class='member-name'><a href='#" + encodeURIComponent(page.id) + "'>" + esc(page.name) + "</a>" + realms(page.realm) + "</span><span>" + esc(page.summary) + "</span></li>";
     }
 
     html += "</ul>";
@@ -842,7 +839,7 @@ const TAIL: &str = r####"</script>
   function article(page) {
     var html = "<article>";
     html += '<p class="crumbs">' + crumbs(page) + "</p>";
-    html += '<div class="title-row"><h1>' + esc(titleOf(page)) + '</h1><div class="realms">' + langPill(page) + accessPill(page) + realms(page.realm) + "</div></div>";
+    html += '<div class="title-row"><h1>' + esc(titleOf(page)) + '</h1><div class="realms">' + accessPill(page) + realms(page.realm) + "</div></div>";
 
     if (page.deprecated) {
       var since = page.deprecated_since ? " since " + esc(page.deprecated_since) : "";
@@ -989,10 +986,94 @@ const TAIL: &str = r####"</script>
 pub fn render(pages: &[Page]) -> String {
     let mut json = serde_json::to_string(pages).expect("wiki json");
     json = json.replace('<', "\\u003c");
-    let mut html = String::with_capacity(HEAD.len() + json.len() + TAIL.len());
-    html.push_str(HEAD);
+    let head = HEAD.replacen("/*__WIKI_FONTS__*/", &font_css(), 1);
+    let mut html = String::with_capacity(head.len() + json.len() + TAIL.len());
+    html.push_str(&head);
     html.push_str(&json);
     html.push_str(TAIL);
 
     html
+}
+
+fn font_css() -> String {
+    let mut css = String::new();
+    css.push_str(&face(
+        "Source Serif 4",
+        "normal",
+        400,
+        include_bytes!("../fonts/SourceSerif4-Regular.woff2"),
+    ));
+    css.push_str(&face(
+        "Source Serif 4",
+        "italic",
+        400,
+        include_bytes!("../fonts/SourceSerif4-It.woff2"),
+    ));
+    css.push_str(&face(
+        "Source Sans 3",
+        "normal",
+        400,
+        include_bytes!("../fonts/SourceSans3-Regular.woff2"),
+    ));
+    css.push_str(&face(
+        "Source Sans 3",
+        "normal",
+        600,
+        include_bytes!("../fonts/SourceSans3-Semibold.woff2"),
+    ));
+    css.push_str(&face(
+        "Source Code Pro",
+        "normal",
+        400,
+        include_bytes!("../fonts/SourceCodePro-Regular.woff2"),
+    ));
+
+    css
+}
+
+fn face(family: &str, style: &str, weight: u16, bytes: &[u8]) -> String {
+    format!(
+        "@font-face{{font-family:\"{family}\";font-style:{style};font-weight:{weight};font-display:swap;src:url(\"data:font/woff2;base64,{}\") format(\"woff2\");}}",
+        base64(bytes)
+    )
+}
+
+fn base64(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    let mut idx = 0;
+
+    while idx + 3 <= data.len() {
+        let n = ((data[idx] as u32) << 16) | ((data[idx + 1] as u32) << 8) | data[idx + 2] as u32;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        out.push(TABLE[(n & 63) as usize] as char);
+        idx += 3;
+    }
+
+    let left = data.len() - idx;
+
+    if left == 0 {
+        return out;
+    }
+
+    let mut n = (data[idx] as u32) << 16;
+
+    if left == 2 {
+        n |= (data[idx + 1] as u32) << 8;
+    }
+
+    out.push(TABLE[((n >> 18) & 63) as usize] as char);
+    out.push(TABLE[((n >> 12) & 63) as usize] as char);
+
+    if left == 2 {
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        out.push('=');
+    } else {
+        out.push('=');
+        out.push('=');
+    }
+
+    out
 }

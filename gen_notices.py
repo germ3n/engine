@@ -318,6 +318,62 @@ out += [
 out += section("The Apache License, Version 2.0")
 out.append(apache_text())
 
+def wiki_font_parts(path):
+    text = read(path)
+    marker = "SIL OPEN FONT LICENSE"
+    stop = text.find(marker)
+    if stop < 0:
+        sys.exit("%s has no OFL text" % path)
+    head = []
+    for line in text[:stop].split("\n"):
+        line = line.strip()
+        if not line or set(line) <= set("-"):
+            continue
+        head.append(line)
+    body = "\n".join(line.rstrip() for line in text[stop:].split("\n")).strip()
+
+    return head, body
+
+wiki_font_dir = os.path.join(ROOT, "game/wiki/fonts")
+wiki_fonts = [
+    (
+        "Source Serif 4",
+        "Regular and Italic, version 4.005. A Latin subset is embedded in the scripting wiki.",
+        "source-serif-LICENSE.md",
+    ),
+    (
+        "Source Sans 3",
+        "Regular and Semibold, version 3.052. A Latin subset is embedded in the scripting wiki.",
+        "source-sans-LICENSE.md",
+    ),
+    (
+        "Source Code Pro",
+        "Regular, version 2.042. A Latin subset is embedded in the scripting wiki.",
+        "source-code-pro-LICENSE.md",
+    ),
+]
+wiki_entries = []
+wiki_body = None
+for title, note, filename in wiki_fonts:
+    head, body = wiki_font_parts(os.path.join(wiki_font_dir, filename))
+    if wiki_body is None:
+        wiki_body = body
+    elif body != wiki_body:
+        sys.exit("wiki font OFL texts diverged; update gen_notices.py")
+    wiki_entries.append((title, note, head))
+
+out += section("Scripting wiki fonts")
+out += [
+    "Source: game/wiki/fonts",
+    "Embedded in the scripting wiki (wiki.html, and wiki/index.html inside base.pak).",
+    "The shipped files are Latin subsets. The Reserved Font Name Source is unchanged.",
+    "License: SIL Open Font License, Version 1.1",
+    "",
+]
+for title, note, head in wiki_entries:
+    out += [title, note] + head + [""]
+out.append(wiki_body)
+
 out += section("LuaJIT")
 out += [
     "Source: LuaJIT, vendored by the %s crate (features luajit52, vendored)" % label(mlua),

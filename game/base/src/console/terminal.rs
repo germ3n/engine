@@ -45,12 +45,7 @@ pub(crate) fn submit_shared(line: &str) -> Vec<Outcome> {
 
 pub(crate) fn complete_shared(line: &str, lua: &mlua::Lua, realm: Realm) -> (String, Vec<String>) {
     let (server, client) = snapshot_sides();
-    let matches = suggest_with(
-        line,
-        server.as_ref(),
-        client.as_ref(),
-        Some((lua, realm)),
-    );
+    let matches = suggest_with(line, server.as_ref(), client.as_ref(), Some((lua, realm)));
     let mut cycle = WINDOW_CYCLE.lock().unwrap();
     let applied = apply_completion(line, &matches, &mut cycle);
 
@@ -410,7 +405,11 @@ struct Applied {
     list: Vec<String>,
 }
 
-fn suggest_live(line: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSide>) -> Vec<String> {
+fn suggest_live(
+    line: &str,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+) -> Vec<String> {
     suggest_with(line, server, client, None)
 }
 
@@ -448,11 +447,15 @@ fn suggest_with(
     }
 
     if let Some(rx) = server_rx {
-        server_extra = rx.recv_timeout(Duration::from_millis(80)).unwrap_or_default();
+        server_extra = rx
+            .recv_timeout(Duration::from_millis(80))
+            .unwrap_or_default();
     }
 
     if let Some(rx) = client_rx {
-        client_extra = rx.recv_timeout(Duration::from_millis(80)).unwrap_or_default();
+        client_extra = rx
+            .recv_timeout(Duration::from_millis(80))
+            .unwrap_or_default();
     }
 
     let mut extra = server_extra;
@@ -894,7 +897,11 @@ extern "system" {
     fn WaitForSingleObject(handle: *mut std::ffi::c_void, millis: u32) -> u32;
 }
 
-fn dispatch(line: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSide>) -> Vec<Outcome> {
+fn dispatch(
+    line: &str,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+) -> Vec<Outcome> {
     let commented = strip_comment(line);
     let parts = split_commands(commented);
     let mut outcomes = Vec::new();
@@ -928,7 +935,11 @@ fn run_part(part: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSid
     outcome
 }
 
-fn run_part_realm(part: &str, server: Option<&ConsoleSide>, client: Option<&ConsoleSide>) -> Outcome {
+fn run_part_realm(
+    part: &str,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+) -> Outcome {
     if let Some(server) = server {
         demo::bind_realm(Realm::Server);
 
@@ -1199,11 +1210,19 @@ mod tests {
         assert_eq!(outcomes[0].side, "server");
         assert!(outcomes[0].error.is_none());
         assert_eq!(
-            server.binds.lock().unwrap().get(Binding::Key(KeyCode::KeyE)),
+            server
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
             Some(Action::Use)
         );
         assert_eq!(
-            client.binds.lock().unwrap().get(Binding::Key(KeyCode::KeyE)),
+            client
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
             None
         );
     }
@@ -1218,7 +1237,11 @@ mod tests {
         assert_eq!(outcomes[0].side, "server");
         assert!(outcomes[0].error.is_some());
         assert_eq!(
-            client.binds.lock().unwrap().get(Binding::Key(KeyCode::KeyE)),
+            client
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
             None
         );
     }
@@ -1330,7 +1353,11 @@ mod tests {
         assert_eq!(outcomes[0].side, "server");
         assert_eq!(outcomes[1].side, "server");
         assert_eq!(
-            server.binds.lock().unwrap().get(Binding::Key(KeyCode::KeyR)),
+            server
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyR)),
             Some(Action::Reload)
         );
     }
@@ -1348,13 +1375,21 @@ mod tests {
     fn quit_stops_the_rest_of_the_line() {
         let server = side(Vec::new());
         let client = side(Vec::new());
-        let outcomes = dispatch("bind e use; quit; bind r reload", Some(&server), Some(&client));
+        let outcomes = dispatch(
+            "bind e use; quit; bind r reload",
+            Some(&server),
+            Some(&client),
+        );
 
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes[1].quit);
         assert_eq!(outcomes[1].side, "server");
         assert_eq!(
-            server.binds.lock().unwrap().get(Binding::Key(KeyCode::KeyR)),
+            server
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyR)),
             None
         );
     }
@@ -1428,7 +1463,10 @@ mod tests {
         let applied = apply_completion("playdemo h", &matches, &mut cycle);
 
         assert_eq!(applied.line, "playdemo hall");
-        assert_eq!(applied.list, vec!["hall".to_string(), "hallway".to_string()]);
+        assert_eq!(
+            applied.list,
+            vec!["hall".to_string(), "hallway".to_string()]
+        );
 
         let listed = apply_completion(&applied.line, &[], &mut cycle);
 
@@ -1472,10 +1510,7 @@ mod tests {
         let server = side(Vec::new());
         let matches = suggest("playdemo h", Some(&server), None, &extra);
 
-        assert_eq!(
-            matches,
-            vec!["hall".to_string(), "hallway".to_string()]
-        );
+        assert_eq!(matches, vec!["hall".to_string(), "hallway".to_string()]);
     }
 
     #[test]

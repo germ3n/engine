@@ -33,6 +33,9 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     pub dedicated: bool,
 
+    #[arg(long, default_value_t = false)]
+    pub insecure: bool,
+
     #[arg(long, default_value_t = 60)]
     pub tickrate: u32,
 
@@ -63,6 +66,7 @@ pub fn get_cmdline_args() -> CliArgs {
             editor: false,
             compile_map: false,
             dedicated: false,
+            insecure: false,
             tickrate: 60,
             map_scale: 1.0,
             connect_lobby: None,

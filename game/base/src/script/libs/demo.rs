@@ -126,7 +126,9 @@ fn queued(command: DemoCommand) -> bool {
 }
 
 pub fn register_demo_lib(lua: &Lua) {
-    let table = lua.create_table().expect("[demo] Failed to create demo table");
+    let table = lua
+        .create_table()
+        .expect("[demo] Failed to create demo table");
 
     table
         .set(

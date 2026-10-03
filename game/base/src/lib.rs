@@ -82,7 +82,13 @@ pub fn run() {
         return;
     }
 
-    crate::network::steam::startup(cmdargs.connect_lobby, cmdargs.connect.as_deref());
+    crate::network::steam::startup(crate::network::steam::Start {
+        lobby: cmdargs.connect_lobby,
+        connect: cmdargs.connect.clone(),
+        dedicated: cmdargs.dedicated,
+        insecure: cmdargs.insecure,
+        map: cmdargs.map.clone().unwrap_or_else(|| "hall".to_string()),
+    });
     crate::network::sim::configure(crate::network::sim::Settings {
         lag_ms: cmdargs.fakelag,
         jitter_ms: cmdargs.fakejitter,
@@ -144,7 +150,17 @@ pub fn run() {
     let terminal_server = None;
 
     #[cfg(feature = "client")]
+    if cmdargs.dedicated {
+        console::bind_sides(terminal_server.clone(), None);
+        console::spawn_terminal(terminal_server, None);
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[cfg(feature = "client")]
     {
+        let server_addr = client_server_addr(cmdargs.connect.as_deref());
         let (client_tx, client_rx) = std::sync::mpsc::channel();
         let (client_out_tx, client_out_rx) = std::sync::mpsc::sync_channel(OUTBOUND_CAP);
         let (client_wake_read, client_wake_write) = wake_pair();
@@ -155,7 +171,7 @@ pub fn run() {
         log::info!("Starting Client network loop");
         let net = std::thread::spawn(move || {
             client::client_network_loop(
-                SocketAddr::from_str("127.0.0.1:25400").expect("Failed to create SocketAddr"),
+                server_addr,
                 client_tx,
                 client_out_rx,
                 net_shutdown,
@@ -194,4 +210,15 @@ pub fn run() {
 
     #[cfg(not(feature = "client"))]
     drop(terminal_server);
+}
+
+#[cfg(feature = "client")]
+fn client_server_addr(connect: Option<&str>) -> SocketAddr {
+    if let Some(text) = connect {
+        if let Ok(addr) = text.parse() {
+            return addr;
+        }
+    }
+
+    SocketAddr::from_str("127.0.0.1:25400").expect("Failed to create SocketAddr")
 }

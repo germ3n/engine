@@ -326,6 +326,8 @@ pub enum FromClient {
     Connected {
         addr: SocketAddr,
         generation: u32,
+        steam_id: u64,
+        name: String,
     },
     Disconnected {
         addr: SocketAddr,

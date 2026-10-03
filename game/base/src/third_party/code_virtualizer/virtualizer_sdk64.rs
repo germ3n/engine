@@ -1,9 +1,6 @@
 #[allow(dead_code)]
 #[cfg_attr(
-    all(
-        target_arch = "aarch64",
-        any(target_os = "linux", target_os = "macos")
-    ),
+    all(target_arch = "aarch64", any(target_os = "linux", target_os = "macos")),
     link(name = "VirtualizerARM64SDK", kind = "dylib")
 )]
 #[cfg_attr(

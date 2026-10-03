@@ -9,9 +9,9 @@ use crate::script::libs::engine::publish_clock;
 use crate::script::libs::ents::{AnimAccess, EntityAccess};
 use crate::script::libs::{
     register_angle3_lib, register_biome_lib, register_console_lib, register_convar_lib,
-    register_demo_lib, register_engine_lib, register_ents_lib, register_input_lib, register_net_lib,
-    register_noise_lib, register_pad_lib, register_scripted_ents_lib, register_sound_lib,
-    register_surface_lib, register_vector3_lib,
+    register_demo_lib, register_engine_lib, register_ents_lib, register_input_lib,
+    register_net_lib, register_noise_lib, register_pad_lib, register_scripted_ents_lib,
+    register_sound_lib, register_surface_lib, register_vector3_lib,
 };
 use crate::sound::SoundAccess;
 use crate::ui::Color;

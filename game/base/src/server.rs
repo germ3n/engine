@@ -5,7 +5,7 @@ use crate::movement::{self, UserCommand};
 use crate::network::events::{EntityModel, EntityNetworked, EntityOwnership, EntitySnapshot};
 use crate::network::packet::STREAM_STATE;
 use crate::network::packet::{
-    encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart,
+    encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart, CONNECTION_TIMEOUT,
 };
 use crate::network::server::NetworkServer;
 use crate::network::server::ReliableSendError;
@@ -30,6 +30,8 @@ struct RemotePlayer {
     addr: SocketAddr,
     player: EntityHandle,
     slot: u16,
+    steam_id: u64,
+    name: String,
     pending: VecDeque<UserCommand>,
     last_buttons: InputButtons,
     ack: u64,
@@ -152,12 +154,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                 if game.cur_time >= session.next_shot {
                     let listed = listed_players(&players);
                     let tick = game.tick_count;
-                    let shot = demo::capture_world(
-                        &mut game,
-                        tick,
-                        EntityHandle::NULL,
-                        &listed,
-                    );
+                    let shot = demo::capture_world(&mut game, tick, EntityHandle::NULL, &listed);
                     session.write_mark(&DemoFrame::Checkpoint(shot));
 
                     while session.next_shot <= game.cur_time {
@@ -180,7 +177,12 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         while let Ok(net_event) = game.network_receiver.try_recv() {
             match net_event {
-                FromClient::Connected { addr, generation } => {
+                FromClient::Connected {
+                    addr,
+                    generation,
+                    steam_id,
+                    name,
+                } => {
                     log::info!("[sv] peer {}", addr);
                     if !peers.contains(&addr) {
                         peers.push(addr);
@@ -198,6 +200,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                                 addr,
                                 player: handle,
                                 slot,
+                                steam_id,
+                                name: name.clone(),
                                 pending: VecDeque::new(),
                                 last_buttons: InputButtons::NONE,
                                 ack: 0,
@@ -207,10 +211,17 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                                 session.push_event(SlotEvent::Join {
                                     slot,
                                     handle,
-                                    name: String::new(),
+                                    name: name.clone(),
                                 });
                             }
-                            log::info!("[sv] spawn {handle:?}");
+                            let joined_player = &players[players.len() - 1];
+                            log::info!(
+                                "[sv] spawn {:?} {} {}",
+                                joined_player.player,
+                                joined_player.steam_id,
+                                joined_player.name
+                            );
+                            game.send_reliable(ServerToClient::PlayerConnected { handle, name });
                             let _: () = game.run_hook("PlayerSpawned", handle);
                             let mut idx = 0;
 
@@ -392,6 +403,143 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
+struct PendingJoin {
+    steam_id: u64,
+    name: String,
+    started: Instant,
+}
+
+#[cfg(feature = "server")]
+fn send_challenge(server: &NetworkServer, addr: SocketAddr) {
+    let token = server.challenge_for(addr);
+    let (secure, host_steam_id) = crate::network::steam::host_challenge();
+    let bytes = wincode::serialize(&PacketType::Challenge {
+        token,
+        secure,
+        host_steam_id,
+    })
+    .unwrap();
+    let _ = server.send_to(addr, &bytes);
+}
+
+#[cfg(feature = "server")]
+fn forget_auth(
+    addr: SocketAddr,
+    authed: &mut HashMap<SocketAddr, u64>,
+    pending: &mut HashMap<SocketAddr, PendingJoin>,
+) {
+    authed.remove(&addr);
+    pending.remove(&addr);
+    crate::network::steam::end_session(addr);
+}
+
+#[cfg(feature = "server")]
+fn admit(
+    server: &mut NetworkServer,
+    tx: &Sender<FromClient>,
+    addr: SocketAddr,
+    steam_id: u64,
+    name: String,
+) -> bool {
+    let Some((_session, generation)) = server.add_client(addr) else {
+        return false;
+    };
+
+    server.send_connected(addr);
+    log::info!("[sv] connect {}", addr);
+    let _ = tx.send(FromClient::Connected {
+        addr,
+        generation,
+        steam_id,
+        name,
+    });
+
+    true
+}
+
+#[cfg(feature = "server")]
+fn poll_auth(
+    server: &mut NetworkServer,
+    tx: &Sender<FromClient>,
+    authed: &mut HashMap<SocketAddr, u64>,
+    pending: &mut HashMap<SocketAddr, PendingJoin>,
+) {
+    while let Some(update) = crate::network::steam::poll_auth() {
+        match update {
+            crate::network::steam::AuthUpdate::Accepted { addr, steam_id } => {
+                let Some(join) = pending.remove(&addr) else {
+                    crate::network::steam::end_session(addr);
+
+                    continue;
+                };
+
+                if join.steam_id != steam_id {
+                    forget_auth(addr, authed, pending);
+
+                    continue;
+                }
+
+                let old = authed.iter().find_map(|(peer, id)| {
+                    if *peer != addr && *id == steam_id {
+                        Some(*peer)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(old) = old {
+                    if server.disconnect_client(old) {
+                        let _ = tx.send(FromClient::Disconnected { addr: old });
+                    }
+
+                    forget_auth(old, authed, pending);
+                }
+
+                authed.insert(addr, steam_id);
+                if !admit(server, tx, addr, steam_id, join.name) {
+                    forget_auth(addr, authed, pending);
+                }
+            }
+            crate::network::steam::AuthUpdate::Rejected { addr } => {
+                log::info!("[sv] auth rejected {}", addr);
+                forget_auth(addr, authed, pending);
+            }
+            crate::network::steam::AuthUpdate::Revoked { addr } => {
+                log::info!("[sv] auth revoked {}", addr);
+                let gone = server.disconnect_client(addr);
+                forget_auth(addr, authed, pending);
+                if gone {
+                    let _ = tx.send(FromClient::Disconnected { addr });
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+fn expire_auth(
+    authed: &mut HashMap<SocketAddr, u64>,
+    pending: &mut HashMap<SocketAddr, PendingJoin>,
+) {
+    let stale: Vec<SocketAddr> = pending
+        .iter()
+        .filter(|(_, join)| join.started.elapsed() >= CONNECTION_TIMEOUT)
+        .map(|(addr, _)| *addr)
+        .collect();
+    for addr in stale {
+        log::info!("[sv] auth timeout {}", addr);
+        forget_auth(addr, authed, pending);
+    }
+}
+
+#[cfg(feature = "server")]
+fn trim_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| !ch.is_control())
+        .take(32)
+        .collect()
+}
+
+#[cfg(feature = "server")]
 pub fn server_network_loop(
     tx: Sender<FromClient>,
     rx: Receiver<NetSend<ServerToClient>>,
@@ -404,11 +552,16 @@ pub fn server_network_loop(
             std::process::exit(1);
         }
     };
+    let mut authed: HashMap<SocketAddr, u64> = HashMap::new();
+    let mut pending: HashMap<SocketAddr, PendingJoin> = HashMap::new();
 
     loop {
         while let Ok(outgoing) = rx.try_recv() {
             handle_server_send(&mut server, outgoing);
         }
+
+        poll_auth(&mut server, &tx, &mut authed, &mut pending);
+        expire_auth(&mut authed, &mut pending);
 
         let mut ack_addrs = Vec::new();
         let mut got_packet = false;
@@ -431,36 +584,50 @@ pub fn server_network_loop(
                         .map(|session| server.session_matches(from, session))
                         .unwrap_or(false);
                     if restart && server.disconnect_client(from) {
+                        forget_auth(from, &mut authed, &mut pending);
                         let _ = tx.send(FromClient::Disconnected { addr: from });
                     }
 
                     if server.is_connected(from) {
                         server.send_connected(from);
                     } else {
-                        let token = server.challenge_for(from);
-                        let challenge_bytes =
-                            wincode::serialize(&PacketType::Challenge { token }).unwrap();
-                        let _ = server.send_to(from, &challenge_bytes);
+                        send_challenge(&server, from);
                     }
                 }
-                PacketType::ChallengeResponse { token } => {
+                PacketType::ChallengeResponse {
+                    token,
+                    steam_id,
+                    ticket,
+                    name,
+                } => {
                     log::info!("[sv] challenge response");
                     if server.is_connected(from) {
                         server.send_connected(from);
                     } else if server.verify_challenge(from, token) {
-                        if let Some((_session, generation)) = server.add_client(from) {
-                            server.send_connected(from);
-                            log::info!("[sv] connect {}", from);
-                            let _ = tx.send(FromClient::Connected {
-                                addr: from,
-                                generation,
-                            });
+                        let (secure, _) = crate::network::steam::host_challenge();
+                        if !secure {
+                            let _ = admit(&mut server, &tx, from, 0, String::new());
+                        } else if ticket.is_empty()
+                            || ticket.len() > 1024
+                            || name.len() > 128
+                            || crate::network::steam::peer_id(from)
+                                .is_some_and(|peer| peer != steam_id)
+                        {
+                            log::info!("[sv] auth rejected {}", from);
+                        } else if !pending.contains_key(&from) {
+                            let name = trim_name(&name);
+                            pending.insert(
+                                from,
+                                PendingJoin {
+                                    steam_id,
+                                    name,
+                                    started: Instant::now(),
+                                },
+                            );
+                            crate::network::steam::begin_auth(from, steam_id, &ticket);
                         }
                     } else {
-                        let token = server.challenge_for(from);
-                        let challenge_bytes =
-                            wincode::serialize(&PacketType::Challenge { token }).unwrap();
-                        let _ = server.send_to(from, &challenge_bytes);
+                        send_challenge(&server, from);
                     }
                 }
                 PacketType::Challenge { .. } => {
@@ -469,6 +636,7 @@ pub fn server_network_loop(
                 PacketType::Connected { .. } => {}
                 PacketType::Disconnect { session } => {
                     if server.retire_client(from, session) {
+                        forget_auth(from, &mut authed, &mut pending);
                         let _ = tx.send(FromClient::Disconnected { addr: from });
                     }
                 }
@@ -601,6 +769,7 @@ pub fn server_network_loop(
         }
 
         for addr in server.drop_idle_clients() {
+            forget_auth(addr, &mut authed, &mut pending);
             let _ = tx.send(FromClient::Disconnected { addr });
         }
 
@@ -905,10 +1074,7 @@ fn simulate_players(
         if apply_command(game, handle, &cmd, prev, dt, gravity) {
             players[idx].last_buttons = cmd.buttons;
             players[idx].ack = cmd.tick;
-            recorded.push(SlotInput {
-                slot,
-                command: cmd,
-            });
+            recorded.push(SlotInput { slot, command: cmd });
         }
 
         idx += 1;
@@ -976,12 +1142,7 @@ fn poll_demo(
                             let listed = listed_players(players);
                             session.players = listed.clone();
                             let tick = game.tick_count;
-                            let shot = demo::capture_world(
-                                game,
-                                tick,
-                                EntityHandle::NULL,
-                                &listed,
-                            );
+                            let shot = demo::capture_world(game, tick, EntityHandle::NULL, &listed);
                             session.write_mark(&DemoFrame::Checkpoint(shot));
                             session.next_shot = game.cur_time + demo::SHOT_INTERVAL;
                             log::info!("[demo] recording {name}");
@@ -1481,9 +1642,7 @@ fn emit_anim_models(game: &mut GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
-fn emit_entity_changes(
-    game: &mut GameState<FromClient, ServerToClient>,
-) -> Vec<EntityNetworked> {
+fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) -> Vec<EntityNetworked> {
     let spawned = game.entities.take_net_spawned();
     let (removed, updates): (Vec<_>, Vec<_>) = game
         .collect_networked()
