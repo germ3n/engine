@@ -170,6 +170,8 @@ pub fn exec_line(line: &str, binds: &mut Binds) -> Result<(), String> {
 
             binds.write_cfg(&binds_path())
         }
+        "record" | "stop" | "playdemo" | "demo_pause" | "demo_timescale" | "demo_seek"
+        | "demo_loop" | "demo_cam" | "demo_view" => crate::demo::console_line(&tokens),
         other => Err(format!("unknown command '{other}'")),
     }
 }

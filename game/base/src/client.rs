@@ -1,4 +1,5 @@
 use crate::anchor::Anchor;
+use crate::demo::{self, CamMode, DemoFrame, DemoPlay, DemoSession, SlotEvent};
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player, ScriptedEntity};
 use crate::input::Action;
@@ -24,6 +25,7 @@ use crate::platform::{
 use crate::r#enum::InputButtons;
 use crate::script::engine::DrawCommand;
 use crate::script::libs::angle3::Angle3;
+use crate::script::Realm;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
 use crate::ui::backend;
@@ -215,7 +217,12 @@ impl SnapshotIngress {
     }
 }
 
-pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Arc<AtomicBool>) {
+pub fn client_loop(
+    mut game: GameState<FromServer, ClientToServer>,
+    shutdown: Arc<AtomicBool>,
+    resync: Arc<AtomicBool>,
+) {
+    demo::bind_realm(Realm::Client);
     let (host, mut held_window) = client_surface();
     let binds = game.binds.clone();
 
@@ -248,6 +255,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut keys = HashSet::new();
     let mut mouse = HashSet::new();
     let mut touches = Vec::new();
+    let mut recorder: Option<DemoSession> = None;
+    let mut play: Option<DemoPlay> = None;
 
     host.run(move |event, host, control| {
         control.poll();
@@ -352,6 +361,12 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     let mut pointer = game.script_engine.pointer.lock().unwrap();
                     pointer.wheel_x += x;
                     pointer.wheel_y += y;
+
+                    if let Some(play) = play.as_mut() {
+                        if play.cam == CamMode::Orbit {
+                            play.orbit_dist = (play.orbit_dist - y * 0.35).clamp(1.2, 24.0);
+                        }
+                    }
                 }
                 WindowEvent::CursorMoved { x, y } => {
                     let mut pointer = game.script_engine.pointer.lock().unwrap();
@@ -726,7 +741,17 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 }
             },
             Event::Device(DeviceEvent::MouseMotion { delta }) => {
-                if captured && !client_window.vr_input().active {
+                if let Some(play) = play.as_mut() {
+                    if captured && !client_window.vr_input().active {
+                        if play.cam == CamMode::Free {
+                            camera.look(delta.0 as f32, delta.1 as f32);
+                        } else if play.cam == CamMode::Orbit {
+                            play.orbit_yaw += delta.0 as f32 * 0.0025;
+                            play.orbit_pitch =
+                                (play.orbit_pitch - delta.1 as f32 * 0.0025).clamp(-1.2, 1.2);
+                        }
+                    }
+                } else if captured && !client_window.vr_input().active {
                     if prediction.local.is_null() {
                         camera.look(delta.0 as f32, delta.1 as f32);
                     } else {
@@ -742,6 +767,27 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 last_frame = now;
                 let frame_dt = (dt as f32).min(0.1);
 
+                poll_client_demo(
+                    &mut game,
+                    &mut recorder,
+                    &mut play,
+                    &mut prediction,
+                    &mut remotes,
+                    &mut camera,
+                    &mut brush_scale,
+                    &mut tick_ingress,
+                    &mut snapshot_ingress,
+                    &mut hold_events,
+                    &mut held,
+                    &resync,
+                    session_start,
+                );
+
+                if play.is_some() {
+                    while game.script_engine.poll_usermessage().is_some() {}
+
+                    while game.network_receiver.try_recv().is_ok() {}
+                } else {
                 while let Some((hash, data)) = game.script_engine.poll_usermessage() {
                     game.send_reliable(ClientToServer::UserMessage { hash, data });
                 }
@@ -847,9 +893,36 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                         }
 
                                         hold_events = false;
+
+                                        if let Some(session) = recorder.as_mut() {
+                                            demo::remember_players(&mut session.players, &game);
+                                            let mut listed = session.players.clone();
+                                            let mut player_idx = 0;
+
+                                            while player_idx < listed.len() {
+                                                if listed[player_idx].handle == prediction.local {
+                                                    listed[player_idx].buttons =
+                                                        prediction.previous();
+                                                }
+
+                                                player_idx += 1;
+                                            }
+
+                                            let tick = game.tick_count;
+                                            let local = prediction.local;
+                                            let shot = demo::capture_world(
+                                                &mut game,
+                                                tick,
+                                                local,
+                                                &listed,
+                                            );
+                                            session.write_mark(&DemoFrame::Keyframe(shot));
+                                        }
+
                                         while let Some(waiting) = held.pop_front() {
                                             apply_server_event(
                                                 &mut game,
+                                                &mut recorder,
                                                 &mut tick_ingress,
                                                 &mut prediction,
                                                 &mut remotes,
@@ -875,6 +948,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                             apply_server_event(
                                 &mut game,
+                                &mut recorder,
                                 &mut tick_ingress,
                                 &mut prediction,
                                 &mut remotes,
@@ -891,6 +965,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                 while let Some((hash, data)) = game.script_engine.poll_usermessage() {
                     game.send_reliable(ClientToServer::UserMessage { hash, data });
+                }
                 }
 
                 let speed = game.voxel_world.scale() as f32 * 14.0;
@@ -923,92 +998,161 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 };
                 let vr = client_window.vr_input();
 
-                if prediction.arm_look {
+                if play.is_some() {
+                    if play.as_ref().map(|demo| demo.cam) == Some(CamMode::Free) {
+                        let wish_forward = (forward + pad.forward).clamp(-1.0, 1.0);
+                        let wish_right = (right + pad.right).clamp(-1.0, 1.0);
+                        camera.fly(wish_forward, wish_right, up, frame_dt, speed);
+                    }
+
+                    drive_demo(
+                        &mut play,
+                        &mut game,
+                        &mut prediction,
+                        &mut remotes,
+                        &mut camera,
+                        &mut brush_scale,
+                        &mut tick_ingress,
+                        session_start,
+                        dt,
+                    );
+
+                    if play.as_ref().map(|demo| demo.cam) != Some(CamMode::Free) {
+                        if let Some(demo) = play.as_ref() {
+                            place_demo_camera(&mut camera, &game, demo, &prediction);
+                        }
+                    }
+                } else if prediction.arm_look {
                     prediction.look.p = camera.pitch.to_degrees();
                     prediction.look.y = camera.yaw.to_degrees();
                     prediction.look.r = 0.0;
                     prediction.arm_look = false;
                 }
 
-                if vr.active {
-                    let turn = vr.turn * frame_dt * 1.5;
+                if play.is_none() {
+                    if vr.active {
+                        let turn = vr.turn * frame_dt * 1.5;
 
-                    if prediction.local.is_null() {
-                        camera.yaw -= turn;
-                    } else {
-                        prediction.look.y -= turn.to_degrees();
+                        if prediction.local.is_null() {
+                            camera.yaw -= turn;
+                        } else {
+                            prediction.look.y -= turn.to_degrees();
+                        }
+
+                        forward += vr.move_y;
+                        right += vr.move_x;
                     }
 
-                    forward += vr.move_y;
-                    right += vr.move_x;
-                }
+                    if !vr.active {
+                        let yaw = pad.look_x * PAD_LOOK * frame_dt;
+                        let pitch = pad.look_y * PAD_LOOK * frame_dt;
 
-                if !vr.active {
-                    let yaw = pad.look_x * PAD_LOOK * frame_dt;
-                    let pitch = pad.look_y * PAD_LOOK * frame_dt;
-
-                    if prediction.local.is_null() {
-                        camera.yaw += yaw;
-                        camera.pitch = (camera.pitch + pitch).clamp(-1.5, 1.5);
-                    } else {
-                        prediction.look.y += yaw.to_degrees();
-                        prediction.look.p =
-                            (prediction.look.p + pitch.to_degrees()).clamp(-89.0, 89.0);
+                        if prediction.local.is_null() {
+                            camera.yaw += yaw;
+                            camera.pitch = (camera.pitch + pitch).clamp(-1.5, 1.5);
+                        } else {
+                            prediction.look.y += yaw.to_degrees();
+                            prediction.look.p =
+                                (prediction.look.p + pitch.to_degrees()).clamp(-89.0, 89.0);
+                        }
                     }
-                }
 
-                forward += pad.forward;
-                right += pad.right;
+                    forward += pad.forward;
+                    right += pad.right;
 
-                forward = forward.clamp(-1.0, 1.0);
-                right = right.clamp(-1.0, 1.0);
+                    forward = forward.clamp(-1.0, 1.0);
+                    right = right.clamp(-1.0, 1.0);
 
-                let possessed =
-                    !prediction.local.is_null() && game.entities.is_valid(prediction.local);
+                    let possessed =
+                        !prediction.local.is_null() && game.entities.is_valid(prediction.local);
 
-                if !possessed && vr.active {
-                    camera.fly_facing(camera.yaw + vr.yaw, forward, right, up, frame_dt, speed);
-                } else if !possessed {
-                    camera.fly(forward, right, up, frame_dt, speed);
-                }
+                    if !possessed && vr.active {
+                        camera.fly_facing(camera.yaw + vr.yaw, forward, right, up, frame_dt, speed);
+                    } else if !possessed {
+                        camera.fly(forward, right, up, frame_dt, speed);
+                    }
 
-                accumulated_time += dt;
+                    accumulated_time += dt;
 
-                while accumulated_time >= game.tick_interval {
-                    accumulated_time -= game.tick_interval;
-                    game.cur_time += game.tick_interval;
-                    game.frame_time = game.tick_interval;
-                    game.tick_count += 1;
-                    game.entities.set_frame(FrameInfo {
-                        dt: game.tick_interval,
-                        cur_time: game.cur_time,
-                        tick_count: game.tick_count,
-                    });
-                    game.entities.tick_all();
-                    game.think_entities();
+                    while accumulated_time >= game.tick_interval {
+                        accumulated_time -= game.tick_interval;
+                        game.cur_time += game.tick_interval;
+                        game.frame_time = game.tick_interval;
+                        game.tick_count += 1;
+                        game.entities.set_frame(FrameInfo {
+                            dt: game.tick_interval,
+                            cur_time: game.cur_time,
+                            tick_count: game.tick_count,
+                        });
+                        game.entities.tick_all();
+                        game.think_entities();
+
+                        if possessed {
+                            predict_tick(
+                                &mut game,
+                                &mut recorder,
+                                &mut prediction,
+                                buttons,
+                                forward,
+                                right,
+                                vr.yaw,
+                            );
+                        }
+
+                        if let Some(session) = recorder.as_mut() {
+                            if game.cur_time >= session.next_shot {
+                                demo::remember_players(&mut session.players, &game);
+                                let mut listed = session.players.clone();
+                                let mut player_idx = 0;
+
+                                while player_idx < listed.len() {
+                                    if listed[player_idx].handle == prediction.local {
+                                        listed[player_idx].buttons = prediction.previous();
+                                    }
+
+                                    player_idx += 1;
+                                }
+
+                                let tick = game.tick_count;
+                                let local = prediction.local;
+                                let shot = demo::capture_world(
+                                    &mut game,
+                                    tick,
+                                    local,
+                                    &listed,
+                                );
+                                session.write_mark(&DemoFrame::Keyframe(shot));
+
+                                while session.next_shot <= game.cur_time {
+                                    session.next_shot += demo::SHOT_INTERVAL;
+                                }
+                            }
+                        }
+
+                        if recorder.as_ref().is_some_and(|session| session.dead) {
+                            log::warn!("[demo] recording stopped");
+                            recorder = None;
+                        }
+                    }
 
                     if possessed {
-                        predict_tick(&mut game, &mut prediction, buttons, forward, right, vr.yaw);
-                    }
-                }
+                        let alpha = if game.tick_interval > 0.0 {
+                            (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let origin = prediction
+                            .view_origin(alpha)
+                            .or_else(|| body_origin(&game, prediction.local));
 
-                if possessed {
-                    let alpha = if game.tick_interval > 0.0 {
-                        (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    };
-                    let origin = prediction
-                        .view_origin(alpha)
-                        .or_else(|| body_origin(&game, prediction.local));
-
-                    if let Some(origin) = origin {
-                        place_camera(
-                            &mut camera,
-                            origin,
-                            prediction.look,
-                            movement::eye_height(buttons),
-                        );
+                        if let Some(origin) = origin {
+                            place_camera(
+                                &mut camera,
+                                origin,
+                                prediction.look,
+                                movement::eye_height(buttons),
+                            );
+                        }
                     }
                 }
 
@@ -1020,13 +1164,18 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     session_start.elapsed().as_secs_f64(),
                     interval,
                 );
+                let sound_dt = if play.as_ref().is_some_and(|demo| demo.paused) {
+                    0.0
+                } else {
+                    frame_dt
+                };
                 game.update_sound(
                     camera.x,
                     camera.y,
                     camera.z,
                     camera.yaw,
                     camera.pitch,
-                    frame_dt,
+                    sound_dt,
                 );
 
                 host.request_redraw();
@@ -1034,6 +1183,960 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
             _ => (),
         }
     });
+}
+
+fn replay_command(
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    cmd: UserCommand,
+    apply_look: bool,
+) {
+    if !game.entities.is_valid(prediction.local) {
+        return;
+    }
+
+    let from = body_origin(game, prediction.local).unwrap_or(Vector3::new(0.0, 0.0, 0.0));
+    let prev = prediction.previous();
+
+    if !step_player(game, prediction.local, &cmd, prev) {
+        return;
+    }
+
+    let to = body_origin(game, prediction.local).unwrap_or(from);
+    prediction.note_step(from, to);
+    prediction.push(cmd);
+
+    if apply_look {
+        prediction.look = cmd.view;
+    }
+
+    game.run_predicted(prediction.local, &cmd, true);
+}
+
+fn step_player(
+    game: &mut GameState<FromServer, ClientToServer>,
+    handle: EntityHandle,
+    cmd: &UserCommand,
+    prev: InputButtons,
+) -> bool {
+    let (mut position, mut velocity, mut angles) = {
+        let Some(entity) = game.entities.get(handle) else {
+            return false;
+        };
+
+        let base = entity.base();
+
+        (base.position, base.velocity, base.angles)
+    };
+    let dt = game.tick_interval;
+    let gravity = movement::gravity(&game.cvars);
+    let root = game
+        .entities
+        .get(handle)
+        .map(|entity| entity.base().anim)
+        .and_then(|playback| game.anims.root_motion(&playback, angles.y, cmd.tick, dt));
+    movement::step(
+        &mut position,
+        &mut velocity,
+        &mut angles,
+        cmd,
+        prev,
+        dt,
+        gravity,
+        &game.brush_world,
+        &game.voxel_world,
+        root,
+    );
+
+    let Some(entity) = game.entities.get_mut(handle) else {
+        return false;
+    };
+
+    let base = entity.base_mut();
+    base.position = position;
+    base.velocity = velocity;
+    base.angles = angles;
+
+    true
+}
+
+fn poll_client_demo(
+    game: &mut GameState<FromServer, ClientToServer>,
+    recorder: &mut Option<DemoSession>,
+    play: &mut Option<DemoPlay>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    snapshot_ingress: &mut SnapshotIngress,
+    hold_events: &mut bool,
+    held: &mut VecDeque<ServerToClient>,
+    resync: &AtomicBool,
+    session_start: std::time::Instant,
+) {
+    let commands = demo::drain(Realm::Client);
+    let mut idx = 0;
+
+    while idx < commands.len() {
+        match commands[idx].clone() {
+            demo::DemoCommand::Record { name } => {
+                if recorder.is_some() || play.is_some() {
+                    log::warn!("[demo] busy");
+                } else {
+                    let rate = (1.0 / game.tick_interval).round() as u32;
+                    let header = demo::DemoHeader {
+                        kind: demo::KIND_CLIENT,
+                        map_name: game.map_name.clone(),
+                        tickrate: rate,
+                        map_scale: game.brush_world.scale(),
+                        voxel_scale: game.voxel_world.scale(),
+                    };
+
+                    match DemoSession::create(&name, header) {
+                        Ok(mut session) => {
+                            demo::remember_players(&mut session.players, game);
+                            let mut listed = session.players.clone();
+                            let mut player_idx = 0;
+
+                            while player_idx < listed.len() {
+                                if listed[player_idx].handle == prediction.local {
+                                    listed[player_idx].buttons = prediction.previous();
+                                }
+
+                                player_idx += 1;
+                            }
+
+                            let tick = game.tick_count;
+                            let local = prediction.local;
+                            let shot = demo::capture_world(
+                                game,
+                                tick,
+                                local,
+                                &listed,
+                            );
+                            session.write_mark(&demo::DemoFrame::Keyframe(shot));
+                            session.next_shot = game.cur_time + demo::SHOT_INTERVAL;
+                            log::info!("[demo] recording {name}");
+                            *recorder = Some(session);
+                        }
+                        Err(err) => log::warn!("[demo] {err}"),
+                    }
+                }
+            }
+            demo::DemoCommand::Stop => {
+                if recorder.take().is_some() {
+                    log::info!("[demo] stopped");
+                } else if play.take().is_some() {
+                    end_playback(
+                        game,
+                        prediction,
+                        remotes,
+                        tick_ingress,
+                        snapshot_ingress,
+                        hold_events,
+                        held,
+                        resync,
+                    );
+                } else {
+                    log::warn!("[demo] not recording");
+                }
+            }
+            demo::DemoCommand::Play { name } => {
+                if recorder.is_some() || play.is_some() {
+                    log::warn!("[demo] busy");
+                } else {
+                    match DemoPlay::open(&name) {
+                        Ok(mut demo_play) => {
+                            let header = demo_play.reader.header().clone();
+                            let rate = (1.0 / game.tick_interval).round() as u32;
+                            demo::warn_header(
+                                &header,
+                                &game.map_name,
+                                rate,
+                                game.brush_world.scale(),
+                                game.voxel_world.scale(),
+                            );
+
+                            if land_demo(
+                                &mut demo_play,
+                                game,
+                                prediction,
+                                remotes,
+                                camera,
+                                brush_scale,
+                                tick_ingress,
+                                session_start,
+                                0,
+                                false,
+                            ) {
+                                log::info!("[demo] playing {name}");
+                                *play = Some(demo_play);
+                            } else {
+                                log::warn!("[demo] {name} has no frames");
+                            }
+                        }
+                        Err(err) => log::warn!("[demo] {err}"),
+                    }
+                }
+            }
+            demo::DemoCommand::Pause => {
+                if let Some(demo_play) = play.as_mut() {
+                    demo_play.paused = !demo_play.paused;
+                }
+            }
+            demo::DemoCommand::Timescale { scale } => {
+                if let Some(demo_play) = play.as_mut() {
+                    demo_play.timescale = scale;
+                }
+            }
+            demo::DemoCommand::Seek { tick } => {
+                if let Some(demo_play) = play.as_mut() {
+                    if !land_demo(
+                        demo_play,
+                        game,
+                        prediction,
+                        remotes,
+                        camera,
+                        brush_scale,
+                        tick_ingress,
+                        session_start,
+                        tick,
+                        true,
+                    ) {
+                        log::warn!("[demo] seek failed");
+                    }
+                }
+            }
+            demo::DemoCommand::Loop { enabled } => {
+                if let Some(demo_play) = play.as_mut() {
+                    demo_play.loop_demo = enabled;
+                }
+            }
+            demo::DemoCommand::Cam { mode } => {
+                if let Some(demo_play) = play.as_mut() {
+                    demo_play.cam = mode;
+                }
+            }
+            demo::DemoCommand::View { index } => {
+                if let Some(demo_play) = play.as_mut() {
+                    demo_play.view_index = index;
+                    demo_play.sync_watched();
+                }
+            }
+        }
+
+        idx += 1;
+    }
+}
+
+fn end_playback(
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    tick_ingress: &mut TickIngress,
+    snapshot_ingress: &mut SnapshotIngress,
+    hold_events: &mut bool,
+    held: &mut VecDeque<ServerToClient>,
+    resync: &AtomicBool,
+) {
+    game.entities.clear();
+    game.sync_entities();
+    prediction.clear();
+    game.set_local_player(EntityHandle::NULL);
+    remotes.clear();
+    *tick_ingress = TickIngress::new();
+    *snapshot_ingress = SnapshotIngress::new();
+    held.clear();
+    *hold_events = true;
+    game.voxel_world.clear();
+    resync.store(true, Ordering::Relaxed);
+    log::info!("[demo] playback stopped");
+}
+
+fn land_demo(
+    play: &mut DemoPlay,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    session_start: std::time::Instant,
+    target: u64,
+    catch_up: bool,
+) -> bool {
+    let Some(mark) = play.reader.mark_for(target) else {
+        return false;
+    };
+
+    if let Err(err) = play.reader.seek_to(mark.offset) {
+        log::warn!("[demo] {err}");
+
+        return false;
+    }
+
+    let frame = match play.reader.next_frame() {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return false,
+        Err(err) => {
+            log::warn!("[demo] {err}");
+
+            return false;
+        }
+    };
+    let Some(shot) = frame.shot().cloned() else {
+        return false;
+    };
+    let map_name = play.reader.header().map_name.clone();
+    let keep_remotes = play.kind() == demo::KIND_CLIENT;
+    apply_world_shot(
+        game,
+        prediction,
+        remotes,
+        camera,
+        brush_scale,
+        tick_ingress,
+        &map_name,
+        &shot,
+        session_start.elapsed().as_secs_f64(),
+        keep_remotes,
+    );
+    let prefer = if play.watched.is_null() {
+        shot.local
+    } else {
+        play.watched
+    };
+    play.adopt_players(&shot.players, prefer);
+    play.tick = shot.tick;
+    game.tick_count = shot.tick;
+    game.cur_time = shot.tick as f64 * game.tick_interval;
+    let through = if catch_up { target } else { play.tick };
+    let _restarted = pump_frames(
+        play,
+        game,
+        prediction,
+        remotes,
+        camera,
+        brush_scale,
+        tick_ingress,
+        session_start,
+        through,
+    );
+
+    if catch_up {
+        play.tick = target;
+        game.tick_count = target;
+        game.cur_time = target as f64 * game.tick_interval;
+    }
+
+    play.acc = 0.0;
+
+    true
+}
+
+fn drive_demo(
+    play: &mut Option<DemoPlay>,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    session_start: std::time::Instant,
+    dt: f64,
+) {
+    let Some(demo_play) = play.as_mut() else {
+        return;
+    };
+
+    if demo_play.paused || demo_play.timescale <= 0.0 {
+        return;
+    }
+
+    let interval = game.tick_interval;
+    demo_play.acc += dt * demo_play.timescale;
+    let mut steps = 0;
+
+    while demo_play.acc >= interval && steps < 32 {
+        match demo_play.reader.peek_tick() {
+            Ok(None) => {
+                if demo_play.loop_demo {
+                    let _ = restart_demo(
+                        demo_play,
+                        game,
+                        prediction,
+                        remotes,
+                        camera,
+                        brush_scale,
+                        tick_ingress,
+                        session_start,
+                    );
+                }
+
+                demo_play.acc = 0.0;
+
+                return;
+            }
+            Err(err) => {
+                log::warn!("[demo] {err}");
+                demo_play.acc = 0.0;
+
+                return;
+            }
+            Ok(Some(_)) => {}
+        }
+
+        demo_play.acc -= interval;
+        demo_play.tick = demo_play.tick.saturating_add(1);
+        game.tick_count = demo_play.tick;
+        game.cur_time = demo_play.tick as f64 * interval;
+        game.frame_time = interval;
+        game.entities.set_frame(FrameInfo {
+            dt: interval,
+            cur_time: game.cur_time,
+            tick_count: game.tick_count,
+        });
+        game.entities.tick_all();
+        game.think_entities();
+        let through = demo_play.tick;
+        let restarted = pump_frames(
+            demo_play,
+            game,
+            prediction,
+            remotes,
+            camera,
+            brush_scale,
+            tick_ingress,
+            session_start,
+            through,
+        );
+        steps += 1;
+
+        if restarted {
+            demo_play.acc = 0.0;
+
+            return;
+        }
+    }
+}
+
+fn restart_demo(
+    play: &mut DemoPlay,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    session_start: std::time::Instant,
+) -> bool {
+    let Some(mark) = play.reader.index().first().copied() else {
+        return false;
+    };
+
+    if let Err(err) = play.reader.seek_to(mark.offset) {
+        log::warn!("[demo] {err}");
+
+        return false;
+    }
+
+    let frame = match play.reader.next_frame() {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return false,
+        Err(err) => {
+            log::warn!("[demo] {err}");
+
+            return false;
+        }
+    };
+    let Some(shot) = frame.shot().cloned() else {
+        return false;
+    };
+    let map_name = play.reader.header().map_name.clone();
+    let keep_remotes = play.kind() == demo::KIND_CLIENT;
+    let watched = play.watched;
+    apply_world_shot(
+        game,
+        prediction,
+        remotes,
+        camera,
+        brush_scale,
+        tick_ingress,
+        &map_name,
+        &shot,
+        session_start.elapsed().as_secs_f64(),
+        keep_remotes,
+    );
+    play.adopt_players(&shot.players, watched);
+    play.tick = shot.tick;
+    game.tick_count = shot.tick;
+    game.cur_time = shot.tick as f64 * game.tick_interval;
+    play.acc = 0.0;
+
+    true
+}
+
+fn pump_frames(
+    play: &mut DemoPlay,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    session_start: std::time::Instant,
+    through: u64,
+) -> bool {
+    loop {
+        let frame_tick = match play.reader.peek_tick() {
+            Ok(Some(tick)) => tick,
+            Ok(None) => {
+                if play.loop_demo {
+                    return restart_demo(
+                        play,
+                        game,
+                        prediction,
+                        remotes,
+                        camera,
+                        brush_scale,
+                        tick_ingress,
+                        session_start,
+                    );
+                }
+
+                return false;
+            }
+            Err(err) => {
+                log::warn!("[demo] {err}");
+
+                return false;
+            }
+        };
+
+        if frame_tick > through {
+            return false;
+        }
+
+        let frame = match play.reader.next_frame() {
+            Ok(Some(frame)) => frame,
+            Ok(None) => return false,
+            Err(err) => {
+                log::warn!("[demo] {err}");
+
+                return false;
+            }
+        };
+        dispatch_frame(
+            play,
+            game,
+            prediction,
+            remotes,
+            camera,
+            brush_scale,
+            tick_ingress,
+            session_start,
+            frame,
+        );
+    }
+}
+
+fn dispatch_frame(
+    play: &mut DemoPlay,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    session_start: std::time::Instant,
+    frame: DemoFrame,
+) {
+    let now = session_start.elapsed().as_secs_f64();
+
+    match frame {
+        DemoFrame::ClientMsg { msg, .. } => {
+            let mut quiet = None;
+            apply_server_event(
+                game,
+                &mut quiet,
+                tick_ingress,
+                prediction,
+                remotes,
+                camera,
+                brush_scale,
+                now,
+                msg,
+            );
+        }
+        DemoFrame::LocalCmd(cmd) => {
+            if prediction.local.is_null() {
+                prediction.possess(play.watched);
+                game.set_local_player(play.watched);
+            }
+
+            replay_command(game, prediction, cmd, true);
+        }
+        DemoFrame::Keyframe(shot) | DemoFrame::Checkpoint(shot) => {
+            let map_name = play.reader.header().map_name.clone();
+            let keep_remotes = play.kind() == demo::KIND_CLIENT;
+            let watched = play.watched;
+            apply_world_shot(
+                game,
+                prediction,
+                remotes,
+                camera,
+                brush_scale,
+                tick_ingress,
+                &map_name,
+                &shot,
+                now,
+                keep_remotes,
+            );
+            play.adopt_players(&shot.players, watched);
+        }
+        DemoFrame::ServerTick { inputs, events, .. } => {
+            let mut event_idx = 0;
+
+            while event_idx < events.len() {
+                apply_slot_event(
+                    play,
+                    game,
+                    prediction,
+                    remotes,
+                    camera,
+                    events[event_idx].clone(),
+                    now,
+                );
+                event_idx += 1;
+            }
+
+            let mut input_idx = 0;
+
+            while input_idx < inputs.len() {
+                apply_slot_input(play, game, prediction, remotes, inputs[input_idx]);
+                input_idx += 1;
+            }
+        }
+        DemoFrame::NetVars { entities, .. } => {
+            game.apply_networked(&entities, now);
+        }
+    }
+}
+
+fn apply_slot_event(
+    play: &mut DemoPlay,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    camera: &mut FlyCamera,
+    event: SlotEvent,
+    now: f64,
+) {
+    match event {
+        SlotEvent::Join { slot, handle, name } => {
+            if !game.entities.is_valid(handle) {
+                apply_spawn(
+                    game,
+                    remotes,
+                    now,
+                    game.tick_interval,
+                    EntitySnapshot {
+                        handle,
+                        class_hash: Player::CLASS_HASH,
+                        health: 100,
+                        position: Vector3::new(0.0, 0.0, 1.0),
+                        angles: Angle3::new(0.0, 0.0, 0.0),
+                        velocity: Vector3::new(0.0, 0.0, 0.0),
+                        ack: 0,
+                        anim: Default::default(),
+                    },
+                    EntityHandle::NULL,
+                    &[],
+                );
+            }
+
+            if play.slot_link(slot).is_none() {
+                play.slots.push(demo::SlotLink {
+                    slot,
+                    handle,
+                    buttons: InputButtons::NONE,
+                });
+            }
+
+            if !play.players.iter().any(|player| player.handle == handle) {
+                play.players.push(demo::DemoPlayer {
+                    slot,
+                    handle,
+                    name,
+                    buttons: InputButtons::NONE,
+                });
+            }
+        }
+        SlotEvent::Leave { slot } => {
+            let handle = play.slot_link(slot).map(|link| link.handle);
+
+            if let Some(handle) = handle {
+                game.sound.forget_entity(handle);
+                game.entities.remove(handle);
+                game.sync_entities();
+                remotes.remove(&handle);
+                play.slots.retain(|link| link.slot != slot);
+                play.players.retain(|player| player.handle != handle);
+
+                if prediction.local == handle {
+                    prediction.clear();
+                    game.set_local_player(EntityHandle::NULL);
+                }
+
+                play.sync_watched();
+            }
+        }
+        SlotEvent::UserMessage { hash, data, .. } => {
+            game.run_usermessage(hash, UserMsgReader::new(data));
+        }
+        SlotEvent::ScaleMaps { ratio } => {
+            let brush = game.brush_world.scale() * ratio;
+            let voxel = game.voxel_world.scale() * ratio;
+            let _ = game.brush_world.set_scale(brush);
+            let _ = game.voxel_world.apply_scale(voxel);
+            scale_view(game, camera, prediction, remotes, ratio);
+        }
+    }
+}
+
+fn apply_slot_input(
+    play: &mut DemoPlay,
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    input: demo::SlotInput,
+) {
+    let Some(link_idx) = play
+        .slots
+        .iter()
+        .position(|link| link.slot == input.slot)
+    else {
+        return;
+    };
+    let handle = play.slots[link_idx].handle;
+    let prev = play.slots[link_idx].buttons;
+
+    if !step_player(game, handle, &input.command, prev) {
+        return;
+    }
+
+    play.slots[link_idx].buttons = input.command.buttons;
+    remotes.remove(&handle);
+
+    if play.watched == handle {
+        prediction.look = input.command.view;
+    }
+}
+
+fn apply_world_shot(
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &mut Prediction,
+    remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
+    _camera: &mut FlyCamera,
+    brush_scale: &mut Option<f64>,
+    tick_ingress: &mut TickIngress,
+    map_name: &str,
+    shot: &demo::WorldShot,
+    now: f64,
+    keep_remotes: bool,
+) {
+    game.entities.clear();
+    game.sync_entities();
+    prediction.clear();
+    remotes.clear();
+    *tick_ingress = TickIngress::new();
+    game.voxel_world.clear();
+
+    if !game.voxel_world.apply_scale(shot.voxel_scale) {
+        log::warn!("[demo] bad voxel scale {}", shot.voxel_scale);
+    }
+
+    let mut idx = 0;
+
+    while idx < shot.voxels.len() {
+        if !game.voxel_world.apply(&shot.voxels[idx]) {
+            log::warn!("[demo] bad chunk");
+        }
+
+        idx += 1;
+    }
+
+    if let Err(err) = game.brush_world.load_file(map_name) {
+        log::warn!("[demo] {err}");
+    }
+
+    if !game.brush_world.set_scale(shot.brush_scale) {
+        log::warn!("[demo] bad brush scale {}", shot.brush_scale);
+    }
+
+    *brush_scale = Some(shot.brush_scale);
+    idx = 0;
+
+    while idx < shot.brush_edits.len() {
+        if !game.brush_world.apply_edit(&shot.brush_edits[idx]) {
+            log::warn!("[demo] bad brush edit");
+        }
+
+        idx += 1;
+    }
+
+    let states: HashMap<EntityHandle, Vec<NetVar>> = shot
+        .networked
+        .iter()
+        .map(|entity| (entity.handle, entity.vars.clone()))
+        .collect();
+    let owners: HashMap<EntityHandle, EntityHandle> = shot
+        .owners
+        .iter()
+        .map(|ownership| (ownership.handle, ownership.owner))
+        .collect();
+    idx = 0;
+
+    while idx < shot.entities.len() {
+        let entity = &shot.entities[idx];
+        let vars = states.get(&entity.handle).map(|vars| vars.as_slice()).unwrap_or(&[]);
+        let owner = owners
+            .get(&entity.handle)
+            .copied()
+            .unwrap_or(EntityHandle::NULL);
+        apply_spawn(
+            game,
+            remotes,
+            now,
+            game.tick_interval,
+            entity.clone(),
+            owner,
+            vars,
+        );
+        idx += 1;
+    }
+
+    idx = 0;
+
+    while idx < shot.models.len() {
+        apply_anim_model(game, shot.models[idx].clone());
+        idx += 1;
+    }
+
+    let playing = game.sound.baseline();
+    idx = 0;
+
+    while idx < playing.len() {
+        let sound = &playing[idx];
+        game.sound
+            .hear_stop(sound.entity, sound.def_hash, sound.sound_hash);
+        idx += 1;
+    }
+
+    idx = 0;
+
+    while idx < shot.sounds.len() {
+        let sound = &shot.sounds[idx];
+        game.sound.hear_play(
+            sound.sound_hash,
+            sound.def_hash,
+            sound.entity_handle,
+            sound.position,
+            sound.volume,
+            sound.pitch,
+            shot.tick,
+            true,
+            sound.positional,
+        );
+        idx += 1;
+    }
+
+    if !keep_remotes {
+        remotes.clear();
+    }
+
+    if shot.local.is_null() {
+        game.set_local_player(EntityHandle::NULL);
+    } else {
+        prediction.possess(shot.local);
+        game.set_local_player(shot.local);
+    }
+
+    game.sync_entities();
+}
+
+fn place_demo_camera(
+    camera: &mut FlyCamera,
+    game: &GameState<FromServer, ClientToServer>,
+    play: &DemoPlay,
+    prediction: &Prediction,
+) {
+    let handle = play.watched;
+    let alpha = if game.tick_interval > 0.0 {
+        (play.acc / game.tick_interval).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let client_local = play.kind() == demo::KIND_CLIENT && handle == prediction.local;
+    let (origin, look, eye) = if client_local {
+        if let Some(origin) = prediction.view_origin(alpha) {
+            (
+                origin,
+                prediction.look,
+                movement::eye_height(prediction.previous()),
+            )
+        } else if let Some(origin) = body_origin(game, handle) {
+            (
+                origin,
+                prediction.look,
+                movement::eye_height(InputButtons::NONE),
+            )
+        } else {
+            return;
+        }
+    } else if let Some(entity) = game.entities.get(handle) {
+        let base = entity.base();
+
+        (
+            base.position,
+            base.angles,
+            movement::eye_height(InputButtons::NONE),
+        )
+    } else {
+        return;
+    };
+
+    match play.cam {
+        CamMode::First => place_camera(camera, origin, look, eye),
+        CamMode::Chase => {
+            place_camera(camera, origin, look, eye);
+            let yaw = look.y.to_radians();
+            let pitch = look.p.to_radians();
+            let fx = pitch.cos() * yaw.cos();
+            let fy = pitch.cos() * yaw.sin();
+            let fz = pitch.sin();
+            let dist = 2.8;
+            camera.x -= f64::from(fx) * dist;
+            camera.y -= f64::from(fy) * dist;
+            camera.z -= f64::from(fz) * dist;
+            camera.z += 0.55;
+        }
+        CamMode::Orbit => {
+            let yaw = play.orbit_yaw;
+            let pitch = play.orbit_pitch;
+            let dist = play.orbit_dist;
+            let fx = pitch.cos() * yaw.cos();
+            let fy = pitch.cos() * yaw.sin();
+            let fz = pitch.sin();
+            camera.x = origin.x - f64::from(fx) * dist;
+            camera.y = origin.y - f64::from(fy) * dist;
+            camera.z = origin.z + eye - f64::from(fz) * dist;
+            camera.yaw = yaw;
+            camera.pitch = pitch;
+        }
+        CamMode::Free => {}
+    }
 }
 
 fn client_surface() -> (PlatformHost, Option<backend::GfxWindow>) {
@@ -1207,6 +2310,7 @@ fn place_camera(camera: &mut FlyCamera, origin: Vector3, look: Angle3, eye: f64)
 
 fn predict_tick(
     game: &mut GameState<FromServer, ClientToServer>,
+    recorder: &mut Option<DemoSession>,
     prediction: &mut Prediction,
     buttons: InputButtons,
     forward: f32,
@@ -1217,56 +2321,23 @@ fn predict_tick(
         return;
     }
 
-    let (mut position, mut velocity, mut angles) = {
-        let Some(entity) = game.entities.get(prediction.local) else {
-            return;
-        };
-
-        let base = entity.base();
-
-        (base.position, base.velocity, base.angles)
-    };
     let cmd = UserCommand {
         tick: game.tick_count,
         buttons,
         wish: Vector3::new(forward as f64, right as f64, 0.0),
         view: command_view(prediction.look, vr_yaw),
     };
-    let prev = prediction.previous();
-    let from = position;
-    let dt = game.tick_interval;
-    let gravity = movement::gravity(&game.cvars);
-    let root = game
-        .entities
-        .get(prediction.local)
-        .map(|entity| entity.base().anim)
-        .and_then(|playback| {
-            game.anims
-                .root_motion(&playback, angles.y, game.tick_count, dt)
-        });
-    movement::step(
-        &mut position,
-        &mut velocity,
-        &mut angles,
-        &cmd,
-        prev,
-        dt,
-        gravity,
-        &game.brush_world,
-        &game.voxel_world,
-        root,
-    );
-    prediction.note_step(from, position);
-    prediction.push(cmd.clone());
 
-    if let Some(entity) = game.entities.get_mut(prediction.local) {
-        let base = entity.base_mut();
-        base.position = position;
-        base.velocity = velocity;
-        base.angles = angles;
+    if let Some(session) = recorder.as_mut() {
+        session.write_frame(&DemoFrame::LocalCmd(cmd));
     }
 
-    game.run_predicted(prediction.local, &cmd, true);
+    if recorder.as_ref().is_some_and(|session| session.dead) {
+        log::warn!("[demo] recording stopped");
+        *recorder = None;
+    }
+
+    replay_command(game, prediction, cmd, false);
     game.send_unreliable(ClientToServer::PlayerInput {
         tick: cmd.tick,
         buttons: cmd.buttons,
@@ -1510,6 +2581,7 @@ fn present_remotes(
 
 fn apply_server_event(
     game: &mut GameState<FromServer, ClientToServer>,
+    recorder: &mut Option<DemoSession>,
     tick_ingress: &mut TickIngress,
     prediction: &mut Prediction,
     remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
@@ -1518,6 +2590,15 @@ fn apply_server_event(
     now: f64,
     message: ServerToClient,
 ) {
+    if let Some(session) = recorder.as_mut() {
+        session.note_client(game.tick_count, &message);
+    }
+
+    if recorder.as_ref().is_some_and(|session| session.dead) {
+        log::warn!("[demo] recording stopped");
+        *recorder = None;
+    }
+
     match &message {
         ServerToClient::TickState { .. }
         | ServerToClient::PredictedState { .. }
@@ -1601,6 +2682,19 @@ fn apply_server_event(
 
         ServerToClient::UserMessage { hash, data } => {
             game.run_usermessage(hash, UserMsgReader::new(data));
+        }
+        ServerToClient::ChatMessage {
+            sender_handle,
+            team_only,
+            text,
+        } => {
+            let _: () = game.run_hook("ChatMessage", (sender_handle, team_only, text));
+        }
+        ServerToClient::VoiceChunk {
+            sender_handle,
+            data,
+        } => {
+            let _: () = game.run_hook("VoiceChunk", (sender_handle, data));
         }
         ServerToClient::WorldSnapshot { .. } => {}
         ServerToClient::VoxelScale { scale } => {
@@ -1850,6 +2944,7 @@ pub fn client_network_loop(
     rx: Receiver<NetSend<ClientToServer>>,
     shutdown: Arc<AtomicBool>,
     mut wake: TcpStream,
+    resync: Arc<AtomicBool>,
 ) {
     let local_addr = if server_addr.is_ipv6() {
         "[::]:0"
@@ -1926,6 +3021,38 @@ pub fn client_network_loop(
             let _ = tx.send(FromServer::Disconnected);
 
             return;
+        }
+
+        if resync.swap(false, Ordering::Relaxed) {
+            if let Some(current) = session {
+                let bytes =
+                    wincode::serialize(&PacketType::Disconnect { session: current }).unwrap();
+                let _ = client.send_message(&bytes);
+            }
+
+            let was_connected = connected;
+            begin_reconnect(
+                &client,
+                &mut reliable_chan,
+                &mut state_chan,
+                &mut local_reliable,
+                &mut connected,
+                &mut session,
+                &mut generation,
+                &mut replace_session,
+                &mut challenge_response_bytes,
+                &mut unreliable_out,
+                &mut unreliable_in,
+                &mut unreliable_assembly,
+                &mut last_sent,
+            );
+            unreliable_parts.clear();
+
+            if was_connected {
+                let _ = tx.send(FromServer::Disconnected);
+            }
+
+            log::info!("[cl] demo resync");
         }
 
         while let Ok(outgoing) = rx.try_recv() {

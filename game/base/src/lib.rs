@@ -4,6 +4,7 @@ mod platform;
 
 mod client;
 mod console;
+mod demo;
 mod entities;
 mod r#enum;
 pub mod fs;
@@ -139,6 +140,8 @@ pub fn run() {
         let (client_wake_read, client_wake_write) = wake_pair();
         let shutdown = Arc::new(AtomicBool::new(false));
         let net_shutdown = Arc::clone(&shutdown);
+        let resync = Arc::new(AtomicBool::new(false));
+        let net_resync = Arc::clone(&resync);
         log::info!("Starting Client network loop");
         let net = std::thread::spawn(move || {
             client::client_network_loop(
@@ -147,6 +150,7 @@ pub fn run() {
                 client_out_rx,
                 net_shutdown,
                 client_wake_read,
+                net_resync,
             );
         });
 
@@ -168,7 +172,7 @@ pub fn run() {
             log::info!("[map] {map_name} scale {}", client_game.brush_world.scale());
         }
         log::info!("Entering Client loop");
-        client::client_loop(client_game, shutdown);
+        client::client_loop(client_game, shutdown, resync);
         let _ = net.join();
     }
 }

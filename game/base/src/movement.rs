@@ -6,6 +6,7 @@ use crate::script::libs::vector3::Vector3;
 use crate::world::{BrushHit, BrushMap, Face, TraceHit, VoxelWorld};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use wincode::{SchemaRead, SchemaWrite};
 
 pub(crate) const STAND_MINS: Vector3 = Vector3::new(-0.28, -0.28, 0.0);
 pub(crate) const STAND_MAXS: Vector3 = Vector3::new(0.28, 0.28, 1.65);
@@ -24,7 +25,7 @@ const STOP_SPEED: f64 = 1.5;
 const JUMP_HEIGHT: f64 = 1.15;
 const MAX_HISTORY: usize = 128;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug)]
 pub struct UserCommand {
     pub tick: u64,
     pub buttons: InputButtons,

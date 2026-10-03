@@ -1,3 +1,4 @@
+use crate::demo::{self, DemoFrame, DemoPlayer, DemoSession, SlotEvent, SlotInput};
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::movement::{self, UserCommand};
@@ -16,6 +17,7 @@ use crate::network::{
 use crate::r#enum::InputButtons;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
+use crate::script::Realm;
 use crate::state::GameState;
 use crate::world::ChunkPos;
 use std::collections::{HashMap, VecDeque};
@@ -27,6 +29,7 @@ use std::time::{Duration, Instant};
 struct RemotePlayer {
     addr: SocketAddr,
     player: EntityHandle,
+    slot: u16,
     pending: VecDeque<UserCommand>,
     last_buttons: InputButtons,
     ack: u64,
@@ -80,11 +83,14 @@ impl RemotePlayer {
 
 #[cfg(feature = "server")]
 pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
+    demo::bind_realm(Realm::Server);
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
     let mut peers = Vec::new();
     let mut joined = Vec::new();
     let mut players: Vec<RemotePlayer> = Vec::new();
+    let mut recording: Option<DemoSession> = None;
+    let mut next_slot: u16 = 0;
     let _: () = game.run_hook("Initialize", ());
     let _ = game.take_motion();
     game.begin_terrain();
@@ -96,6 +102,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
         accumulated_time += dt;
 
+        poll_demo(&mut game, &players, &mut recording);
         joined.clear();
         let mut ticked = false;
         while accumulated_time >= game.tick_interval {
@@ -122,10 +129,40 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             let anim_events = game.drive_free_anims(&player_handles);
             game.fire_anim_events(anim_events);
             game.think_entities();
-            simulate_players(&mut game, &mut players);
+            let inputs = simulate_players(&mut game, &mut players);
             game.step_physics(&player_handles);
 
+            if let Some(session) = recording.as_mut() {
+                let events = session.take_events();
+                session.write_frame(&DemoFrame::ServerTick {
+                    tick: game.tick_count,
+                    inputs,
+                    events,
+                });
+
+                if game.cur_time >= session.next_shot {
+                    let listed = listed_players(&players);
+                    let tick = game.tick_count;
+                    let shot = demo::capture_world(
+                        &mut game,
+                        tick,
+                        EntityHandle::NULL,
+                        &listed,
+                    );
+                    session.write_mark(&DemoFrame::Checkpoint(shot));
+
+                    while session.next_shot <= game.cur_time {
+                        session.next_shot += demo::SHOT_INTERVAL;
+                    }
+                }
+            }
+
             ticked = true;
+        }
+
+        if recording.as_ref().is_some_and(|session| session.dead) {
+            log::warn!("[demo] recording stopped");
+            recording = None;
         }
 
         while let Some((hash, data)) = game.script_engine.poll_usermessage() {
@@ -146,13 +183,24 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                         let handle = spawn_player(&mut game, players.len());
 
                         if !handle.is_null() {
+                            let slot = next_slot;
+                            next_slot = next_slot.saturating_add(1);
                             players.push(RemotePlayer {
                                 addr,
                                 player: handle,
+                                slot,
                                 pending: VecDeque::new(),
                                 last_buttons: InputButtons::NONE,
                                 ack: 0,
                             });
+
+                            if let Some(session) = recording.as_mut() {
+                                session.push_event(SlotEvent::Join {
+                                    slot,
+                                    handle,
+                                    name: String::new(),
+                                });
+                            }
                             log::info!("[sv] spawn {handle:?}");
                             let _: () = game.run_hook("PlayerSpawned", handle);
                             let mut idx = 0;
@@ -216,6 +264,21 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                 FromClient::Disconnected { addr } => {
                     log::info!("[sv] peer left {}", addr);
                     peers.retain(|peer| *peer != addr);
+
+                    if let Some(session) = recording.as_mut() {
+                        let mut idx = 0;
+
+                        while idx < players.len() {
+                            if players[idx].addr == addr {
+                                session.push_event(SlotEvent::Leave {
+                                    slot: players[idx].slot,
+                                });
+                            }
+
+                            idx += 1;
+                        }
+                    }
+
                     drop_player(&mut game, addr, &mut players);
                 }
                 FromClient::Message { addr, event } => {
@@ -230,9 +293,21 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
                     match event {
                         ClientToServer::UserMessage { hash, data } => {
+                            if let Some(session) = recording.as_mut() {
+                                session.push_event(SlotEvent::UserMessage {
+                                    slot: slot_for(&players, addr),
+                                    hash,
+                                    data: data.clone(),
+                                });
+                            }
+
                             game.run_usermessage(hash, UserMsgReader::new(data));
                         }
                         ClientToServer::ScaleMaps { ratio } => {
+                            if let Some(session) = recording.as_mut() {
+                                session.push_event(SlotEvent::ScaleMaps { ratio });
+                            }
+
                             let _ = game.scale_maps(ratio);
                         }
                         ClientToServer::PlayerInput {
@@ -268,7 +343,21 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             game.send_reliable(ServerToClient::UserMessage { hash, data });
         }
 
-        emit_entity_changes(&mut game);
+        let networked = emit_entity_changes(&mut game);
+
+        if let Some(session) = recording.as_mut() {
+            if !networked.is_empty() {
+                session.write_frame(&DemoFrame::NetVars {
+                    tick: game.tick_count,
+                    entities: networked,
+                });
+            }
+        }
+
+        if recording.as_ref().is_some_and(|session| session.dead) {
+            log::warn!("[demo] recording stopped");
+            recording = None;
+        }
         emit_anim_models(&mut game);
         flush_sounds(&mut game);
 
@@ -787,9 +876,10 @@ fn drop_player(
 fn simulate_players(
     game: &mut GameState<FromClient, ServerToClient>,
     players: &mut [RemotePlayer],
-) {
+) -> Vec<SlotInput> {
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
+    let mut recorded = Vec::new();
     let mut idx = 0;
 
     while idx < players.len() {
@@ -801,10 +891,105 @@ fn simulate_players(
 
         let handle = players[idx].player;
         let prev = players[idx].last_buttons;
+        let slot = players[idx].slot;
 
         if apply_command(game, handle, &cmd, prev, dt, gravity) {
             players[idx].last_buttons = cmd.buttons;
             players[idx].ack = cmd.tick;
+            recorded.push(SlotInput {
+                slot,
+                command: cmd,
+            });
+        }
+
+        idx += 1;
+    }
+
+    recorded
+}
+
+fn listed_players(players: &[RemotePlayer]) -> Vec<DemoPlayer> {
+    let mut listed = Vec::new();
+    let mut idx = 0;
+
+    while idx < players.len() {
+        listed.push(DemoPlayer {
+            slot: players[idx].slot,
+            handle: players[idx].player,
+            name: String::new(),
+            buttons: players[idx].last_buttons,
+        });
+        idx += 1;
+    }
+
+    listed
+}
+
+fn slot_for(players: &[RemotePlayer], addr: SocketAddr) -> u16 {
+    let mut idx = 0;
+
+    while idx < players.len() {
+        if players[idx].addr == addr {
+            return players[idx].slot;
+        }
+
+        idx += 1;
+    }
+
+    0
+}
+
+fn poll_demo(
+    game: &mut GameState<FromClient, ServerToClient>,
+    players: &[RemotePlayer],
+    recording: &mut Option<DemoSession>,
+) {
+    let commands = demo::drain(Realm::Server);
+    let mut idx = 0;
+
+    while idx < commands.len() {
+        match &commands[idx] {
+            demo::DemoCommand::Record { name } => {
+                if recording.is_some() {
+                    log::warn!("[demo] already recording");
+                } else {
+                    let rate = (1.0 / game.tick_interval).round() as u32;
+                    let header = demo::DemoHeader {
+                        kind: demo::KIND_SERVER,
+                        map_name: game.map_name.clone(),
+                        tickrate: rate,
+                        map_scale: game.brush_world.scale(),
+                        voxel_scale: game.voxel_world.scale(),
+                    };
+
+                    match DemoSession::create(name, header) {
+                        Ok(mut session) => {
+                            let listed = listed_players(players);
+                            session.players = listed.clone();
+                            let tick = game.tick_count;
+                            let shot = demo::capture_world(
+                                game,
+                                tick,
+                                EntityHandle::NULL,
+                                &listed,
+                            );
+                            session.write_mark(&DemoFrame::Checkpoint(shot));
+                            session.next_shot = game.cur_time + demo::SHOT_INTERVAL;
+                            log::info!("[demo] recording {name}");
+                            *recording = Some(session);
+                        }
+                        Err(err) => log::warn!("[demo] {err}"),
+                    }
+                }
+            }
+            demo::DemoCommand::Stop => {
+                if recording.take().is_some() {
+                    log::info!("[demo] stopped");
+                } else {
+                    log::warn!("[demo] not recording");
+                }
+            }
+            _ => {}
         }
 
         idx += 1;
@@ -1287,7 +1472,9 @@ fn emit_anim_models(game: &mut GameState<FromClient, ServerToClient>) {
 }
 
 #[cfg(feature = "server")]
-fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
+fn emit_entity_changes(
+    game: &mut GameState<FromClient, ServerToClient>,
+) -> Vec<EntityNetworked> {
     let spawned = game.entities.take_net_spawned();
     let (removed, updates): (Vec<_>, Vec<_>) = game
         .collect_networked()
@@ -1297,7 +1484,7 @@ fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
         .into_iter()
         .filter(|entity| !spawned.contains(&entity.handle))
         .collect();
-    send_networked(game, removed);
+    let mut sent = send_networked(game, removed);
 
     for handle in game.take_despawned() {
         game.sound.forget_entity(handle);
@@ -1347,14 +1534,21 @@ fn emit_entity_changes(game: &mut GameState<FromClient, ServerToClient>) {
         });
     }
 
-    send_networked(game, updates);
+    sent.extend(send_networked(game, updates));
+
+    sent
 }
 
 #[cfg(feature = "server")]
-fn send_networked(game: &mut GameState<FromClient, ServerToClient>, updates: Vec<EntityNetworked>) {
+fn send_networked(
+    game: &mut GameState<FromClient, ServerToClient>,
+    updates: Vec<EntityNetworked>,
+) -> Vec<EntityNetworked> {
     if updates.is_empty() {
-        return;
+        return Vec::new();
     }
+
+    let mut sent = Vec::new();
 
     let header = wincode::serialized_size(&ServerToClient::NetworkedUpdate {
         entities: Vec::new(),
@@ -1370,6 +1564,8 @@ fn send_networked(game: &mut GameState<FromClient, ServerToClient>, updates: Vec
 
             continue;
         }
+
+        sent.push(entity.clone());
 
         if encoded_packet_count(size + entity_size).is_none() {
             log::debug!(
@@ -1395,6 +1591,8 @@ fn send_networked(game: &mut GameState<FromClient, ServerToClient>, updates: Vec
         );
         game.send_reliable(ServerToClient::NetworkedUpdate { entities: batch });
     }
+
+    sent
 }
 
 #[cfg(feature = "server")]
