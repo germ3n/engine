@@ -8,9 +8,9 @@ use crate::platform::PadCache;
 use crate::script::libs::engine::publish_clock;
 use crate::script::libs::ents::{AnimAccess, EntityAccess};
 use crate::script::libs::{
-    register_angle3_lib, register_console_lib, register_convar_lib, register_engine_lib,
-    register_ents_lib, register_net_lib, register_pad_lib, register_scripted_ents_lib,
-    register_sound_lib, register_surface_lib, register_vector3_lib,
+    register_angle3_lib, register_biome_lib, register_console_lib, register_convar_lib,
+    register_engine_lib, register_ents_lib, register_net_lib, register_noise_lib, register_pad_lib,
+    register_scripted_ents_lib, register_sound_lib, register_surface_lib, register_vector3_lib,
 };
 use crate::sound::SoundAccess;
 use crate::ui::Color;
@@ -148,6 +148,7 @@ pub struct ScriptEngine {
     pub brush_access: crate::script::libs::engine::BrushAccess,
     pub voxel_access: crate::script::libs::engine::VoxelAccess,
     pub motion_access: crate::script::libs::engine::MotionAccess,
+    pub gen_settings: Arc<Mutex<crate::world::gen::GenSettings>>,
     usermsg_receiver: Receiver<(u32, Vec<u8>)>,
 }
 
@@ -205,6 +206,7 @@ impl ScriptEngine {
         let brush_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let voxel_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let motion_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let gen_settings = Arc::new(Mutex::new(crate::world::gen::GenSettings::new()));
         register_engine_lib(
             &lua,
             tick_interval,
@@ -214,6 +216,13 @@ impl ScriptEngine {
             entity_access.clone(),
             physics_access.clone(),
             motion_access.clone(),
+            Arc::clone(&gen_settings),
+        );
+        register_noise_lib(&lua);
+        register_biome_lib(
+            &lua,
+            Arc::clone(&gen_settings),
+            matches!(realm, Realm::Server),
         );
         if !matches!(realm, Realm::Menu) {
             register_sound_lib(&lua, sound_access.clone());
@@ -251,6 +260,7 @@ impl ScriptEngine {
             brush_access,
             voxel_access,
             motion_access,
+            gen_settings,
             usermsg_receiver,
         }
     }

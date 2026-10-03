@@ -17,6 +17,7 @@ use crate::r#enum::InputButtons;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::state::GameState;
+use crate::world::ChunkPos;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::net::TcpStream;
@@ -86,6 +87,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut players: Vec<RemotePlayer> = Vec::new();
     let _: () = game.run_hook("Initialize", ());
     let _ = game.take_motion();
+    game.begin_terrain();
 
     loop {
         let now = Instant::now();
@@ -273,6 +275,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         emit_scale_dirty(&mut game, &peers);
         emit_brush_edits(&mut game, &peers, &joined);
         emit_motion(&mut game, &peers, &joined);
+        let centers = terrain_centers(&game, &players);
+        game.poll_voxel_gen(&centers);
 
         if ticked {
             emit_tick_state(&game, &players);
@@ -1014,6 +1018,41 @@ fn emit_brush_edits(
 
         idx += 1;
     }
+}
+
+fn terrain_centers(
+    game: &GameState<FromClient, ServerToClient>,
+    players: &[RemotePlayer],
+) -> Vec<ChunkPos> {
+    let mut centers = Vec::new();
+    let spawns = game.brush_world.spawns();
+
+    if spawns.is_empty() {
+        centers.push(
+            game.voxel_world
+                .block_at(Vector3::new(0.0, 28.0, 2.0))
+                .chunk(),
+        );
+    } else {
+        let mut idx = 0;
+
+        while idx < spawns.len() {
+            centers.push(game.voxel_world.block_at(spawns[idx]).chunk());
+            idx += 1;
+        }
+    }
+
+    let mut idx = 0;
+
+    while idx < players.len() {
+        if let Some(entity) = game.entities.get(players[idx].player) {
+            centers.push(game.voxel_world.block_at(entity.base().position).chunk());
+        }
+
+        idx += 1;
+    }
+
+    centers
 }
 
 #[cfg(feature = "server")]

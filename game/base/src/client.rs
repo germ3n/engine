@@ -238,6 +238,7 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
     let mut scene_brushes = u64::MAX;
     let mut scene_revision = 0u64;
     let mut scene_anchor = Anchor::ZERO;
+    let mut voxel_mesh_time = Instant::now();
     let mut camera = FlyCamera::new();
     let mut prediction = Prediction::new();
     let mut brush_scale: Option<f64> = None;
@@ -348,10 +349,19 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         scene_graphics = game.brush_world.graphics().clone();
                     }
 
-                    if scene_world != world_revision || scene_brushes != brush_revision || camera_moved
+                    let more_meshes = if scene_world != world_revision {
+                        game.voxel_world.build_meshes(4)
+                    } else {
+                        false
+                    };
+                    let voxels_due = scene_world != world_revision
+                        && (!more_meshes
+                            || voxel_mesh_time.elapsed() >= Duration::from_millis(80));
+
+                    if camera_moved || scene_brushes != brush_revision || voxels_due
                     {
                         let origin = scene_anchor.to_vec();
-                        scene_mesh = game.voxel_world.mesh_at(origin);
+                        scene_mesh = game.voxel_world.assembled_mesh(origin);
                         let brush = game.brush_world.draw_at(origin);
                         let base = (scene_mesh.len() / crate::world::STRIDE) as u32;
                         scene_ranges.clear();
@@ -377,7 +387,12 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                         }
 
                         scene_mesh.extend(brush.vertices);
-                        scene_world = world_revision;
+
+                        if !more_meshes {
+                            scene_world = world_revision;
+                        }
+
+                        voxel_mesh_time = Instant::now();
                         scene_brushes = brush_revision;
                         scene_revision = scene_revision.wrapping_add(1);
                     }

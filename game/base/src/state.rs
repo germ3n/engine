@@ -14,7 +14,8 @@ use crate::script::libs::ents::{AnimScope, EntityScope};
 use crate::script::libs::vector3::Vector3;
 use crate::script::{Realm, ScriptEngine};
 use crate::sound::{Buses, SoundScope, SoundWorld};
-use crate::world::{BrushMap, VoxelWorld};
+use crate::world::gen::{ChunkHandle, VoxelGen};
+use crate::world::{BrushMap, ChunkPos, VoxelWorld};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
@@ -25,6 +26,7 @@ pub struct GameState<In, Out> {
     pub entities: EntityList,
     pub voxel_world: VoxelWorld,
     pub brush_world: BrushMap,
+    voxel_gen: Option<VoxelGen>,
     pub map_name: String,
     pub cvars: Arc<HashMap<String, Arc<ConVar>>>,
     pub binds: Arc<Mutex<Binds>>,
@@ -125,6 +127,7 @@ impl<In, Out> GameState<In, Out> {
             entities: EntityList::new(),
             voxel_world: VoxelWorld::new(),
             brush_world: BrushMap::new(),
+            voxel_gen: None,
             map_name: String::new(),
             cvars,
             binds,
@@ -257,6 +260,79 @@ impl<In, Out> GameState<In, Out> {
         let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
 
         self.with_entities(|engine| engine.think_entities(cur_time, frame_time, tick_count));
+    }
+
+    pub fn begin_terrain(&mut self) {
+        if !matches!(self.realm, Realm::Server) || self.voxel_gen.is_some() {
+            return;
+        }
+
+        {
+            let mut settings = self
+                .script_engine
+                .gen_settings
+                .lock()
+                .expect("gen settings");
+            settings.map_name = self.map_name.clone();
+        }
+
+        if let Some(path) = crate::world::cwd_vmap_path(&self.map_name) {
+            match self.voxel_world.load_resume(&path) {
+                Ok(true) => {
+                    let seed = self.voxel_world.seed();
+                    self.script_engine
+                        .gen_settings
+                        .lock()
+                        .expect("gen settings")
+                        .adopt_seed(seed);
+                    log::info!("[voxel] resumed {} seed {seed}", path.display());
+                }
+                Ok(false) => {}
+                Err(err) => log::warn!("[voxel] {err}"),
+            }
+        }
+
+        {
+            let settings = self
+                .script_engine
+                .gen_settings
+                .lock()
+                .expect("gen settings");
+            self.voxel_world.set_seed(settings.seed);
+            self.voxel_world.replace_nonsolid(&settings.nonsolid);
+        }
+
+        let settings = Arc::clone(&self.script_engine.gen_settings);
+        self.voxel_gen = Some(VoxelGen::start(settings));
+        self.script_engine
+            .gen_settings
+            .lock()
+            .expect("gen settings")
+            .running = true;
+        log::info!("[voxel] generating seed {}", self.voxel_world.seed());
+    }
+
+    pub fn poll_voxel_gen(&mut self, centers: &[ChunkPos]) {
+        let Some(mut gen) = self.voxel_gen.take() else {
+            return;
+        };
+
+        gen.prepare(&mut self.voxel_world);
+        gen.enqueue(&self.voxel_world, centers);
+        let mut ready = gen.take_commits(4);
+        self.voxel_gen = Some(gen);
+        let mut idx = 0;
+
+        while idx < ready.len() {
+            let shared = Arc::new(Mutex::new(std::mem::take(&mut ready[idx])));
+            let handle = ChunkHandle(Arc::clone(&shared));
+            self.run_hook::<_, ()>("VoxelChunkGenerated", handle);
+            let draft = std::mem::take(&mut *shared.lock().expect("chunk"));
+            let mut gen = self.voxel_gen.take().expect("voxel gen");
+            gen.commit(&mut self.voxel_world, draft);
+            self.voxel_gen = Some(gen);
+            idx += 1;
+        }
     }
 
     pub fn sync_entities(&mut self) {

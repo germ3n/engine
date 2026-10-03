@@ -14,11 +14,13 @@ use rapier3d::prelude::{
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const DENSITY: f32 = 300.0;
 const MIN_HALF: f32 = 0.02;
 const VOXEL_STRIDE: usize = 6;
 const ORIGIN_SNAP: f64 = 64.0;
+const VOXEL_COLLIDER_GAP: Duration = Duration::from_millis(250);
 
 pub type PhysicsAccess = Arc<AtomicPtr<PhysicsWorld>>;
 
@@ -75,6 +77,7 @@ pub struct PhysicsWorld {
     static_origin: Vector3,
     brush_revision: u64,
     voxel_revision: u64,
+    voxel_collider_at: Option<Instant>,
 }
 
 impl PhysicsWorld {
@@ -97,6 +100,7 @@ impl PhysicsWorld {
             static_origin: Vector3::new(f64::MAX, f64::MAX, f64::MAX),
             brush_revision: u64::MAX,
             voxel_revision: u64::MAX,
+            voxel_collider_at: None,
         }
     }
 
@@ -400,18 +404,27 @@ impl PhysicsWorld {
     fn refresh_static(&mut self, brushes: &BrushMap, voxels: &mut VoxelWorld) {
         let brush_rev = brushes.revision();
         let voxel_rev = voxels.revision();
+        let brush_changed = self.static_body.is_none()
+            || self.brush_revision != brush_rev
+            || self.static_origin != self.origin;
+        let voxel_changed = self.voxel_revision != voxel_rev;
 
-        if self.static_body.is_some()
-            && self.brush_revision == brush_rev
-            && self.voxel_revision == voxel_rev
-            && self.static_origin == self.origin
-        {
+        if !brush_changed && !voxel_changed {
             return;
+        }
+
+        if !brush_changed {
+            if let Some(built) = self.voxel_collider_at {
+                if built.elapsed() < VOXEL_COLLIDER_GAP {
+                    return;
+                }
+            }
         }
 
         self.brush_revision = brush_rev;
         self.voxel_revision = voxel_rev;
         self.static_origin = self.origin;
+        self.voxel_collider_at = Some(Instant::now());
 
         if let Some(handle) = self.static_body.take() {
             self.remove_body(handle);

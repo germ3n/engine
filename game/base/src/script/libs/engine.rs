@@ -2,11 +2,12 @@ use crate::physics::PhysicsAccess;
 use crate::script::libs::ents::EntityAccess;
 use crate::script::libs::vector3::Vector3;
 use crate::script::Realm;
-use crate::world::{Block, BrushMap, BrushPlane, Face, VoxelWorld};
+use crate::world::gen::{seed_from_f64, GenSettings};
+use crate::world::{cwd_vmap_path, Block, BrushMap, BrushPlane, Face, VoxelWorld};
 use mlua::{Lua, Table};
 use r#macro::document;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const ENGINE_TABLE: &str = "engine";
 
@@ -273,6 +274,93 @@ fn engine_voxel_trace() {}
 
 #[document(
     parent = "engine",
+    name = "voxel_seed",
+    kind = "function",
+    realm = "shared",
+    summary = "Seed used for voxel generation.",
+    returns = { ty = "number", desc = "Current seed. The default is 1." },
+)]
+fn engine_voxel_seed() {}
+
+#[document(
+    parent = "engine",
+    name = "set_voxel_seed",
+    kind = "function",
+    realm = "server",
+    summary = "Sets the generation seed. After streaming has started, generated chunks are cleared and built again. Chunks loaded from a vmap stay.",
+    params = {
+        seed = { ty = "number", desc = "Integer seed." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the seed is invalid." },
+)]
+fn engine_set_voxel_seed() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_gen_radius",
+    kind = "function",
+    realm = "server",
+    summary = "Sets how many chunks around each player and spawn are generated.",
+    params = {
+        radius = { ty = "number", desc = "Horizontal radius in chunks, clamped from 1 to 32." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the radius is invalid." },
+)]
+fn engine_voxel_gen_radius() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_gen_bounds",
+    kind = "function",
+    realm = "server",
+    summary = "Sets the inclusive minimum and exclusive maximum block Z that generation fills.",
+    params = {
+        min_z = { ty = "number", desc = "Lowest block Z." },
+        max_z = { ty = "number", desc = "One past the highest block Z." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the range is empty." },
+)]
+fn engine_voxel_gen_bounds() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_sea_level",
+    kind = "function",
+    realm = "server",
+    summary = "Sets the block Z that ocean biomes fill with water.",
+    params = {
+        level = { ty = "number", desc = "Sea level in blocks." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the level is invalid." },
+)]
+fn engine_voxel_sea_level() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_set_solid",
+    kind = "function",
+    realm = "server",
+    summary = "Sets whether a block id collides. Water is not solid by default. Non-air blocks still hide faces.",
+    params = {
+        block = { ty = "number", desc = "Block id. 0 is always air." },
+        solid = { ty = "boolean", desc = "True makes the id solid." },
+    },
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the block id is invalid." },
+)]
+fn engine_voxel_set_solid() {}
+
+#[document(
+    parent = "engine",
+    name = "voxel_save",
+    kind = "function",
+    realm = "server",
+    summary = "Writes the current voxel world as VMAP version 2 to maps/<map>.vmap in the working directory.",
+    returns = { ty = "boolean", desc = "False when the caller is not the server or the file cannot be written." },
+)]
+fn engine_voxel_save() {}
+
+#[document(
+    parent = "engine",
     name = "brush_convex",
     kind = "function",
     realm = "server",
@@ -345,6 +433,7 @@ pub fn register_engine_lib(
     entity_access: EntityAccess,
     physics_access: PhysicsAccess,
     motion_access: MotionAccess,
+    gen_settings: Arc<Mutex<GenSettings>>,
 ) {
     let engine_table = lua.create_table().expect("Failed to create engine table");
     engine_table
@@ -480,6 +569,7 @@ pub fn register_engine_lib(
         )
         .expect("[engine] Failed setting voxel_sphere");
     let voxels = voxel_access.clone();
+    let gen = Arc::clone(&gen_settings);
     engine_table
         .set(
             "voxel_clear",
@@ -488,7 +578,7 @@ pub fn register_engine_lib(
                     return Ok(false);
                 }
 
-                Ok(voxel_clear(&voxels))
+                Ok(voxel_clear(&voxels, &gen))
             })
             .expect("[engine] Failed to create voxel_clear"),
         )
@@ -503,6 +593,101 @@ pub fn register_engine_lib(
             .expect("[engine] Failed to create voxel_trace"),
         )
         .expect("[engine] Failed setting voxel_trace");
+    let gen = Arc::clone(&gen_settings);
+    engine_table
+        .set(
+            "voxel_seed",
+            lua.create_function(move |_, ()| Ok(voxel_seed(&gen)))
+                .expect("[engine] Failed to create voxel_seed"),
+        )
+        .expect("[engine] Failed setting voxel_seed");
+    let gen = Arc::clone(&gen_settings);
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "set_voxel_seed",
+            lua.create_function(move |_, seed: f64| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(set_voxel_seed(&voxels, &gen, seed))
+            })
+            .expect("[engine] Failed to create set_voxel_seed"),
+        )
+        .expect("[engine] Failed setting set_voxel_seed");
+    let gen = Arc::clone(&gen_settings);
+    engine_table
+        .set(
+            "voxel_gen_radius",
+            lua.create_function(move |_, radius: f64| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(set_gen_radius(&gen, radius))
+            })
+            .expect("[engine] Failed to create voxel_gen_radius"),
+        )
+        .expect("[engine] Failed setting voxel_gen_radius");
+    let gen = Arc::clone(&gen_settings);
+    engine_table
+        .set(
+            "voxel_gen_bounds",
+            lua.create_function(move |_, (min_z, max_z): (f64, f64)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(set_gen_bounds(&gen, min_z, max_z))
+            })
+            .expect("[engine] Failed to create voxel_gen_bounds"),
+        )
+        .expect("[engine] Failed setting voxel_gen_bounds");
+    let gen = Arc::clone(&gen_settings);
+    engine_table
+        .set(
+            "voxel_sea_level",
+            lua.create_function(move |_, level: f64| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(set_sea_level(&gen, level))
+            })
+            .expect("[engine] Failed to create voxel_sea_level"),
+        )
+        .expect("[engine] Failed setting voxel_sea_level");
+    let gen = Arc::clone(&gen_settings);
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_set_solid",
+            lua.create_function(move |_, (block, solid): (f64, bool)| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(set_block_solid(&voxels, &gen, block, solid))
+            })
+            .expect("[engine] Failed to create voxel_set_solid"),
+        )
+        .expect("[engine] Failed setting voxel_set_solid");
+    let gen = gen_settings;
+    let voxels = voxel_access.clone();
+    engine_table
+        .set(
+            "voxel_save",
+            lua.create_function(move |_, ()| {
+                if !server {
+                    return Ok(false);
+                }
+
+                Ok(voxel_save(&voxels, &gen))
+            })
+            .expect("[engine] Failed to create voxel_save"),
+        )
+        .expect("[engine] Failed setting voxel_save");
     let brushes = brush_access.clone();
     engine_table
         .set(
@@ -681,7 +866,12 @@ fn voxel_fill(access: &VoxelAccess, min: Vector3, max: Vector3, block: f64) -> b
     world.fill_bounds(min, max, Block(block))
 }
 
-fn brush_box(access: &BrushAccess, min: Vector3, max: Vector3, material: Option<f64>) -> Option<f64> {
+fn brush_box(
+    access: &BrushAccess,
+    min: Vector3,
+    max: Vector3,
+    material: Option<f64>,
+) -> Option<f64> {
     let material = material_id(material)?;
     let Some(map) = brush_mut(access) else {
         return None;
@@ -771,14 +961,109 @@ fn voxel_sphere(access: &VoxelAccess, center: Vector3, radius: f64, block: f64) 
     world.fill_sphere(center, radius, Block(block))
 }
 
-fn voxel_clear(access: &VoxelAccess) -> bool {
+fn voxel_clear(access: &VoxelAccess, settings: &Arc<Mutex<GenSettings>>) -> bool {
     let Some(world) = voxels_mut(access) else {
         return false;
     };
 
     world.clear();
+    let mut settings = settings.lock().expect("gen settings");
+    settings.epoch = settings.epoch.wrapping_add(1);
+    settings.forget = true;
 
     true
+}
+
+fn voxel_seed(settings: &Arc<Mutex<GenSettings>>) -> f64 {
+    settings.lock().expect("gen settings").seed as f64
+}
+
+fn set_voxel_seed(access: &VoxelAccess, settings: &Arc<Mutex<GenSettings>>, seed: f64) -> bool {
+    let Some(seed) = seed_from_f64(seed) else {
+        return false;
+    };
+    settings.lock().expect("gen settings").set_seed(seed);
+
+    if let Some(world) = voxels_mut(access) {
+        world.set_seed(seed);
+    }
+
+    true
+}
+
+fn set_gen_radius(settings: &Arc<Mutex<GenSettings>>, radius: f64) -> bool {
+    if !radius.is_finite() {
+        return false;
+    }
+
+    settings
+        .lock()
+        .expect("gen settings")
+        .set_radius(radius as i32);
+
+    true
+}
+
+fn set_gen_bounds(settings: &Arc<Mutex<GenSettings>>, min_z: f64, max_z: f64) -> bool {
+    if !min_z.is_finite() || !max_z.is_finite() {
+        return false;
+    }
+
+    if min_z < i32::MIN as f64 || max_z > i32::MAX as f64 {
+        return false;
+    }
+
+    settings
+        .lock()
+        .expect("gen settings")
+        .set_bounds(min_z as i32, max_z as i32)
+}
+
+fn set_sea_level(settings: &Arc<Mutex<GenSettings>>, level: f64) -> bool {
+    settings.lock().expect("gen settings").set_sea_level(level)
+}
+
+fn set_block_solid(
+    access: &VoxelAccess,
+    settings: &Arc<Mutex<GenSettings>>,
+    block: f64,
+    solid: bool,
+) -> bool {
+    let Some(id) = block_id(block) else {
+        return false;
+    };
+
+    if id == 0 {
+        return false;
+    }
+
+    settings
+        .lock()
+        .expect("gen settings")
+        .set_block_solid(id, solid);
+
+    if let Some(world) = voxels_mut(access) {
+        world.set_block_solid(id, solid);
+    }
+
+    true
+}
+
+fn voxel_save(access: &VoxelAccess, settings: &Arc<Mutex<GenSettings>>) -> bool {
+    let (path, seed) = {
+        let settings = settings.lock().expect("gen settings");
+        let Some(path) = cwd_vmap_path(&settings.map_name) else {
+            return false;
+        };
+
+        (path, settings.seed)
+    };
+    let Some(world) = voxels_mut(access) else {
+        return false;
+    };
+
+    world.set_seed(seed);
+    world.save_file(&path).is_ok()
 }
 
 fn voxel_trace(

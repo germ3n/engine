@@ -1,5 +1,6 @@
 mod brush;
 mod bspvis;
+pub mod gen;
 mod material;
 pub mod surface;
 mod voxel;
@@ -12,7 +13,10 @@ pub use surface::{
     push_shaded_tri, DrawMesh, MapGraphics, SurfaceRange, CUBEMAP_NONE, MATERIAL_NONE, PASS_OPAQUE,
     STRIDE,
 };
-pub use voxel::{find_voxel_file, Block, BlockPos, ChunkUpdate, Face, TraceHit, VoxelWorld};
+pub use voxel::{
+    cwd_vmap_path, find_voxel_file, Block, BlockPos, ChunkPos, ChunkUpdate, Face, TraceHit,
+    VoxelWorld, CHUNK_EDGE,
+};
 
 pub(crate) fn content_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();

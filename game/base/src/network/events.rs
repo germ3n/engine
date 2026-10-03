@@ -413,7 +413,10 @@ fn edit_summary(edit: &BrushEdit) -> String {
         }
         BrushEdit::Remove(index) => format!("remove {index}"),
         BrushEdit::Move { index, delta } => {
-            format!("move {index} ({:.2},{:.2},{:.2})", delta.x, delta.y, delta.z)
+            format!(
+                "move {index} ({:.2},{:.2},{:.2})",
+                delta.x, delta.y, delta.z
+            )
         }
         BrushEdit::Clear => "clear".to_string(),
     }

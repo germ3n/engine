@@ -554,11 +554,7 @@ impl BrushMap {
         self.add_convex_index(planes, material).is_some()
     }
 
-    pub fn add_convex_index(
-        &mut self,
-        planes: Vec<BrushPlane>,
-        material: u16,
-    ) -> Option<usize> {
+    pub fn add_convex_index(&mut self, planes: Vec<BrushPlane>, material: u16) -> Option<usize> {
         if !self.apply_convex(&planes, material) {
             return None;
         }
@@ -2905,16 +2901,8 @@ mod tests {
     #[test]
     fn runtime_boxes_follow_scale_and_place_does_not_record() {
         let mut map = BrushMap::new();
-        assert!(map.add_box(
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 1.0, 1.0),
-            4,
-        ));
-        assert!(map.place_box(
-            Vector3::new(4.0, 0.0, 0.0),
-            Vector3::new(5.0, 1.0, 1.0),
-            4,
-        ));
+        assert!(map.add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(2.0, 1.0, 1.0), 4,));
+        assert!(map.place_box(Vector3::new(4.0, 0.0, 0.0), Vector3::new(5.0, 1.0, 1.0), 4,));
         assert_eq!(map.edits().len(), 1);
         assert!(map.set_scale(2.0));
         match &map.edits()[0] {
@@ -2948,11 +2936,7 @@ mod tests {
     fn edits_replay_onto_an_empty_map() {
         let mut map = BrushMap::new();
         let index = map
-            .add_box_index(
-                Vector3::new(0.0, 0.0, 0.0),
-                Vector3::new(1.0, 1.0, 1.0),
-                2,
-            )
+            .add_box_index(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), 2)
             .unwrap();
         assert!(map.move_brush(index, Vector3::new(3.0, 0.0, 0.0)));
         assert!(map

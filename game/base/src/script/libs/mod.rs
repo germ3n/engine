@@ -1,9 +1,12 @@
 pub mod angle3;
+pub mod biome;
+pub mod chunk;
 pub mod console;
 pub mod convar;
 pub mod engine;
 pub mod ents;
 pub mod net;
+pub mod noise;
 pub mod pad;
 pub mod scripted_ents;
 pub mod sound;
@@ -11,11 +14,13 @@ pub mod surface;
 pub mod vector3;
 
 pub use angle3::register_angle3_lib;
+pub use biome::register_biome_lib;
 pub use console::register_console_lib;
 pub use convar::register_convar_lib;
 pub use engine::register_engine_lib;
 pub use ents::register_ents_lib;
 pub use net::register_net_lib;
+pub use noise::register_noise_lib;
 pub use pad::register_pad_lib;
 pub use scripted_ents::register_scripted_ents_lib;
 pub use sound::register_sound_lib;

@@ -16,7 +16,7 @@ function ENT:think()
         local spacing = 1.6;
         local column = self.column or 0;
         local row = self.row or 0;
-        self:set_pos(ply:get_pos() + forward * (3.5 + row * spacing) + right * ((column - 4.5) * spacing));
+        self:set_pos(ply:get_pos() + forward * (3.5 + row * spacing));
         self:set_angles(Angle3(0, look.y + 180, 0));
     end
 

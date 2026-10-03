@@ -7,13 +7,23 @@ pub const CHUNK_EDGE: i32 = 16;
 const MAX_FILL: i64 = 1_000_000;
 const VOLUME: usize = (CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE) as usize;
 const VOXEL_MAGIC: &[u8; 4] = b"VMAP";
-const VOXEL_VERSION: u32 = 1;
+const VOXEL_VERSION_V1: u32 = 1;
+const VOXEL_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Block(pub u16);
 
 impl Block {
     pub const AIR: Self = Self(0);
+    pub const STONE: Self = Self(1);
+    pub const DIRT: Self = Self(2);
+    pub const GRASS: Self = Self(3);
+    pub const SAND: Self = Self(4);
+    pub const SANDSTONE: Self = Self(5);
+    pub const SNOW: Self = Self(6);
+    pub const WATER: Self = Self(7);
+    pub const LOG: Self = Self(8);
+    pub const LEAVES: Self = Self(9);
 
     #[inline]
     pub const fn is_air(self) -> bool {
@@ -95,8 +105,15 @@ pub struct ChunkRun {
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
-struct StoredVoxels {
+struct StoredVoxelsV1 {
     scale: f64,
+    chunks: Vec<ChunkUpdate>,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+struct StoredVoxelsV2 {
+    scale: f64,
+    seed: i64,
     chunks: Vec<ChunkUpdate>,
 }
 
@@ -111,6 +128,7 @@ pub struct ChunkUpdate {
 struct Chunk {
     blocks: Box<[u16]>,
     mesh: Option<Vec<f32>>,
+    generated: bool,
 }
 
 impl Chunk {
@@ -118,6 +136,7 @@ impl Chunk {
         Self {
             blocks: vec![0; VOLUME].into_boxed_slice(),
             mesh: None,
+            generated: false,
         }
     }
 
@@ -162,7 +181,9 @@ struct Axis {
 pub struct VoxelWorld {
     chunks: HashMap<ChunkPos, Chunk>,
     dirty: HashSet<ChunkPos>,
+    nonsolid: HashSet<u16>,
     scale: f64,
+    seed: i64,
     scale_dirty: bool,
     revision: u64,
     mesh_builds: u64,
@@ -177,11 +198,21 @@ impl VoxelWorld {
         Self {
             chunks: HashMap::new(),
             dirty: HashSet::new(),
+            nonsolid: default_nonsolid(),
             scale: finite_scale(scale).unwrap_or(1.0),
+            seed: 1,
             scale_dirty: false,
             revision: 0,
             mesh_builds: 0,
         }
+    }
+
+    pub fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    pub fn set_seed(&mut self, seed: i64) {
+        self.seed = seed;
     }
 
     pub fn revision(&self) -> u64 {
@@ -283,6 +314,10 @@ impl VoxelWorld {
         self.chunks.len()
     }
 
+    pub fn contains_chunk(&self, pos: ChunkPos) -> bool {
+        self.chunks.contains_key(&pos)
+    }
+
     pub fn get(&self, pos: BlockPos) -> Block {
         let Some(chunk) = self.chunks.get(&pos.chunk()) else {
             return Block::AIR;
@@ -294,7 +329,40 @@ impl VoxelWorld {
     }
 
     pub fn is_solid(&self, pos: BlockPos) -> bool {
-        self.get(pos).is_solid()
+        let block = self.get(pos);
+
+        block.is_solid() && !self.nonsolid.contains(&block.0)
+    }
+
+    pub fn occludes(&self, pos: BlockPos) -> bool {
+        !self.get(pos).is_air()
+    }
+
+    pub fn set_block_solid(&mut self, id: u16, solid: bool) {
+        if id == 0 {
+            return;
+        }
+
+        if solid {
+            self.nonsolid.remove(&id);
+
+            return;
+        }
+
+        self.nonsolid.insert(id);
+    }
+
+    pub fn replace_nonsolid(&mut self, ids: &[u16]) {
+        self.nonsolid.clear();
+        let mut idx = 0;
+
+        while idx < ids.len() {
+            if ids[idx] != 0 {
+                self.nonsolid.insert(ids[idx]);
+            }
+
+            idx += 1;
+        }
     }
 
     pub fn set(&mut self, pos: BlockPos, block: Block) {
@@ -304,6 +372,7 @@ impl VoxelWorld {
 
         let chunk_pos = pos.chunk();
         self.invalidate(chunk_pos);
+        self.pin(chunk_pos);
         let (local_x, local_y, local_z) = pos.local();
         let slot = Chunk::index(local_x, local_y, local_z);
 
@@ -496,6 +565,7 @@ impl VoxelWorld {
             Chunk {
                 blocks: blocks.into_boxed_slice(),
                 mesh: None,
+                generated: false,
             },
         );
         self.touch();
@@ -503,13 +573,107 @@ impl VoxelWorld {
         true
     }
 
+    pub fn insert_generated(&mut self, pos: ChunkPos, blocks: Vec<u16>) -> bool {
+        if blocks.len() != VOLUME || self.chunks.contains_key(&pos) {
+            return false;
+        }
+
+        if blocks.iter().all(|block| *block == 0) {
+            return true;
+        }
+
+        self.invalidate(pos);
+        self.chunks.insert(
+            pos,
+            Chunk {
+                blocks: blocks.into_boxed_slice(),
+                mesh: None,
+                generated: true,
+            },
+        );
+        self.dirty.insert(pos);
+        self.touch();
+
+        true
+    }
+
+    pub fn clear_generated(&mut self) {
+        let positions: Vec<ChunkPos> = self
+            .chunks
+            .iter()
+            .filter(|(_, chunk)| chunk.generated)
+            .map(|(pos, _)| *pos)
+            .collect();
+        let mut idx = 0;
+
+        while idx < positions.len() {
+            let pos = positions[idx];
+            self.invalidate(pos);
+            self.chunks.remove(&pos);
+            self.dirty.insert(pos);
+            idx += 1;
+        }
+
+        if !positions.is_empty() {
+            self.touch();
+        }
+    }
+
+    fn pin(&mut self, pos: ChunkPos) {
+        let Some(chunk) = self.chunks.get_mut(&pos) else {
+            return;
+        };
+
+        chunk.generated = false;
+    }
+
     pub fn mesh(&mut self) -> Vec<f32> {
         self.mesh_at(Vector3::new(0.0, 0.0, 0.0))
     }
 
     pub fn mesh_at(&mut self, origin: Vector3) -> Vec<f32> {
+        self.build_meshes(usize::MAX);
+
+        self.assembled_mesh(origin)
+    }
+
+    pub fn build_meshes(&mut self, budget: usize) -> bool {
         let positions: Vec<ChunkPos> = self.chunks.keys().copied().collect();
-        self.gather_mesh(&positions, origin)
+        let mut built = 0;
+        let mut idx = 0;
+
+        while idx < positions.len() {
+            let pending = self
+                .chunks
+                .get(&positions[idx])
+                .map(|chunk| chunk.mesh.is_none())
+                .unwrap_or(false);
+
+            if pending {
+                if built >= budget {
+                    return true;
+                }
+
+                self.ensure_mesh(positions[idx]);
+                built += 1;
+            }
+
+            idx += 1;
+        }
+
+        false
+    }
+
+    pub fn assembled_mesh(&self, origin: Vector3) -> Vec<f32> {
+        let mut vertices = Vec::new();
+
+        for chunk in self.chunks.values() {
+            if let Some(mesh) = chunk.mesh.as_deref() {
+                append_shifted(&mut vertices, mesh, origin);
+            }
+        }
+
+        vertices
     }
 
     pub fn mesh_box(&mut self, origin: Vector3, min: Vector3, max: Vector3) -> Vec<f32> {
@@ -601,7 +765,16 @@ impl VoxelWorld {
                     chunk_pos.y * CHUNK_EDGE + local_y,
                     chunk_pos.z * CHUNK_EDGE + local_z,
                 );
-                push_block(&mut vertices, self, pos, id, scale, origin);
+                push_block(
+                    &mut vertices,
+                    self,
+                    &blocks,
+                    chunk_pos,
+                    pos,
+                    id,
+                    scale,
+                    origin,
+                );
             }
 
             idx += 1;
@@ -655,11 +828,7 @@ impl VoxelWorld {
     }
 
     pub fn save_file(&self, path: &Path) -> Result<(), String> {
-        let stored = StoredVoxels {
-            scale: self.scale,
-            chunks: self.baseline(),
-        };
-        let bytes = encode_voxels(&stored)?;
+        let bytes = encode_voxels(self.scale, self.seed, &self.baseline())?;
 
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -679,15 +848,44 @@ impl VoxelWorld {
     pub fn load_file(&mut self, path: &Path) -> Result<(), String> {
         let bytes =
             std::fs::read(path).map_err(|err| format!("voxels {}: {err}", path.display()))?;
-        let stored = decode_voxels(&bytes)?;
 
-        if finite_scale(stored.scale).is_none() {
+        self.load_bytes(&bytes)
+    }
+
+    pub fn load_resume(&mut self, path: &Path) -> Result<bool, String> {
+        if !path.exists() {
+            return Ok(false);
+        }
+
+        let bytes =
+            std::fs::read(path).map_err(|err| format!("voxels {}: {err}", path.display()))?;
+        let version = voxel_version(&bytes)?;
+
+        if version != VOXEL_VERSION {
+            return Ok(false);
+        }
+
+        self.load_bytes(&bytes)?;
+
+        Ok(true)
+    }
+
+    fn load_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let decoded = decode_voxels(bytes)?;
+
+        if finite_scale(decoded.scale).is_none() {
             return Err("voxel map scale is invalid".to_string());
         }
 
-        let mut loaded = VoxelWorld::with_scale(stored.scale);
+        let mut loaded = VoxelWorld::with_scale(decoded.scale);
+        loaded.nonsolid = self.nonsolid.clone();
+        loaded.seed = if decoded.version == VOXEL_VERSION_V1 {
+            self.seed
+        } else {
+            decoded.seed
+        };
 
-        for update in &stored.chunks {
+        for update in &decoded.chunks {
             if !loaded.apply(update) {
                 return Err(format!(
                     "voxel chunk {}, {}, {} is invalid",
@@ -971,6 +1169,18 @@ impl VoxelWorld {
     }
 }
 
+pub fn cwd_vmap_path(name: &str) -> Option<PathBuf> {
+    let stem = voxel_stem(name);
+
+    if stem.is_empty() || stem.contains("..") || stem.contains('/') || stem.contains('\\') {
+        return None;
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+
+    Some(cwd.join("maps").join(format!("{stem}.vmap")))
+}
+
 pub fn find_voxel_file(name: &str) -> Option<PathBuf> {
     let given = PathBuf::from(name);
 
@@ -1008,8 +1218,13 @@ fn voxel_stem(name: &str) -> &str {
         .unwrap_or(file)
 }
 
-fn encode_voxels(stored: &StoredVoxels) -> Result<Vec<u8>, String> {
-    let payload = wincode::serialize(stored).map_err(|err| format!("{err}"))?;
+fn encode_voxels(scale: f64, seed: i64, chunks: &[ChunkUpdate]) -> Result<Vec<u8>, String> {
+    let stored = StoredVoxelsV2 {
+        scale,
+        seed,
+        chunks: chunks.to_vec(),
+    };
+    let payload = wincode::serialize(&stored).map_err(|err| format!("{err}"))?;
     let mut bytes = Vec::with_capacity(8 + payload.len());
     bytes.extend_from_slice(VOXEL_MAGIC);
     bytes.extend_from_slice(&VOXEL_VERSION.to_le_bytes());
@@ -1018,18 +1233,49 @@ fn encode_voxels(stored: &StoredVoxels) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn decode_voxels(bytes: &[u8]) -> Result<StoredVoxels, String> {
+struct DecodedVoxels {
+    version: u32,
+    scale: f64,
+    seed: i64,
+    chunks: Vec<ChunkUpdate>,
+}
+
+fn voxel_version(bytes: &[u8]) -> Result<u32, String> {
     if bytes.len() < 8 || bytes[..4] != VOXEL_MAGIC[..] {
         return Err("voxel map header is invalid".to_string());
     }
 
-    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    Ok(u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]))
+}
+
+fn decode_voxels(bytes: &[u8]) -> Result<DecodedVoxels, String> {
+    let version = voxel_version(bytes)?;
+
+    if version == VOXEL_VERSION_V1 {
+        let stored: StoredVoxelsV1 =
+            wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))?;
+
+        return Ok(DecodedVoxels {
+            version,
+            scale: stored.scale,
+            seed: 1,
+            chunks: stored.chunks,
+        });
+    }
 
     if version != VOXEL_VERSION {
         return Err(format!("voxel map version {version} is unsupported"));
     }
 
-    wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))
+    let stored: StoredVoxelsV2 =
+        wincode::deserialize(&bytes[8..]).map_err(|err| format!("{err}"))?;
+
+    Ok(DecodedVoxels {
+        version,
+        scale: stored.scale,
+        seed: stored.seed,
+        chunks: stored.chunks,
+    })
 }
 
 impl Default for VoxelWorld {
@@ -1072,6 +1318,25 @@ fn chunk_overlaps(pos: ChunkPos, scale: f64, min: Vector3, max: Vector3) -> bool
         && z0 <= max.z
 }
 
+fn neighbor_occludes(
+    world: &VoxelWorld,
+    blocks: &[u16],
+    chunk: ChunkPos,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> bool {
+    let lx = x - chunk.x * CHUNK_EDGE;
+    let ly = y - chunk.y * CHUNK_EDGE;
+    let lz = z - chunk.z * CHUNK_EDGE;
+
+    if lx >= 0 && ly >= 0 && lz >= 0 && lx < CHUNK_EDGE && ly < CHUNK_EDGE && lz < CHUNK_EDGE {
+        return blocks[Chunk::index(lx, ly, lz)] != 0;
+    }
+
+    world.occludes(BlockPos::new(x, y, z))
+}
+
 fn append_shifted(out: &mut Vec<f32>, mesh: &[f32], origin: Vector3) {
     if origin.x == 0.0 && origin.y == 0.0 && origin.z == 0.0 {
         out.extend_from_slice(mesh);
@@ -1094,6 +1359,8 @@ fn append_shifted(out: &mut Vec<f32>, mesh: &[f32], origin: Vector3) {
 fn push_block(
     vertices: &mut Vec<f32>,
     world: &VoxelWorld,
+    blocks: &[u16],
+    chunk: ChunkPos,
     pos: BlockPos,
     id: u16,
     scale: f64,
@@ -1107,7 +1374,7 @@ fn push_block(
     for face in 0..6 {
         let (nx, ny, nz) = NEIGHBORS[face];
 
-        if world.is_solid(BlockPos::new(pos.x + nx, pos.y + ny, pos.z + nz)) {
+        if neighbor_occludes(world, blocks, chunk, pos.x + nx, pos.y + ny, pos.z + nz) {
             continue;
         }
 
@@ -1132,14 +1399,36 @@ fn push_block(
 }
 
 fn block_rgb(id: u16) -> [f32; 3] {
-    let mut n = (id as u32).wrapping_mul(1664525).wrapping_add(1013904223);
-    let red = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
-    n = n.wrapping_mul(1664525).wrapping_add(1013904223);
-    let green = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
-    n = n.wrapping_mul(1664525).wrapping_add(1013904223);
-    let blue = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
+    let color = match id {
+        1 => [0.45, 0.45, 0.48],
+        2 => [0.45, 0.32, 0.18],
+        3 => [0.30, 0.55, 0.22],
+        4 => [0.76, 0.70, 0.42],
+        5 => [0.63, 0.55, 0.32],
+        6 => [0.90, 0.92, 0.95],
+        7 => [0.15, 0.35, 0.70],
+        8 => [0.40, 0.26, 0.12],
+        9 => [0.20, 0.48, 0.18],
+        _ => {
+            let mut n = (id as u32).wrapping_mul(1664525).wrapping_add(1013904223);
+            let red = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
+            n = n.wrapping_mul(1664525).wrapping_add(1013904223);
+            let green = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
+            n = n.wrapping_mul(1664525).wrapping_add(1013904223);
+            let blue = 0.35 + ((n >> 16) & 255) as f32 / 255.0 * 0.5;
 
-    [red, green, blue]
+            return [red, green, blue];
+        }
+    };
+
+    color
+}
+
+fn default_nonsolid() -> HashSet<u16> {
+    let mut nonsolid = HashSet::new();
+    nonsolid.insert(Block::WATER.0);
+
+    nonsolid
 }
 
 fn floor_i32(value: f64) -> i32 {
@@ -1677,22 +1966,93 @@ mod tests {
         let mut world = VoxelWorld::with_scale(2.0);
         world.set(BlockPos::new(-1, 4, 2), Block(3));
         world.fill(BlockPos::new(0, 0, 0), BlockPos::new(2, 2, 1), Block(1));
+        world.set_seed(42);
         world.save_file(&path).unwrap();
 
         let mut loaded = VoxelWorld::new();
+        loaded.set_seed(7);
         loaded.load_file(&path).unwrap();
 
         assert_eq!(loaded.scale(), 2.0);
+        assert_eq!(loaded.seed(), 42);
         assert_eq!(loaded.get(BlockPos::new(-1, 4, 2)), Block(3));
         assert_eq!(loaded.get(BlockPos::new(1, 1, 0)), Block(1));
         assert_eq!(loaded.get(BlockPos::new(3, 0, 0)), Block::AIR);
         assert_eq!(find_voxel_file(path.to_str().unwrap()).unwrap(), path);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            2
+        );
 
         let bad = dir.join("bad.vmap");
         std::fs::write(&bad, b"nope").unwrap();
 
         assert!(VoxelWorld::new().load_file(&bad).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn voxel_file_version_one_keeps_the_current_seed() {
+        let dir = std::env::temp_dir().join(format!("engine-vmap-v1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.vmap");
+        let stored = StoredVoxelsV1 {
+            scale: 1.5,
+            chunks: vec![ChunkUpdate {
+                x: 0,
+                y: 0,
+                z: 0,
+                runs: vec![ChunkRun {
+                    block: 4,
+                    len: VOLUME as u16,
+                }],
+            }],
+        };
+        let payload = wincode::serialize(&stored).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(VOXEL_MAGIC);
+        bytes.extend_from_slice(&VOXEL_VERSION_V1.to_le_bytes());
+        bytes.extend(payload);
+        std::fs::write(&path, bytes).unwrap();
+
+        let mut world = VoxelWorld::new();
+        world.set_seed(9);
+        world.load_file(&path).unwrap();
+
+        assert_eq!(world.scale(), 1.5);
+        assert_eq!(world.seed(), 9);
+        assert_eq!(world.get(BlockPos::new(0, 0, 0)), Block(4));
+        assert!(!world.load_resume(&path).unwrap());
+        assert_eq!(world.seed(), 9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn water_is_not_solid_and_still_occludes() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block::WATER);
+        world.set(BlockPos::new(1, 0, 0), Block::STONE);
+
+        assert!(!world.is_solid(BlockPos::new(0, 0, 0)));
+        assert!(world.occludes(BlockPos::new(0, 0, 0)));
+        assert!(world.is_solid(BlockPos::new(1, 0, 0)));
+        world.set_block_solid(Block::WATER.0, true);
+        assert!(world.is_solid(BlockPos::new(0, 0, 0)));
+    }
+
+    #[test]
+    fn clear_generated_keeps_loaded_blocks() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block::STONE);
+        let mut blocks = vec![0u16; VOLUME];
+        blocks[0] = Block::DIRT.0;
+        assert!(world.insert_generated(ChunkPos { x: 2, y: 0, z: 0 }, blocks));
+        world.clear_generated();
+
+        assert_eq!(world.get(BlockPos::new(0, 0, 0)), Block::STONE);
+        assert!(world.get(BlockPos::new(32, 0, 0)).is_air());
     }
 
     #[test]
