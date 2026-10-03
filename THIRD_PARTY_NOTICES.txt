@@ -395,26 +395,29 @@ Scripting wiki fonts
 
 Source: game/wiki/fonts
 Embedded in the scripting wiki (wiki.html, and wiki/index.html inside base.pak).
-The shipped files are Latin subsets. The Reserved Font Name Source is unchanged.
+The shipped files are Latin subsets. Reserved font names are unchanged.
 License: SIL Open Font License, Version 1.1
 
-Source Serif 4
-Regular and Italic, version 4.005. A Latin subset is embedded in the scripting wiki.
-Copyright 2014 - 2023 Adobe (http://www.adobe.com/), with Reserved Font Name ‘Source’. All Rights Reserved. Source is a trademark of Adobe in the United States and/or other countries.
+Newsreader
+Regular and Italic. A Latin subset is embedded in the scripting wiki.
+Copyright 2020 The Newsreader Project Authors (http://github.com/productiontype/Newsreader)
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at: http://scripts.sil.org/OFL
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
 
-Source Sans 3
-Regular and Semibold, version 3.052. A Latin subset is embedded in the scripting wiki.
-Copyright 2010-2024 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. All Rights Reserved. Source is a trademark of Adobe in the United States and/or other countries.
+Manrope
+Regular and SemiBold. A Latin subset is embedded in the scripting wiki.
+Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope)
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at: http://scripts.sil.org/OFL
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
 
-Source Code Pro
-Regular, version 2.042. A Latin subset is embedded in the scripting wiki.
-© 2023 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'. All Rights Reserved. Source is a trademark of Adobe in the United States and/or other countries.
+JetBrains Mono
+Regular, version 2.304. A Latin subset is embedded in the scripting wiki.
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at: http://scripts.sil.org/OFL
+This license is copied below, and is also available with a FAQ at:
+https://scripts.sil.org/OFL
 
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
 -----------------------------------------------------------

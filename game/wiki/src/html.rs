@@ -32,9 +32,9 @@ try {
   --card-2: #1c2636;
   --type: #9ec1ff;
   --shadow: rgba(0, 0, 0, 0.28);
-  --sans: "Source Sans 3", "Segoe UI", sans-serif;
-  --serif: "Source Serif 4", Georgia, serif;
-  --mono: "Source Code Pro", ui-monospace, Menlo, Consolas, monospace;
+  --sans: "Manrope", "Segoe UI", sans-serif;
+  --serif: "Newsreader", Georgia, serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
 }
 html[data-theme="light"] {
   color-scheme: light;
@@ -998,34 +998,34 @@ pub fn render(pages: &[Page]) -> String {
 fn font_css() -> String {
     let mut css = String::new();
     css.push_str(&face(
-        "Source Serif 4",
+        "Newsreader",
         "normal",
         400,
-        include_bytes!("../fonts/SourceSerif4-Regular.woff2"),
+        include_bytes!("../fonts/Newsreader-Regular.woff2"),
     ));
     css.push_str(&face(
-        "Source Serif 4",
+        "Newsreader",
         "italic",
         400,
-        include_bytes!("../fonts/SourceSerif4-It.woff2"),
+        include_bytes!("../fonts/Newsreader-Italic.woff2"),
     ));
     css.push_str(&face(
-        "Source Sans 3",
+        "Manrope",
         "normal",
         400,
-        include_bytes!("../fonts/SourceSans3-Regular.woff2"),
+        include_bytes!("../fonts/Manrope-Regular.woff2"),
     ));
     css.push_str(&face(
-        "Source Sans 3",
+        "Manrope",
         "normal",
         600,
-        include_bytes!("../fonts/SourceSans3-Semibold.woff2"),
+        include_bytes!("../fonts/Manrope-Semibold.woff2"),
     ));
     css.push_str(&face(
-        "Source Code Pro",
+        "JetBrains Mono",
         "normal",
         400,
-        include_bytes!("../fonts/SourceCodePro-Regular.woff2"),
+        include_bytes!("../fonts/JetBrainsMono-Regular.woff2"),
     ));
 
     css

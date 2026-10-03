@@ -337,19 +337,19 @@ def wiki_font_parts(path):
 wiki_font_dir = os.path.join(ROOT, "game/wiki/fonts")
 wiki_fonts = [
     (
-        "Source Serif 4",
-        "Regular and Italic, version 4.005. A Latin subset is embedded in the scripting wiki.",
-        "source-serif-LICENSE.md",
+        "Newsreader",
+        "Regular and Italic. A Latin subset is embedded in the scripting wiki.",
+        "newsreader-OFL.txt",
     ),
     (
-        "Source Sans 3",
-        "Regular and Semibold, version 3.052. A Latin subset is embedded in the scripting wiki.",
-        "source-sans-LICENSE.md",
+        "Manrope",
+        "Regular and SemiBold. A Latin subset is embedded in the scripting wiki.",
+        "manrope-OFL.txt",
     ),
     (
-        "Source Code Pro",
-        "Regular, version 2.042. A Latin subset is embedded in the scripting wiki.",
-        "source-code-pro-LICENSE.md",
+        "JetBrains Mono",
+        "Regular, version 2.304. A Latin subset is embedded in the scripting wiki.",
+        "jetbrains-OFL.txt",
     ),
 ]
 wiki_entries = []
@@ -366,7 +366,7 @@ out += section("Scripting wiki fonts")
 out += [
     "Source: game/wiki/fonts",
     "Embedded in the scripting wiki (wiki.html, and wiki/index.html inside base.pak).",
-    "The shipped files are Latin subsets. The Reserved Font Name Source is unchanged.",
+    "The shipped files are Latin subsets. Reserved font names are unchanged.",
     "License: SIL Open Font License, Version 1.1",
     "",
 ]
