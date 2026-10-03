@@ -57,6 +57,8 @@ pub struct D3D11Window {
     mesh_ready: bool,
     view: [f32; 16],
     draw_mesh: bool,
+    user: Vec<DxUser>,
+    user_cb: Option<ID3D11Buffer>,
     vr: Option<Headset>,
     vr_failed: bool,
     vr_enable: bool,
@@ -159,6 +161,8 @@ impl D3D11Window {
             mesh_ready: false,
             view: [0.0; 16],
             draw_mesh: false,
+            user: Vec::new(),
+            user_cb: None,
             vr: None,
             vr_failed: false,
             vr_enable: false,
@@ -266,6 +270,7 @@ impl Window for D3D11Window {
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
+        self.user.clear();
         self.draw_mesh = false;
     }
 
@@ -410,6 +415,7 @@ impl Window for D3D11Window {
                     &self.blend_off,
                     &self.cull_back,
                     None,
+                    None,
                 );
             }
         }
@@ -427,6 +433,7 @@ impl Window for D3D11Window {
                 &self.blend_on,
                 &self.cull_none,
                 None,
+                None,
             );
         }
 
@@ -443,9 +450,11 @@ impl Window for D3D11Window {
                 &self.blend_on,
                 &self.cull_none,
                 self.atlas_view.clone(),
+                None,
             );
         }
 
+        self.flush_user();
         let _ = unsafe { self.swap.Present(0, DXGI_PRESENT(0)) };
 
         if let Some(headset) = self.vr.as_mut() {
@@ -514,6 +523,7 @@ impl D3D11Window {
                         &self.blend_off,
                         &self.cull_back,
                         None,
+                        None,
                     );
                 }
             }
@@ -581,6 +591,7 @@ impl D3D11Window {
         blend: &ID3D11BlendState,
         raster: &ID3D11RasterizerState,
         texture: Option<ID3D11ShaderResourceView>,
+        sampler: Option<ID3D11SamplerState>,
     ) {
         if vertices == 0 {
             return;
@@ -610,8 +621,8 @@ impl D3D11Window {
 
             if let Some(texture) = texture {
                 self.context.PSSetShaderResources(0, Some(&[Some(texture)]));
-                self.context
-                    .PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+                let sampler = sampler.unwrap_or_else(|| self.sampler.clone());
+                self.context.PSSetSamplers(0, Some(&[Some(sampler)]));
             }
 
             self.context.Draw(vertices, 0);
@@ -1191,4 +1202,473 @@ fn rasterizer(
     }
 
     state.ok_or_else(|| "rasterizer".to_string())
+}
+
+struct DxUser {
+    buffer: DynBuf,
+    vs: ID3D11VertexShader,
+    ps: ID3D11PixelShader,
+    layout: ID3D11InputLayout,
+    texture: Option<ID3D11ShaderResourceView>,
+    sampler: Option<ID3D11SamplerState>,
+    count: u32,
+    depth: bool,
+    constants: [f32; 16],
+}
+
+impl D3D11Window {
+    fn flush_user(&mut self) {
+        if self.user.is_empty() {
+            return;
+        }
+
+        if self.user_cb.is_none() {
+            self.user_cb = constant_buffer(&self.device, 64).ok();
+        }
+
+        let Some(constants) = self.user_cb.clone() else {
+            return;
+        };
+        let mut idx = 0;
+
+        while idx < self.user.len() {
+            let vs = self.user[idx].vs.clone();
+            let ps = self.user[idx].ps.clone();
+            let layout = self.user[idx].layout.clone();
+            let buffer = DynBuf {
+                buffer: self.user[idx].buffer.buffer.clone(),
+                capacity: self.user[idx].buffer.capacity,
+                stride: self.user[idx].buffer.stride,
+            };
+            let count = self.user[idx].count;
+            let depth = self.user[idx].depth;
+            let texture = self.user[idx].texture.clone();
+            let sampler = self.user[idx].sampler.clone();
+            let words = self.user[idx].constants;
+            let _ = write_constants(&self.context, &constants, &words);
+            self.draw_buffer(
+                &vs,
+                &ps,
+                &layout,
+                &constants,
+                &buffer,
+                count,
+                if depth { &self.depth_on } else { &self.depth_off },
+                &self.blend_on,
+                &self.cull_none,
+                texture,
+                sampler,
+            );
+            idx += 1;
+        }
+    }
+}
+
+fn dx11_shader(device: &ID3D11Device, wgsl: &str) -> Result<crate::ui::gfx::Dx11Shader, String> {
+    let cache = adapter_cache(device)?;
+    let source = cache.hlsl(wgsl)?;
+    let vs = shader::vs5(&source, s!("vs_main"))?;
+    let ps = shader::ps5(&source, s!("fs_main"))?;
+
+    Ok(crate::ui::gfx::Dx11Shader { vs, ps })
+}
+
+fn dx11_texture(
+    device: &ID3D11Device,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<crate::ui::gfx::Dx11Texture, String> {
+    let desc = D3D11_TEXTURE2D_DESC {
+        Width: width.max(1),
+        Height: height.max(1),
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32 | D3D11_BIND_RENDER_TARGET.0 as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: 0,
+    };
+    let init = D3D11_SUBRESOURCE_DATA {
+        pSysMem: pixels.as_ptr() as *const _,
+        SysMemPitch: width.max(1) * 4,
+        SysMemSlicePitch: 0,
+    };
+    let mut texture = None;
+    unsafe {
+        device
+            .CreateTexture2D(&desc, Some(&init), Some(&mut texture))
+            .map_err(|err| err.to_string())?;
+    }
+    let texture = texture.ok_or_else(|| "texture".to_string())?;
+    let mut desc = D3D11_SHADER_RESOURCE_VIEW_DESC::default();
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.ViewDimension = D3D_SRV_DIMENSION_TEXTURE2D;
+    desc.Anonymous.Texture2D = D3D11_TEX2D_SRV {
+        MostDetailedMip: 0,
+        MipLevels: 1,
+    };
+    let mut view = None;
+    unsafe {
+        device
+            .CreateShaderResourceView(&texture, Some(&desc), Some(&mut view))
+            .map_err(|err| err.to_string())?;
+    }
+
+    Ok(crate::ui::gfx::Dx11Texture {
+        texture,
+        view: view.ok_or_else(|| "view".to_string())?,
+    })
+}
+
+fn dx11_sampler(
+    device: &ID3D11Device,
+    linear: bool,
+    repeat: bool,
+) -> Result<ID3D11SamplerState, String> {
+    let desc = D3D11_SAMPLER_DESC {
+        Filter: if linear {
+            D3D11_FILTER_MIN_MAG_MIP_LINEAR
+        } else {
+            D3D11_FILTER_MIN_MAG_MIP_POINT
+        },
+        AddressU: if repeat {
+            D3D11_TEXTURE_ADDRESS_WRAP
+        } else {
+            D3D11_TEXTURE_ADDRESS_CLAMP
+        },
+        AddressV: if repeat {
+            D3D11_TEXTURE_ADDRESS_WRAP
+        } else {
+            D3D11_TEXTURE_ADDRESS_CLAMP
+        },
+        AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+        MipLODBias: 0.0,
+        MaxAnisotropy: 1,
+        ComparisonFunc: D3D11_COMPARISON_NEVER,
+        BorderColor: [0.0; 4],
+        MinLOD: 0.0,
+        MaxLOD: f32::MAX,
+    };
+    let mut sampler = None;
+    unsafe {
+        device
+            .CreateSamplerState(&desc, Some(&mut sampler))
+            .map_err(|err| err.to_string())?;
+    }
+
+    sampler.ok_or_else(|| "sampler".to_string())
+}
+
+fn mesh_user_elements() -> [D3D11_INPUT_ELEMENT_DESC; 3] {
+    [
+        element(s!("LOC"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0),
+        element(s!("LOC"), 1, DXGI_FORMAT_R32G32_FLOAT, 12),
+        element(s!("LOC"), 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 20),
+    ]
+}
+
+impl crate::ui::gfx::BackendGpu for D3D11Window {
+    fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
+        Ok(crate::ui::gfx::Shader::d3d11(dx11_shader(&self.device, wgsl)?))
+    }
+
+    fn make_texture(
+        &mut self,
+        image: &crate::world::surface::CpuImage,
+    ) -> Result<crate::ui::gfx::Texture, String> {
+        let pixels = crate::world::image_rgba(image);
+
+        Ok(crate::ui::gfx::Texture::d3d11(dx11_texture(
+            &self.device,
+            &pixels,
+            image.width,
+            image.height,
+        )?))
+    }
+
+    fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
+        let pixels = vec![0u8; (width.max(1) as usize) * (height.max(1) as usize) * 4];
+        let color = dx11_texture(&self.device, &pixels, width, height)?;
+        let mut rtv = None;
+        unsafe {
+            self.device
+                .CreateRenderTargetView(&color.texture, None, Some(&mut rtv))
+                .map_err(|err| err.to_string())?;
+        }
+        let depth_desc = D3D11_TEXTURE2D_DESC {
+            Width: width.max(1),
+            Height: height.max(1),
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_D32_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_DEPTH_STENCIL.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut depth = None;
+        unsafe {
+            self.device
+                .CreateTexture2D(&depth_desc, None, Some(&mut depth))
+                .map_err(|err| err.to_string())?;
+        }
+        let depth = depth.ok_or_else(|| "depth".to_string())?;
+        let mut dsv = None;
+        unsafe {
+            self.device
+                .CreateDepthStencilView(&depth, None, Some(&mut dsv))
+                .map_err(|err| err.to_string())?;
+        }
+
+        Ok(crate::ui::gfx::Target::d3d11(crate::ui::gfx::Dx11Target {
+            color: color.texture,
+            view: color.view,
+            rtv: rtv.ok_or_else(|| "rtv".to_string())?,
+            depth,
+            dsv: dsv.ok_or_else(|| "dsv".to_string())?,
+            width,
+            height,
+        }))
+    }
+
+    fn make_buffer(&mut self, bytes: &[u8]) -> Result<crate::ui::gfx::Buffer, String> {
+        let buffer = write_dynamic(&self.device, &self.context, None, bytes, 4)?;
+
+        Ok(crate::ui::gfx::Buffer::d3d11(crate::ui::gfx::Dx11Buffer {
+            buffer: buffer.buffer,
+            bytes: bytes.len() as u32,
+        }))
+    }
+
+    fn make_sampler(
+        &mut self,
+        linear: bool,
+        repeat: bool,
+    ) -> Result<crate::ui::gfx::Sampler, String> {
+        Ok(crate::ui::gfx::Sampler::d3d11(crate::ui::gfx::Dx11Sampler {
+            state: dx11_sampler(&self.device, linear, repeat)?,
+        }))
+    }
+
+    fn make_pipeline(
+        &mut self,
+        shader: &crate::ui::gfx::Shader,
+        screen: bool,
+    ) -> Result<crate::ui::gfx::Pipeline, String> {
+        let shader = shader.as_d3d11().ok_or_else(|| "shader".to_string())?;
+        let vs = vertex_shader(&self.device, &shader.vs)?;
+        let ps = pixel_shader(&self.device, &shader.ps)?;
+        let elements = if screen {
+            text_elements().to_vec()
+        } else {
+            mesh_user_elements().to_vec()
+        };
+        let layout = input_layout(&self.device, &shader.vs, &elements)?;
+        let stride = if screen {
+            crate::ui::gfx::SCREEN_FLOATS as u8
+        } else {
+            crate::ui::gfx::MESH_FLOATS as u8
+        };
+
+        Ok(crate::ui::gfx::Pipeline::d3d11(crate::ui::gfx::Dx11Pipeline {
+            vs,
+            ps,
+            layout,
+            stride,
+            depth: !screen,
+        }))
+    }
+
+    fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
+        let bytes = bytes_of(verts);
+        let stride = if screen { 32 } else { 36 };
+        let buffer = write_dynamic(&self.device, &self.context, None, bytes, stride)?;
+
+        Ok(crate::ui::gfx::Mesh::d3d11(crate::ui::gfx::Dx11Mesh {
+            buffer: buffer.buffer,
+            floats: verts.len() as u32,
+            screen,
+        }))
+    }
+
+    fn destroy_shader(&mut self, shader: crate::ui::gfx::Shader) {
+        let _ = shader.into_d3d11();
+    }
+
+    fn destroy_texture(&mut self, texture: crate::ui::gfx::Texture) {
+        let _ = texture.into_d3d11();
+    }
+
+    fn destroy_buffer(&mut self, buffer: crate::ui::gfx::Buffer) {
+        let _ = buffer.into_d3d11();
+    }
+
+    fn destroy_sampler(&mut self, sampler: crate::ui::gfx::Sampler) {
+        let _ = sampler.into_d3d11();
+    }
+
+    fn destroy_pipeline(&mut self, pipeline: crate::ui::gfx::Pipeline) {
+        let _ = pipeline.into_d3d11();
+    }
+
+    fn destroy_target(&mut self, target: crate::ui::gfx::Target) {
+        let _ = target.into_d3d11();
+    }
+
+    fn destroy_mesh(&mut self, mesh: crate::ui::gfx::Mesh) {
+        let _ = mesh.into_d3d11();
+    }
+
+    fn draw_mesh(
+        &mut self,
+        mesh: &crate::ui::gfx::Mesh,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &SceneView,
+    ) {
+        let (Some(mesh), Some(pipeline)) = (mesh.as_d3d11(), pipeline.as_d3d11()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as u32;
+        let count = mesh.floats / stride;
+        let mut constants = [0.0; 16];
+        constants.copy_from_slice(&view_proj(view));
+        self.user.push(DxUser {
+            buffer: DynBuf {
+                buffer: mesh.buffer.clone(),
+                capacity: mesh.floats * 4,
+                stride: stride * 4,
+            },
+            vs: pipeline.vs.clone(),
+            ps: pipeline.ps.clone(),
+            layout: pipeline.layout.clone(),
+            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            sampler: sampler.and_then(|item| item.as_d3d11()).map(|item| item.state.clone()),
+            count,
+            depth: pipeline.depth,
+            constants,
+        });
+    }
+
+    fn draw_sprite(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        let verts = crate::ui::gfx::screen_quad(x, y, w, h, color);
+        let bytes = bytes_of(&verts);
+        let Ok(buffer) = write_dynamic(&self.device, &self.context, None, bytes, 32) else {
+            return;
+        };
+        let (vs, ps, layout) = if let Some(pipeline) = pipeline.and_then(|item| item.as_d3d11()) {
+            (pipeline.vs.clone(), pipeline.ps.clone(), pipeline.layout.clone())
+        } else {
+            (self.text_vs.clone(), self.text_ps.clone(), self.text_layout.clone())
+        };
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        self.user.push(DxUser {
+            buffer,
+            vs,
+            ps,
+            layout,
+            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            sampler: sampler
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.state.clone())
+                .or_else(|| Some(self.sampler.clone())),
+            count: 6,
+            depth: false,
+            constants,
+        });
+    }
+
+    fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
+        let source = match index {
+            crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),
+            crate::ui::gfx::IDX_COLOR => crate::ui::shaders::Program::Color.wgsl(),
+            crate::ui::gfx::IDX_TEXT => crate::ui::shaders::Program::Text.wgsl(),
+            _ => return None,
+        };
+
+        dx11_shader(&self.device, &source)
+            .ok()
+            .map(crate::ui::gfx::Shader::d3d11)
+    }
+
+    fn builtin_pipeline(&mut self, index: u32) -> Option<crate::ui::gfx::Pipeline> {
+        let (vs, ps, layout, stride, depth) = match index {
+            crate::ui::gfx::IDX_MESH => (
+                self.mesh_vs.clone(),
+                self.mesh_ps.clone(),
+                self.mesh_layout.clone(),
+                0,
+                true,
+            ),
+            crate::ui::gfx::IDX_COLOR => (
+                self.color_vs.clone(),
+                self.color_ps.clone(),
+                self.color_layout.clone(),
+                6,
+                false,
+            ),
+            crate::ui::gfx::IDX_TEXT => (
+                self.text_vs.clone(),
+                self.text_ps.clone(),
+                self.text_layout.clone(),
+                crate::ui::gfx::SCREEN_FLOATS as u8,
+                false,
+            ),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Pipeline::d3d11(crate::ui::gfx::Dx11Pipeline {
+            vs,
+            ps,
+            layout,
+            stride,
+            depth,
+        }))
+    }
+
+    fn builtin_texture(&mut self, _index: u32) -> Option<crate::ui::gfx::Texture> {
+        None
+    }
+
+    fn builtin_sampler(&mut self, _index: u32) -> Option<crate::ui::gfx::Sampler> {
+        Some(crate::ui::gfx::Sampler::d3d11(crate::ui::gfx::Dx11Sampler {
+            state: self.sampler.clone(),
+        }))
+    }
+
+    fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
+        None
+    }
+
+    fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {
+        target.as_d3d11().map(|target| {
+            crate::ui::gfx::Texture::d3d11(crate::ui::gfx::Dx11Texture {
+                texture: target.color.clone(),
+                view: target.view.clone(),
+            })
+        })
+    }
 }

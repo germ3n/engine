@@ -68,6 +68,8 @@ pub struct MetalWindow {
     glyphs: GlyphBrush<GlyphQuad>,
     atlas: Texture,
     atlas_size: (u32, u32),
+    user: Vec<MtlUser>,
+    material_lookup: std::collections::HashMap<String, Texture>,
     clear: [f64; 4],
     vr: Option<Headset>,
     vr_failed: bool,
@@ -225,6 +227,8 @@ impl MetalWindow {
             glyphs,
             atlas,
             atlas_size: (512, 512),
+            user: Vec::new(),
+            material_lookup: std::collections::HashMap::new(),
             clear: [0.0, 0.0, 0.0, 1.0],
             vr: None,
             vr_failed: false,
@@ -249,6 +253,7 @@ impl Window for MetalWindow {
     fn begin_frame(&mut self, red: f32, green: f32, blue: f32) {
         self.clear = [red as f64, green as f64, blue as f64, 1.0];
         self.ui_verts.clear();
+        self.user.clear();
         self.draw_mesh = false;
     }
 
@@ -485,6 +490,7 @@ impl Window for MetalWindow {
                 &resolution,
                 Some(&self.atlas),
             );
+            self.encode_user(&encoder);
 
             encoder.end_encoding();
             command.present_drawable(drawable);
@@ -1033,6 +1039,7 @@ impl MetalWindow {
 
         self.graphics_key = key;
         self.materials.clear();
+        self.material_lookup.clear();
         let mut idx = 0;
 
         while idx < graphics.materials.len() {
@@ -1047,6 +1054,19 @@ impl MetalWindow {
                 blend: metal_image(&self.device, &material.blend, true),
                 mask: metal_image(&self.device, &material.mask, true),
             });
+            idx += 1;
+        }
+
+        idx = 0;
+
+        while idx < graphics.material_names.len() && idx < self.materials.len() {
+            let name = &graphics.material_names[idx];
+
+            if !name.is_empty() {
+                self.material_lookup
+                    .insert(name.clone(), self.materials[idx].base.clone());
+            }
+
             idx += 1;
         }
 
@@ -1536,4 +1556,422 @@ fn eye_depth(device: &Device, width: u64, height: u64) -> Texture {
     desc.set_storage_mode(MTLStorageMode::Private);
 
     device.new_texture(&desc)
+}
+
+struct MtlUser {
+    verts: Vec<f32>,
+    pipeline: RenderPipelineState,
+    texture: Option<Texture>,
+    sampler: Option<SamplerState>,
+    depth: bool,
+    constants: [f32; 16],
+    constant_len: u64,
+    stride: u64,
+}
+
+impl MetalWindow {
+    fn encode_user(&self, encoder: &RenderCommandEncoderRef) {
+        let mut idx = 0;
+
+        while idx < self.user.len() {
+            let draw = &self.user[idx];
+            let bytes = float_bytes(&draw.verts);
+            let count = draw.verts.len() as u64 / draw.stride.max(1);
+
+            if count == 0 {
+                idx += 1;
+
+                continue;
+            }
+
+            encoder.set_render_pipeline_state(&draw.pipeline);
+            encoder.set_depth_stencil_state(if draw.depth {
+                &self.depth_write
+            } else {
+                &self.depth_off
+            });
+            encoder.set_cull_mode(MTLCullMode::None);
+            let owned = if bytes.len() <= 4096 {
+                encoder.set_vertex_bytes(0, bytes.len() as u64, bytes.as_ptr() as *const _);
+                None
+            } else {
+                let buffer = shared_buffer(&self.device, bytes);
+                encoder.set_vertex_buffer(0, buffer.as_deref(), 0);
+                buffer
+            };
+            encoder.set_vertex_bytes(
+                1,
+                draw.constant_len,
+                draw.constants.as_ptr() as *const _,
+            );
+
+            if let Some(texture) = &draw.texture {
+                encoder.set_fragment_texture(0, Some(texture));
+            }
+
+            if let Some(sampler) = &draw.sampler {
+                encoder.set_fragment_sampler_state(0, Some(sampler));
+            }
+
+            encoder.draw_primitives(MTLPrimitiveType::Triangle, 0, count);
+            drop(owned);
+            idx += 1;
+        }
+    }
+
+    fn push_user(
+        &mut self,
+        verts: Vec<f32>,
+        pipeline: &RenderPipelineState,
+        texture: Option<&Texture>,
+        sampler: Option<&SamplerState>,
+        depth: bool,
+        constants: [f32; 16],
+        constant_len: u64,
+        stride: u64,
+    ) {
+        self.user.push(MtlUser {
+            verts,
+            pipeline: pipeline.clone(),
+            texture: texture.cloned(),
+            sampler: sampler.cloned(),
+            depth,
+            constants,
+            constant_len,
+            stride,
+        });
+    }
+}
+
+fn mtl_cache(device: &Device) -> crate::ui::shader::Registry {
+    crate::ui::shader::Registry::for_device(&crate::ui::shader::id_from_u64(device.registry_id()))
+}
+
+fn mtl_shader(device: &Device, wgsl: &str) -> Result<crate::ui::gfx::MtlShader, String> {
+    let cache = mtl_cache(device);
+    let source = cache.msl(wgsl)?;
+    let library = device
+        .new_library_with_source(&source, &CompileOptions::new())
+        .map_err(|err| format!("shader: {err}"))?;
+    let vs = library
+        .get_function("vs_main", None)
+        .map_err(|err| format!("vs_main: {err}"))?;
+    let fs = library
+        .get_function("fs_main", None)
+        .map_err(|err| format!("fs_main: {err}"))?;
+
+    Ok(crate::ui::gfx::MtlShader { library, vs, fs })
+}
+
+fn user_mesh_desc() -> &'static VertexDescriptorRef {
+    let desc = VertexDescriptor::new();
+    set_attr(desc, 0, MTLVertexFormat::Float3, 0);
+    set_attr(desc, 1, MTLVertexFormat::Float2, 12);
+    set_attr(desc, 2, MTLVertexFormat::Float4, 20);
+    set_layout(desc, 36);
+
+    desc
+}
+
+fn mtl_target(device: &Device, width: u64, height: u64) -> crate::ui::gfx::MtlTarget {
+    let color = TextureDescriptor::new();
+    color.set_texture_type(MTLTextureType::D2);
+    color.set_pixel_format(MTLPixelFormat::RGBA8Unorm);
+    color.set_width(width);
+    color.set_height(height);
+    color.set_usage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+    color.set_storage_mode(MTLStorageMode::Private);
+    let depth = TextureDescriptor::new();
+    depth.set_texture_type(MTLTextureType::D2);
+    depth.set_pixel_format(MTLPixelFormat::Depth32Float);
+    depth.set_width(width);
+    depth.set_height(height);
+    depth.set_usage(MTLTextureUsage::RenderTarget);
+    depth.set_storage_mode(MTLStorageMode::Private);
+
+    crate::ui::gfx::MtlTarget {
+        color: device.new_texture(&color),
+        depth: device.new_texture(&depth),
+        width,
+        height,
+    }
+}
+
+fn mtl_sampler(device: &Device, linear: bool, repeat: bool) -> SamplerState {
+    let desc = SamplerDescriptor::new();
+    let filter = if linear {
+        MTLSamplerMinMagFilter::Linear
+    } else {
+        MTLSamplerMinMagFilter::Nearest
+    };
+    let address = if repeat {
+        MTLSamplerAddressMode::Repeat
+    } else {
+        MTLSamplerAddressMode::ClampToEdge
+    };
+    desc.set_min_filter(filter);
+    desc.set_mag_filter(filter);
+    desc.set_address_mode_s(address);
+    desc.set_address_mode_t(address);
+    desc.set_address_mode_r(address);
+
+    device.new_sampler(&desc)
+}
+
+impl crate::ui::gfx::BackendGpu for MetalWindow {
+    fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
+        Ok(crate::ui::gfx::Shader::metal(mtl_shader(&self.device, wgsl)?))
+    }
+
+    fn make_texture(
+        &mut self,
+        image: &crate::world::surface::CpuImage,
+    ) -> Result<crate::ui::gfx::Texture, String> {
+        Ok(crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture {
+            texture: metal_image(&self.device, image, true),
+        }))
+    }
+
+    fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
+        Ok(crate::ui::gfx::Target::metal(mtl_target(
+            &self.device,
+            width.max(1) as u64,
+            height.max(1) as u64,
+        )))
+    }
+
+    fn make_buffer(&mut self, bytes: &[u8]) -> Result<crate::ui::gfx::Buffer, String> {
+        let Some(buffer) = shared_buffer(&self.device, bytes) else {
+            return Err("buffer".to_string());
+        };
+
+        Ok(crate::ui::gfx::Buffer::metal(crate::ui::gfx::MtlBuffer {
+            buffer,
+            bytes: bytes.len() as u64,
+        }))
+    }
+
+    fn make_sampler(
+        &mut self,
+        linear: bool,
+        repeat: bool,
+    ) -> Result<crate::ui::gfx::Sampler, String> {
+        Ok(crate::ui::gfx::Sampler::metal(crate::ui::gfx::MtlSampler {
+            state: mtl_sampler(&self.device, linear, repeat),
+        }))
+    }
+
+    fn make_pipeline(
+        &mut self,
+        shader: &crate::ui::gfx::Shader,
+        screen: bool,
+    ) -> Result<crate::ui::gfx::Pipeline, String> {
+        let shader = shader.as_metal().ok_or_else(|| "shader".to_string())?;
+        let desc = if screen {
+            text_vertex_desc()
+        } else {
+            user_mesh_desc()
+        };
+        let state = pipeline(&self.device, &shader.vs, &shader.fs, desc, true)?;
+        let stride = if screen {
+            crate::ui::gfx::SCREEN_FLOATS as u8
+        } else {
+            crate::ui::gfx::MESH_FLOATS as u8
+        };
+
+        Ok(crate::ui::gfx::Pipeline::metal(crate::ui::gfx::MtlPipeline {
+            state,
+            stride,
+            depth: !screen,
+        }))
+    }
+
+    fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
+        let bytes = float_bytes(verts);
+        let Some(buffer) = shared_buffer(&self.device, bytes) else {
+            return Err("mesh".to_string());
+        };
+
+        Ok(crate::ui::gfx::Mesh::metal(crate::ui::gfx::MtlMesh {
+            buffer,
+            floats: verts.len() as u64,
+            screen,
+        }))
+    }
+
+    fn destroy_shader(&mut self, shader: crate::ui::gfx::Shader) {
+        let _ = shader.into_metal();
+    }
+
+    fn destroy_texture(&mut self, texture: crate::ui::gfx::Texture) {
+        let _ = texture.into_metal();
+    }
+
+    fn destroy_buffer(&mut self, buffer: crate::ui::gfx::Buffer) {
+        let _ = buffer.into_metal();
+    }
+
+    fn destroy_sampler(&mut self, sampler: crate::ui::gfx::Sampler) {
+        let _ = sampler.into_metal();
+    }
+
+    fn destroy_pipeline(&mut self, pipeline: crate::ui::gfx::Pipeline) {
+        let _ = pipeline.into_metal();
+    }
+
+    fn destroy_target(&mut self, target: crate::ui::gfx::Target) {
+        let _ = target.into_metal();
+    }
+
+    fn destroy_mesh(&mut self, mesh: crate::ui::gfx::Mesh) {
+        let _ = mesh.into_metal();
+    }
+
+    fn draw_mesh(
+        &mut self,
+        mesh: &crate::ui::gfx::Mesh,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &crate::ui::voxel::SceneView,
+    ) {
+        let (Some(mesh), Some(pipeline)) = (mesh.as_metal(), pipeline.as_metal()) else {
+            return;
+        };
+        let mut constants = [0.0; 16];
+        constants.copy_from_slice(&metal_view_proj(view));
+        let stride = pipeline.stride.max(1) as u64;
+        let count = mesh.floats / stride;
+        let mut verts = vec![0.0; (count * stride) as usize];
+        let src = mesh.buffer.contents();
+        let byte_len = verts.len() * 4;
+
+        if !src.is_null() && byte_len <= mesh.buffer.length() as usize {
+            unsafe {
+                std::ptr::copy_nonoverlapping(src as *const u8, verts.as_mut_ptr() as *mut u8, byte_len);
+            }
+        }
+
+        let texture = texture.and_then(|item| item.as_metal()).map(|item| item.texture.clone());
+        let sampler = sampler.and_then(|item| item.as_metal()).map(|item| item.state.clone());
+        self.push_user(
+            verts,
+            &pipeline.state,
+            texture.as_ref(),
+            sampler.as_ref(),
+            pipeline.depth,
+            constants,
+            64,
+            stride,
+        );
+    }
+
+    fn draw_sprite(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        let pipeline = pipeline
+            .and_then(|item| item.as_metal())
+            .map(|item| item.state.clone())
+            .unwrap_or_else(|| self.text_pipeline.clone());
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        let verts = crate::ui::gfx::screen_quad(x, y, w, h, color).to_vec();
+        let texture = texture
+            .and_then(|item| item.as_metal())
+            .map(|item| item.texture.clone())
+            .unwrap_or_else(|| self.white.clone());
+        let sampler = sampler
+            .and_then(|item| item.as_metal())
+            .map(|item| item.state.clone())
+            .unwrap_or_else(|| self.clamp_sampler.clone());
+        self.push_user(
+            verts,
+            &pipeline,
+            Some(&texture),
+            Some(&sampler),
+            false,
+            constants,
+            16,
+            crate::ui::gfx::SCREEN_FLOATS as u64,
+        );
+    }
+
+    fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
+        let source = match index {
+            crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),
+            crate::ui::gfx::IDX_COLOR => crate::ui::shaders::Program::Color.wgsl(),
+            crate::ui::gfx::IDX_TEXT => crate::ui::shaders::Program::Text.wgsl(),
+            crate::ui::gfx::IDX_SKINNED => crate::ui::shaders::Program::Skinned.wgsl(),
+            _ => return None,
+        };
+
+        mtl_shader(&self.device, &source)
+            .ok()
+            .map(crate::ui::gfx::Shader::metal)
+    }
+
+    fn builtin_pipeline(&mut self, index: u32) -> Option<crate::ui::gfx::Pipeline> {
+        let (state, stride, depth) = match index {
+            crate::ui::gfx::IDX_MESH => (self.mesh_pipeline.clone(), 0, true),
+            crate::ui::gfx::IDX_COLOR => (self.color_pipeline.clone(), 6, false),
+            crate::ui::gfx::IDX_TEXT => (
+                self.text_pipeline.clone(),
+                crate::ui::gfx::SCREEN_FLOATS as u8,
+                false,
+            ),
+            crate::ui::gfx::IDX_SKINNED => (self.skin_pipeline.clone(), 0, true),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Pipeline::metal(crate::ui::gfx::MtlPipeline {
+            state,
+            stride,
+            depth,
+        }))
+    }
+
+    fn builtin_texture(&mut self, index: u32) -> Option<crate::ui::gfx::Texture> {
+        let texture = match index {
+            crate::ui::gfx::IDX_WHITE => self.white.clone(),
+            crate::ui::gfx::IDX_FLAT => self.flat.clone(),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture {
+            texture,
+        }))
+    }
+
+    fn builtin_sampler(&mut self, index: u32) -> Option<crate::ui::gfx::Sampler> {
+        let state = match index {
+            crate::ui::gfx::IDX_WRAP => self.wrap_sampler.clone(),
+            crate::ui::gfx::IDX_CLAMP => self.clamp_sampler.clone(),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Sampler::metal(crate::ui::gfx::MtlSampler { state }))
+    }
+
+    fn material_alias(&self, name: &str) -> Option<crate::ui::gfx::Texture> {
+        self.material_lookup.get(name).cloned().map(|texture| {
+            crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture { texture })
+        })
+    }
+
+    fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {
+        target.as_metal().map(|target| {
+            crate::ui::gfx::Texture::metal(crate::ui::gfx::MtlTexture {
+                texture: target.color.clone(),
+            })
+        })
+    }
 }

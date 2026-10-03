@@ -1309,6 +1309,7 @@ fn brush_map_from_compiled(compiled: CompiledMap) -> Result<BrushMap, String> {
         }
     }
 
+    map.graphics.material_names = bank.ordered_names();
     map.graphics.materials = bank.into_materials();
     map.finalize();
 

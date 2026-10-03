@@ -1,4 +1,5 @@
 use crate::platform::Surface;
+use crate::ui::gfx::{self, BackendGpu, Store};
 #[cfg(not(target_os = "ios"))]
 use crate::ui::opengl::OpenGLWindow;
 use crate::ui::skin::SkinBatch;
@@ -8,7 +9,12 @@ use crate::ui::vulkan::VulkanWindow;
 use crate::ui::window::Window;
 use crate::ui::Color;
 
-pub enum GfxWindow {
+pub struct GfxWindow {
+    gpu: Store,
+    backend: Backend,
+}
+
+enum Backend {
     #[cfg(not(target_os = "ios"))]
     OpenGL(OpenGLWindow),
     #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -21,12 +27,24 @@ pub enum GfxWindow {
     Vulkan(VulkanWindow),
 }
 
+fn host(backend: Backend) -> GfxWindow {
+    let mut window = GfxWindow {
+        gpu: Store::new(),
+        backend,
+    };
+    window.seed();
+
+    window
+}
+
 pub fn create(surface: &Surface) -> GfxWindow {
     #[cfg(target_os = "ios")]
     {
         log::info!("[gfx] metal");
 
-        return GfxWindow::Metal(crate::ui::metal::MetalWindow::try_new(surface).expect("metal"));
+        return host(Backend::Metal(
+            crate::ui::metal::MetalWindow::try_new(surface).expect("metal"),
+        ));
     }
 
     #[cfg(target_os = "macos")]
@@ -35,7 +53,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
             Ok(window) => {
                 log::info!("[gfx] metal");
 
-                return GfxWindow::Metal(window);
+                return host(Backend::Metal(window));
             }
             Err(err) => {
                 log::warn!("[gfx] metal failed: {err}");
@@ -49,7 +67,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
             Ok(window) => {
                 log::info!("[gfx] d3d12");
 
-                return GfxWindow::D3D12(window);
+                return host(Backend::D3D12(window));
             }
             Err(err) => {
                 log::warn!("[gfx] d3d12 failed: {err}");
@@ -63,7 +81,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
             Ok(window) => {
                 log::info!("[gfx] d3d11");
 
-                return GfxWindow::D3D11(window);
+                return host(Backend::D3D11(window));
             }
             Err(err) => {
                 log::warn!("[gfx] d3d11 failed: {err}");
@@ -77,7 +95,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
             Ok(window) => {
                 log::info!("[gfx] vulkan");
 
-                return GfxWindow::Vulkan(window);
+                return host(Backend::Vulkan(window));
             }
             Err(err) => {
                 log::warn!("[gfx] vulkan failed: {err}");
@@ -89,7 +107,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
     {
         log::info!("[gfx] opengl");
 
-        return GfxWindow::OpenGL(OpenGLWindow::attach(surface));
+        return host(Backend::OpenGL(OpenGLWindow::attach(surface)));
     }
 }
 
@@ -99,7 +117,7 @@ pub fn android_window(surface: &Surface) -> GfxWindow {
     let mut window = OpenGLWindow::attach(surface);
     window.enable_vr();
 
-    GfxWindow::OpenGL(window)
+    host(Backend::OpenGL(window))
 }
 
 fn chosen(name: &str) -> bool {
@@ -111,17 +129,17 @@ fn chosen(name: &str) -> bool {
 
 macro_rules! each_window {
     ($self:ident, |$window:ident| $body:expr) => {
-        match $self {
+        match &mut $self.backend {
             #[cfg(not(target_os = "ios"))]
-            GfxWindow::OpenGL($window) => $body,
+            Backend::OpenGL($window) => $body,
             #[cfg(any(target_os = "macos", target_os = "ios"))]
-            GfxWindow::Metal($window) => $body,
+            Backend::Metal($window) => $body,
             #[cfg(windows)]
-            GfxWindow::D3D12($window) => $body,
+            Backend::D3D12($window) => $body,
             #[cfg(windows)]
-            GfxWindow::D3D11($window) => $body,
+            Backend::D3D11($window) => $body,
             #[cfg(not(target_os = "ios"))]
-            GfxWindow::Vulkan($window) => $body,
+            Backend::Vulkan($window) => $body,
         }
     };
 }
@@ -190,6 +208,437 @@ impl Window for GfxWindow {
     }
 
     fn vr_input(&self) -> crate::ui::vr::VrInput {
-        each_window!(self, |window| window.vr_input())
+        match &self.backend {
+            #[cfg(not(target_os = "ios"))]
+            Backend::OpenGL(window) => window.vr_input(),
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            Backend::Metal(window) => window.vr_input(),
+            #[cfg(windows)]
+            Backend::D3D12(window) => window.vr_input(),
+            #[cfg(windows)]
+            Backend::D3D11(window) => window.vr_input(),
+            #[cfg(not(target_os = "ios"))]
+            Backend::Vulkan(window) => window.vr_input(),
+        }
+    }
+}
+
+impl GfxWindow {
+    fn with_backend<R>(&mut self, body: impl FnOnce(&mut dyn BackendGpu) -> R) -> R {
+        match &mut self.backend {
+            #[cfg(not(target_os = "ios"))]
+            Backend::OpenGL(window) => body(window),
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            Backend::Metal(window) => body(window),
+            #[cfg(windows)]
+            Backend::D3D12(window) => body(window),
+            #[cfg(windows)]
+            Backend::D3D11(window) => body(window),
+            #[cfg(not(target_os = "ios"))]
+            Backend::Vulkan(window) => body(window),
+        }
+    }
+
+    fn seed(&mut self) {
+        let mut index = 1;
+
+        while index <= gfx::IDX_SKINNED {
+            let id = gfx::pack(gfx::KIND_SHADER, 1, index);
+
+            if let Some(shader) = self.with_backend(|window| window.builtin_shader(index)) {
+                let owned = true;
+                self.gpu.put_shader(id, shader, owned, true);
+            }
+
+            index += 1;
+        }
+
+        index = 1;
+
+        while index <= gfx::IDX_SKINNED {
+            let id = gfx::pack(gfx::KIND_PIPELINE, 1, index);
+
+            if let Some(pipeline) = self.with_backend(|window| window.builtin_pipeline(index)) {
+                let screen = index == gfx::IDX_COLOR || index == gfx::IDX_TEXT;
+                let stride = if index == gfx::IDX_TEXT {
+                    gfx::SCREEN_FLOATS as u8
+                } else if index == gfx::IDX_COLOR {
+                    6
+                } else {
+                    0
+                };
+                self.gpu
+                    .put_pipeline(id, pipeline, false, true, screen, stride);
+            }
+
+            index += 1;
+        }
+
+        index = 1;
+
+        while index <= gfx::IDX_FLAT {
+            let id = gfx::pack(gfx::KIND_TEXTURE, 1, index);
+
+            if let Some(texture) = self.with_backend(|window| window.builtin_texture(index)) {
+                self.gpu.put_texture(id, texture, false, true, None);
+            }
+
+            index += 1;
+        }
+
+        index = 1;
+
+        while index <= gfx::IDX_CLAMP {
+            let id = gfx::pack(gfx::KIND_SAMPLER, 1, index);
+
+            if let Some(sampler) = self.with_backend(|window| window.builtin_sampler(index)) {
+                self.gpu.put_sampler(id, sampler, false, true);
+            }
+
+            index += 1;
+        }
+    }
+
+    pub fn create_shader(&mut self, id: u32, source: &str) {
+        match self.with_backend(|window| window.make_shader(source)) {
+            Ok(shader) => self.gpu.put_shader(id, shader, true, false),
+            Err(err) => log::warn!("[gfx] shader {err}"),
+        }
+    }
+
+    pub fn create_texture(&mut self, id: u32, path: &str) {
+        let image = match gfx::image_file(path) {
+            Ok(image) => image,
+            Err(err) => {
+                log::warn!("[gfx] texture {err}");
+
+                return;
+            }
+        };
+
+        match self.with_backend(|window| window.make_texture(&image)) {
+            Ok(texture) => self.gpu.put_texture(id, texture, true, false, None),
+            Err(err) => log::warn!("[gfx] texture {err}"),
+        }
+    }
+
+    pub fn create_material(&mut self, id: u32, name: &str) {
+        let alias = self.with_backend(|window| window.material_alias(name));
+
+        if let Some(texture) = alias {
+            self.gpu
+                .put_texture(id, texture, false, false, Some(name.to_string()));
+
+            return;
+        }
+
+        let Some(image) = gfx::material_image(name) else {
+            log::warn!("[gfx] material {name}");
+
+            return;
+        };
+
+        match self.with_backend(|window| window.make_texture(&image)) {
+            Ok(texture) => self.gpu.put_texture(id, texture, true, false, None),
+            Err(err) => log::warn!("[gfx] material {err}"),
+        }
+    }
+
+    pub fn create_target(&mut self, id: u32, width: u32, height: u32) {
+        match self.with_backend(|window| window.make_target(width, height)) {
+            Ok(target) => self.gpu.put_target(id, target, true),
+            Err(err) => log::warn!("[gfx] target {err}"),
+        }
+    }
+
+    pub fn create_buffer(&mut self, id: u32, bytes: &[u8]) {
+        match self.with_backend(|window| window.make_buffer(bytes)) {
+            Ok(buffer) => self.gpu.put_buffer(id, buffer, true),
+            Err(err) => log::warn!("[gfx] buffer {err}"),
+        }
+    }
+
+    pub fn create_sampler(&mut self, id: u32, linear: bool, repeat: bool) {
+        match self.with_backend(|window| window.make_sampler(linear, repeat)) {
+            Ok(sampler) => self.gpu.put_sampler(id, sampler, true, false),
+            Err(err) => log::warn!("[gfx] sampler {err}"),
+        }
+    }
+
+    pub fn create_pipeline(&mut self, id: u32, shader: u32, screen: bool) {
+        let Some(source) = self.gpu.shader(shader).cloned() else {
+            log::warn!("[gfx] pipeline");
+
+            return;
+        };
+        let stride = if screen {
+            gfx::SCREEN_FLOATS as u8
+        } else {
+            gfx::MESH_FLOATS as u8
+        };
+
+        match self.with_backend(|window| window.make_pipeline(&source, screen)) {
+            Ok(pipeline) => self.gpu.put_pipeline(id, pipeline, true, false, screen, stride),
+            Err(err) => log::warn!("[gfx] pipeline {err}"),
+        }
+    }
+
+    pub fn create_mesh(&mut self, id: u32, verts: &[f32], screen: bool) {
+        match self.with_backend(|window| window.make_mesh(verts, screen)) {
+            Ok(mesh) => self.gpu.put_mesh(id, mesh, true, screen),
+            Err(err) => log::warn!("[gfx] mesh {err}"),
+        }
+    }
+
+    pub fn free_gpu(&mut self, id: u32) {
+        if gfx::is_builtin(id) {
+            return;
+        }
+
+        match gfx::kind_of(id) {
+            gfx::KIND_SHADER => {
+                if let Some(slot) = self.gpu.take_shader(id) {
+                    self.release_shader(slot);
+                }
+            }
+            gfx::KIND_TEXTURE => {
+                if let Some(slot) = self.gpu.take_texture(id) {
+                    self.release_texture(slot);
+                }
+            }
+            gfx::KIND_BUFFER => {
+                if let Some(slot) = self.gpu.take_buffer(id) {
+                    self.release_buffer(slot);
+                }
+            }
+            gfx::KIND_SAMPLER => {
+                if let Some(slot) = self.gpu.take_sampler(id) {
+                    self.release_sampler(slot);
+                }
+            }
+            gfx::KIND_PIPELINE => {
+                if let Some(slot) = self.gpu.take_pipeline(id) {
+                    self.release_pipeline(slot);
+                }
+            }
+            gfx::KIND_TARGET => {
+                if let Some(slot) = self.gpu.take_target(id) {
+                    self.release_target(slot);
+                }
+            }
+            gfx::KIND_MESH => {
+                if let Some(slot) = self.gpu.take_mesh(id) {
+                    self.release_mesh(slot);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn draw_mesh(
+        &mut self,
+        mesh: u32,
+        pipeline: u32,
+        texture: u32,
+        sampler: u32,
+        view: &SceneView,
+    ) {
+        let mesh_screen = self.gpu.mesh_slot(mesh).map(|slot| slot.screen);
+        let pipe_screen = self.gpu.pipeline_slot(pipeline).map(|slot| slot.screen);
+        let (Some(mesh_screen), Some(pipe_screen)) = (mesh_screen, pipe_screen) else {
+            return;
+        };
+
+        if mesh_screen != pipe_screen {
+            return;
+        }
+
+        let mesh_item = self.gpu.mesh(mesh).cloned();
+        let pipe_item = self.gpu.pipeline(pipeline).cloned();
+        let texture_item = self.resolve_texture(texture);
+        let sampler_item = self.resolve_sampler(sampler);
+        let (Some(mesh_item), Some(pipe_item)) = (mesh_item, pipe_item) else {
+            return;
+        };
+
+        self.with_backend(|window| {
+            window.draw_mesh(
+                &mesh_item,
+                &pipe_item,
+                texture_item.as_ref(),
+                sampler_item.as_ref(),
+                view,
+            );
+        });
+    }
+
+    pub fn draw_sprite(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: Color,
+        texture: u32,
+        pipeline: u32,
+        sampler: u32,
+    ) {
+        let pipe_item = if pipeline == 0 {
+            self.gpu.pipeline(gfx::PIPE_TEXT).cloned()
+        } else {
+            let screen = self.gpu.pipeline_slot(pipeline).map(|slot| slot.screen);
+
+            if screen == Some(false) {
+                return;
+            }
+
+            self.gpu.pipeline(pipeline).cloned()
+        };
+        let texture_item = if texture == 0 {
+            self.resolve_texture(gfx::TEX_WHITE)
+        } else {
+            self.resolve_texture(texture)
+        };
+        let sampler_item = self.resolve_sampler(sampler);
+
+        self.with_backend(|window| {
+            window.draw_sprite(
+                x,
+                y,
+                w,
+                h,
+                color.as_rgba_f32(),
+                texture_item.as_ref(),
+                pipe_item.as_ref(),
+                sampler_item.as_ref(),
+            );
+        });
+    }
+
+    fn resolve_texture(&mut self, id: u32) -> Option<gfx::Texture> {
+        if id == 0 {
+            return None;
+        }
+
+        if gfx::kind_of(id) == gfx::KIND_TARGET {
+            let target = self.gpu.target(id).cloned()?;
+
+            return self.with_backend(|window| window.target_color(&target));
+        }
+
+        if gfx::is_builtin(id) {
+            let index = gfx::index_of(id);
+
+            return self.with_backend(|window| window.builtin_texture(index));
+        }
+
+        if let Some(name) = self
+            .gpu
+            .texture_slot(id)
+            .and_then(|slot| slot.material.clone())
+        {
+            if let Some(texture) = self.with_backend(|window| window.material_alias(&name)) {
+                return Some(texture);
+            }
+        }
+
+        self.gpu.texture(id).cloned()
+    }
+
+    fn resolve_sampler(&mut self, id: u32) -> Option<gfx::Sampler> {
+        if id == 0 {
+            return self.with_backend(|window| window.builtin_sampler(gfx::IDX_CLAMP));
+        }
+
+        if gfx::is_builtin(id) {
+            let index = gfx::index_of(id);
+
+            return self.with_backend(|window| window.builtin_sampler(index));
+        }
+
+        self.gpu.sampler(id).cloned()
+    }
+
+    fn release_shader(&mut self, slot: gfx::Slot<gfx::Shader>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_shader(slot.item));
+        }
+    }
+
+    fn release_texture(&mut self, slot: gfx::Slot<gfx::Texture>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_texture(slot.item));
+        }
+    }
+
+    fn release_buffer(&mut self, slot: gfx::Slot<gfx::Buffer>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_buffer(slot.item));
+        }
+    }
+
+    fn release_sampler(&mut self, slot: gfx::Slot<gfx::Sampler>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_sampler(slot.item));
+        }
+    }
+
+    fn release_pipeline(&mut self, slot: gfx::Slot<gfx::Pipeline>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_pipeline(slot.item));
+        }
+    }
+
+    fn release_target(&mut self, slot: gfx::Slot<gfx::Target>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_target(slot.item));
+        }
+    }
+
+    fn release_mesh(&mut self, slot: gfx::Slot<gfx::Mesh>) {
+        if slot.owned {
+            self.with_backend(|window| window.destroy_mesh(slot.item));
+        }
+    }
+}
+
+impl Drop for GfxWindow {
+    fn drop(&mut self) {
+        self.with_backend(|window| window.before_destroy());
+        let mut shaders = self.gpu.drain_shaders();
+        let mut textures = self.gpu.drain_textures();
+        let mut buffers = self.gpu.drain_buffers();
+        let mut samplers = self.gpu.drain_samplers();
+        let mut pipelines = self.gpu.drain_pipelines();
+        let mut targets = self.gpu.drain_targets();
+        let mut meshes = self.gpu.drain_meshes();
+
+        while let Some(slot) = shaders.pop() {
+            self.release_shader(slot);
+        }
+
+        while let Some(slot) = textures.pop() {
+            self.release_texture(slot);
+        }
+
+        while let Some(slot) = buffers.pop() {
+            self.release_buffer(slot);
+        }
+
+        while let Some(slot) = samplers.pop() {
+            self.release_sampler(slot);
+        }
+
+        while let Some(slot) = pipelines.pop() {
+            self.release_pipeline(slot);
+        }
+
+        while let Some(slot) = targets.pop() {
+            self.release_target(slot);
+        }
+
+        while let Some(slot) = meshes.pop() {
+            self.release_mesh(slot);
+        }
     }
 }

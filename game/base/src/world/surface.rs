@@ -79,6 +79,7 @@ pub struct CpuMaterial {
 #[derive(Clone, Debug)]
 pub struct MapGraphics {
     pub materials: Vec<CpuMaterial>,
+    pub material_names: Vec<String>,
     pub lightmaps: [CpuImage; 4],
     pub cubemaps: Vec<CubeImage>,
     pub sky: Option<CubeImage>,
@@ -219,6 +220,7 @@ impl MapGraphics {
     pub fn plain() -> Self {
         Self {
             materials: Vec::new(),
+            material_names: Vec::new(),
             lightmaps: [
                 CpuImage::white(),
                 CpuImage::white(),

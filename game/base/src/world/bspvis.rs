@@ -92,6 +92,7 @@ pub fn build(bytes: &[u8], map_name: &str) -> Result<BspVisual, String> {
     }
 
     let mut graphics = MapGraphics::plain();
+    graphics.material_names = bank.ordered_names();
     graphics.materials = bank.materials().to_vec();
     let mut atlas = Atlas::new(512);
     let mut buckets: HashMap<(u16, u16, u8), Bucket> = HashMap::new();
@@ -173,6 +174,7 @@ pub fn build(bytes: &[u8], map_name: &str) -> Result<BspVisual, String> {
     }
 
     emit_overlays(&bsp, &mut bank, &mut graphics, &mut buckets, &polygons, &probes);
+    graphics.material_names = bank.ordered_names();
     graphics.materials = bank.materials().to_vec();
     graphics.lightmaps = atlas.images();
     graphics.cubemaps = load_cubemaps(&bank, &stem, &probes);
@@ -301,6 +303,7 @@ fn emit_overlays(
             continue;
         };
         let material = bank.load_packed(Some(bsp), material_name);
+        graphics.material_names = bank.ordered_names();
         graphics.materials = bank.materials().to_vec();
         let origin = parse_vec(entity.prop("BasisOrigin").unwrap_or("0 0 0"));
         let axis_u = parse_vec(entity.prop("BasisU").unwrap_or("1 0 0"));

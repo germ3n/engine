@@ -28,6 +28,9 @@ pub struct OpenGLWindow {
     pub surface: glutin::surface::Surface<WindowSurface>,
     pub gl: glow::Context,
     pub shader_program: glow::Program,
+    sprite: glow::Program,
+    wrap_sampler: glow::Sampler,
+    clamp_sampler: glow::Sampler,
     pub vao: glow::VertexArray,
     pub vbo: glow::Buffer,
     pub glyph_brushes: HashMap<String, GlyphBrush>,
@@ -154,6 +157,9 @@ impl OpenGLWindow {
         };
         let colored_mesh = ColoredMesh::new(&gl, &cache);
         let skin = SkinCache::new(&gl, &cache);
+        let sprite = sprite_program(&gl, &cache)?;
+        let wrap_sampler = gl_sampler(&gl, true, true)?;
+        let clamp_sampler = gl_sampler(&gl, true, false)?;
         let mut opengl_window = Self {
             width,
             height,
@@ -161,6 +167,9 @@ impl OpenGLWindow {
             surface: gl_surface,
             gl,
             shader_program,
+            sprite,
+            wrap_sampler,
+            clamp_sampler,
             vao,
             vbo,
             glyph_brushes: HashMap::new(),
@@ -510,6 +519,7 @@ struct ColoredMesh {
     scene: glow::Texture,
     scene_size: (i32, i32),
     materials: Vec<GlMaterial>,
+    material_lookup: HashMap<String, glow::Texture>,
     lightmaps: [glow::Texture; 4],
     cubemaps: Vec<glow::Texture>,
     sky: Option<glow::Texture>,
@@ -710,6 +720,7 @@ impl ColoredMesh {
                 scene,
                 scene_size: (0, 0),
                 materials: Vec::new(),
+                material_lookup: HashMap::new(),
                 lightmaps: [white, white, white, white],
                 cubemaps: Vec::new(),
                 sky: None,
@@ -819,6 +830,20 @@ impl ColoredMesh {
         }
 
         self.materials = materials;
+        self.material_lookup.clear();
+        idx = 0;
+
+        while idx < graphics.material_names.len() && idx < self.materials.len() {
+            let name = &graphics.material_names[idx];
+
+            if !name.is_empty() {
+                self.material_lookup
+                    .insert(name.clone(), self.materials[idx].base);
+            }
+
+            idx += 1;
+        }
+
         idx = 0;
 
         while idx < 4 {
@@ -1203,6 +1228,7 @@ impl ColoredMesh {
         }
 
         self.materials.clear();
+        self.material_lookup.clear();
         idx = 0;
 
         while idx < 4 {
@@ -3110,6 +3136,555 @@ fn compile_mesh_shader(gl: &glow::Context, kind: u32, source: &str) -> glow::Sha
         }
 
         shader
+    }
+}
+
+fn sprite_program(gl: &glow::Context, cache: &shader::Registry) -> Result<glow::Program, String> {
+    let source = crate::ui::shaders::Program::Text.wgsl();
+    let shader = compile_wgsl(gl, cache, &source)?;
+    let program = link_wgsl(gl, &shader)?;
+    unsafe {
+        gl.delete_shader(shader.vs);
+        gl.delete_shader(shader.fs);
+    }
+
+    Ok(program)
+}
+
+fn gl_sampler(gl: &glow::Context, linear: bool, repeat: bool) -> Result<glow::Sampler, String> {
+    let sampler = unsafe { gl.create_sampler().map_err(|err| err.to_string())? };
+    let filter = if linear { glow::LINEAR } else { glow::NEAREST } as i32;
+    let wrap = if repeat {
+        glow::REPEAT
+    } else {
+        glow::CLAMP_TO_EDGE
+    } as i32;
+    unsafe {
+        gl.sampler_parameter_i32(sampler, glow::TEXTURE_MIN_FILTER, filter);
+        gl.sampler_parameter_i32(sampler, glow::TEXTURE_MAG_FILTER, filter);
+        gl.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_S, wrap);
+        gl.sampler_parameter_i32(sampler, glow::TEXTURE_WRAP_T, wrap);
+    }
+
+    Ok(sampler)
+}
+
+fn gl_cache(gl: &glow::Context) -> shader::Registry {
+    let vendor = unsafe { gl.get_parameter_string(glow::VENDOR) };
+    let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
+
+    shader::Registry::for_device(&shader::id_from_text(&[&vendor, &renderer]))
+}
+
+fn compile_wgsl(
+    gl: &glow::Context,
+    cache: &shader::Registry,
+    source: &str,
+) -> Result<crate::ui::gfx::GlShader, String> {
+    let version = shader::glsl_version();
+    let vs_src = cache.glsl(source, naga::ShaderStage::Vertex, "vs_main", version)?;
+    let fs_src = cache.glsl(source, naga::ShaderStage::Fragment, "fs_main", version)?;
+    let vs = compile_stage(gl, glow::VERTEX_SHADER, &vs_src)?;
+    let fs = compile_stage(gl, glow::FRAGMENT_SHADER, &fs_src)?;
+
+    Ok(crate::ui::gfx::GlShader { vs, fs })
+}
+
+fn compile_stage(gl: &glow::Context, kind: u32, source: &str) -> Result<glow::Shader, String> {
+    unsafe {
+        let shader = gl.create_shader(kind).map_err(|err| err.to_string())?;
+        gl.shader_source(shader, source);
+        gl.compile_shader(shader);
+
+        if !gl.get_shader_compile_status(shader) {
+            let log = gl.get_shader_info_log(shader);
+            gl.delete_shader(shader);
+
+            return Err(log);
+        }
+
+        Ok(shader)
+    }
+}
+
+fn link_wgsl(gl: &glow::Context, shader: &crate::ui::gfx::GlShader) -> Result<glow::Program, String> {
+    unsafe {
+        let program = gl.create_program().map_err(|err| err.to_string())?;
+        gl.attach_shader(program, shader.vs);
+        gl.attach_shader(program, shader.fs);
+        gl.link_program(program);
+
+        if !gl.get_program_link_status(program) {
+            let log = gl.get_program_info_log(program);
+            gl.delete_program(program);
+
+            return Err(log);
+        }
+
+        Ok(program)
+    }
+}
+
+fn rgba_texture(
+    gl: &glow::Context,
+    width: i32,
+    height: i32,
+    pixels: &[u8],
+) -> Result<glow::Texture, String> {
+    unsafe {
+        let texture = gl.create_texture().map_err(|err| err.to_string())?;
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            width,
+            height,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            Some(pixels),
+        );
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.bind_texture(glow::TEXTURE_2D, None);
+
+        Ok(texture)
+    }
+}
+
+fn mesh_buffer(
+    gl: &glow::Context,
+    verts: &[f32],
+    screen: bool,
+) -> Result<crate::ui::gfx::GlMesh, String> {
+    let stride_floats = if screen {
+        crate::ui::gfx::SCREEN_FLOATS
+    } else {
+        crate::ui::gfx::MESH_FLOATS
+    };
+    unsafe {
+        let vao = gl.create_vertex_array().map_err(|err| err.to_string())?;
+        let vbo = gl.create_buffer().map_err(|err| err.to_string())?;
+        gl.bind_vertex_array(Some(vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * 4);
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+        let stride = (stride_floats * 4) as i32;
+
+        if screen {
+            gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, stride, 0);
+            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, 8);
+            gl.vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, stride, 16);
+            gl.enable_vertex_attrib_array(2);
+        } else {
+            gl.vertex_attrib_pointer_f32(0, 3, glow::FLOAT, false, stride, 0);
+            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, 12);
+            gl.vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, stride, 20);
+            gl.enable_vertex_attrib_array(2);
+        }
+
+        gl.enable_vertex_attrib_array(0);
+        gl.enable_vertex_attrib_array(1);
+        gl.bind_vertex_array(None);
+
+        Ok(crate::ui::gfx::GlMesh {
+            vao,
+            vbo,
+            floats: verts.len() as i32,
+            screen,
+        })
+    }
+}
+
+fn bind_user(
+    gl: &glow::Context,
+    program: glow::Program,
+    screen: bool,
+    width: f32,
+    height: f32,
+    view: Option<&crate::ui::voxel::SceneView>,
+) {
+    unsafe {
+        gl.use_program(Some(program));
+
+        if screen {
+            if let Some(loc) =
+                gl.get_uniform_location(program, "_immediates_binding_vs.resolution")
+            {
+                gl.uniform_4_f32(Some(&loc), width, height, 0.0, 0.0);
+            }
+
+            return;
+        }
+
+        let Some(view) = view else {
+            return;
+        };
+        let matrix = gl_view_proj(view);
+
+        if let Some(loc) = gl.get_uniform_location(program, "_immediates_binding_vs.view_proj") {
+            gl.uniform_matrix_4_f32_slice(Some(&loc), false, &matrix);
+        }
+    }
+}
+
+impl crate::ui::gfx::BackendGpu for OpenGLWindow {
+    fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
+        let cache = gl_cache(&self.gl);
+
+        Ok(crate::ui::gfx::Shader::opengl(compile_wgsl(
+            &self.gl, &cache, wgsl,
+        )?))
+    }
+
+    fn make_texture(&mut self, image: &crate::world::surface::CpuImage) -> Result<crate::ui::gfx::Texture, String> {
+        let pixels = crate::world::image_rgba(image);
+        let name = rgba_texture(&self.gl, image.width as i32, image.height as i32, &pixels)?;
+
+        Ok(crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture { name }))
+    }
+
+    fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
+        let width = width.max(1) as i32;
+        let height = height.max(1) as i32;
+        let empty = vec![0u8; (width as usize) * (height as usize) * 4];
+        let color = rgba_texture(&self.gl, width, height, &empty)?;
+        unsafe {
+            let depth = self.gl.create_renderbuffer().map_err(|err| err.to_string())?;
+            let frame = self.gl.create_framebuffer().map_err(|err| err.to_string())?;
+            self.gl.bind_renderbuffer(glow::RENDERBUFFER, Some(depth));
+            self.gl
+                .renderbuffer_storage(glow::RENDERBUFFER, glow::DEPTH_COMPONENT24, width, height);
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, Some(frame));
+            self.gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(color),
+                0,
+            );
+            self.gl.framebuffer_renderbuffer(
+                glow::FRAMEBUFFER,
+                glow::DEPTH_ATTACHMENT,
+                glow::RENDERBUFFER,
+                Some(depth),
+            );
+            self.gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+
+            Ok(crate::ui::gfx::Target::opengl(crate::ui::gfx::GlTarget {
+                frame,
+                color,
+                depth,
+                width,
+                height,
+            }))
+        }
+    }
+
+    fn make_buffer(&mut self, bytes: &[u8]) -> Result<crate::ui::gfx::Buffer, String> {
+        unsafe {
+            let name = self.gl.create_buffer().map_err(|err| err.to_string())?;
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(name));
+            self.gl
+                .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::STATIC_DRAW);
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+
+            Ok(crate::ui::gfx::Buffer::opengl(crate::ui::gfx::GlBuffer {
+                name,
+                bytes: bytes.len() as u32,
+            }))
+        }
+    }
+
+    fn make_sampler(&mut self, linear: bool, repeat: bool) -> Result<crate::ui::gfx::Sampler, String> {
+        Ok(crate::ui::gfx::Sampler::opengl(crate::ui::gfx::GlSampler {
+            name: gl_sampler(&self.gl, linear, repeat)?,
+        }))
+    }
+
+    fn make_pipeline(
+        &mut self,
+        shader: &crate::ui::gfx::Shader,
+        screen: bool,
+    ) -> Result<crate::ui::gfx::Pipeline, String> {
+        let shader = shader
+            .as_opengl()
+            .ok_or_else(|| "shader".to_string())?;
+        let program = link_wgsl(&self.gl, shader)?;
+        let stride = if screen {
+            crate::ui::gfx::SCREEN_FLOATS as u8
+        } else {
+            crate::ui::gfx::MESH_FLOATS as u8
+        };
+
+        Ok(crate::ui::gfx::Pipeline::opengl(crate::ui::gfx::GlPipeline {
+            program,
+            stride,
+            depth: !screen,
+        }))
+    }
+
+    fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
+        Ok(crate::ui::gfx::Mesh::opengl(mesh_buffer(
+            &self.gl, verts, screen,
+        )?))
+    }
+
+    fn destroy_shader(&mut self, shader: crate::ui::gfx::Shader) {
+        let Some(shader) = shader.into_opengl() else {
+            return;
+        };
+        unsafe {
+            self.gl.delete_shader(shader.vs);
+            self.gl.delete_shader(shader.fs);
+        }
+    }
+
+    fn destroy_texture(&mut self, texture: crate::ui::gfx::Texture) {
+        let Some(texture) = texture.into_opengl() else {
+            return;
+        };
+        unsafe { self.gl.delete_texture(texture.name) }
+    }
+
+    fn destroy_buffer(&mut self, buffer: crate::ui::gfx::Buffer) {
+        let Some(buffer) = buffer.into_opengl() else {
+            return;
+        };
+        unsafe { self.gl.delete_buffer(buffer.name) }
+    }
+
+    fn destroy_sampler(&mut self, sampler: crate::ui::gfx::Sampler) {
+        let Some(sampler) = sampler.into_opengl() else {
+            return;
+        };
+        unsafe { self.gl.delete_sampler(sampler.name) }
+    }
+
+    fn destroy_pipeline(&mut self, pipeline: crate::ui::gfx::Pipeline) {
+        let Some(pipeline) = pipeline.into_opengl() else {
+            return;
+        };
+        unsafe { self.gl.delete_program(pipeline.program) }
+    }
+
+    fn destroy_target(&mut self, target: crate::ui::gfx::Target) {
+        let Some(target) = target.into_opengl() else {
+            return;
+        };
+        unsafe {
+            self.gl.delete_framebuffer(target.frame);
+            self.gl.delete_texture(target.color);
+            self.gl.delete_renderbuffer(target.depth);
+        }
+    }
+
+    fn destroy_mesh(&mut self, mesh: crate::ui::gfx::Mesh) {
+        let Some(mesh) = mesh.into_opengl() else {
+            return;
+        };
+        unsafe {
+            self.gl.delete_vertex_array(mesh.vao);
+            self.gl.delete_buffer(mesh.vbo);
+        }
+    }
+
+    fn draw_mesh(
+        &mut self,
+        mesh: &crate::ui::gfx::Mesh,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &crate::ui::voxel::SceneView,
+    ) {
+        let (Some(mesh), Some(pipeline)) = (mesh.as_opengl(), pipeline.as_opengl()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as i32;
+        unsafe {
+            self.gl.disable(glow::CULL_FACE);
+            if pipeline.depth {
+                self.gl.enable(glow::DEPTH_TEST);
+                self.gl.depth_mask(true);
+            } else {
+                self.gl.disable(glow::DEPTH_TEST);
+                self.gl.depth_mask(false);
+            }
+            self.gl.enable(glow::BLEND);
+            self.gl
+                .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            bind_user(
+                &self.gl,
+                pipeline.program,
+                mesh.screen,
+                self.width as f32,
+                self.height as f32,
+                Some(view),
+            );
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(
+                glow::TEXTURE_2D,
+                texture.and_then(|item| item.as_opengl()).map(|item| item.name),
+            );
+            self.gl.bind_sampler(
+                0,
+                sampler.and_then(|item| item.as_opengl()).map(|item| item.name),
+            );
+            self.gl.bind_vertex_array(Some(mesh.vao));
+            self.gl
+                .draw_arrays(glow::TRIANGLES, 0, mesh.floats / stride);
+            self.gl.bind_vertex_array(None);
+        }
+    }
+
+    fn draw_sprite(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        let program = pipeline
+            .and_then(|item| item.as_opengl())
+            .map(|item| item.program)
+            .unwrap_or(self.sprite);
+        let verts = crate::ui::gfx::screen_quad(x, y, w, h, color);
+        unsafe {
+            self.gl.disable(glow::DEPTH_TEST);
+            self.gl.depth_mask(false);
+            self.gl.disable(glow::CULL_FACE);
+            self.gl.enable(glow::BLEND);
+            self.gl
+                .blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA);
+            bind_user(
+                &self.gl,
+                program,
+                true,
+                self.width as f32,
+                self.height as f32,
+                None,
+            );
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl.bind_texture(
+                glow::TEXTURE_2D,
+                texture
+                    .and_then(|item| item.as_opengl())
+                    .map(|item| item.name)
+                    .or(Some(self.colored_mesh.white)),
+            );
+            self.gl.bind_sampler(
+                0,
+                sampler
+                    .and_then(|item| item.as_opengl())
+                    .map(|item| item.name)
+                    .or(Some(self.clamp_sampler)),
+            );
+            self.gl.bind_vertex_array(Some(self.vao));
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
+            let bytes = std::slice::from_raw_parts(verts.as_ptr() as *const u8, verts.len() * 4);
+            self.gl
+                .buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
+            self.gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 32, 0);
+            self.gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 32, 8);
+            self.gl.vertex_attrib_pointer_f32(2, 4, glow::FLOAT, false, 32, 16);
+            self.gl.enable_vertex_attrib_array(0);
+            self.gl.enable_vertex_attrib_array(1);
+            self.gl.enable_vertex_attrib_array(2);
+            self.gl.draw_arrays(glow::TRIANGLES, 0, 6);
+            self.gl.disable_vertex_attrib_array(1);
+            self.gl.disable_vertex_attrib_array(2);
+            self.gl
+                .vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
+        }
+    }
+
+    fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
+        let source = match index {
+            crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),
+            crate::ui::gfx::IDX_COLOR => crate::ui::shaders::Program::Color.wgsl(),
+            crate::ui::gfx::IDX_TEXT => crate::ui::shaders::Program::Text.wgsl(),
+            crate::ui::gfx::IDX_SKINNED => crate::ui::shaders::Program::Skinned.wgsl(),
+            _ => return None,
+        };
+        let cache = gl_cache(&self.gl);
+
+        compile_wgsl(&self.gl, &cache, &source)
+            .ok()
+            .map(crate::ui::gfx::Shader::opengl)
+    }
+
+    fn builtin_pipeline(&mut self, index: u32) -> Option<crate::ui::gfx::Pipeline> {
+        let (program, stride, depth) = match index {
+            crate::ui::gfx::IDX_MESH => (self.colored_mesh.program, 0, true),
+            crate::ui::gfx::IDX_COLOR => (self.shader_program, 6, false),
+            crate::ui::gfx::IDX_TEXT => (self.sprite, crate::ui::gfx::SCREEN_FLOATS as u8, false),
+            crate::ui::gfx::IDX_SKINNED => (self.skin.program, 0, true),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Pipeline::opengl(crate::ui::gfx::GlPipeline {
+            program,
+            stride,
+            depth,
+        }))
+    }
+
+    fn builtin_texture(&mut self, index: u32) -> Option<crate::ui::gfx::Texture> {
+        let name = match index {
+            crate::ui::gfx::IDX_WHITE => self.colored_mesh.white,
+            crate::ui::gfx::IDX_FLAT => self.colored_mesh.flat,
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture { name }))
+    }
+
+    fn builtin_sampler(&mut self, index: u32) -> Option<crate::ui::gfx::Sampler> {
+        let name = match index {
+            crate::ui::gfx::IDX_WRAP => self.wrap_sampler,
+            crate::ui::gfx::IDX_CLAMP => self.clamp_sampler,
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Sampler::opengl(crate::ui::gfx::GlSampler { name }))
+    }
+
+    fn material_alias(&self, name: &str) -> Option<crate::ui::gfx::Texture> {
+        self.colored_mesh
+            .material_lookup
+            .get(name)
+            .copied()
+            .map(|name| crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture { name }))
+    }
+
+    fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {
+        target.as_opengl().map(|target| {
+            crate::ui::gfx::Texture::opengl(crate::ui::gfx::GlTexture { name: target.color })
+        })
+    }
+
+    fn before_destroy(&mut self) {
+        let _ = self.context.make_current(&self.surface);
+        unsafe {
+            self.gl.delete_program(self.sprite);
+            self.gl.delete_sampler(self.wrap_sampler);
+            self.gl.delete_sampler(self.clamp_sampler);
+        }
     }
 }
 

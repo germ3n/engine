@@ -86,6 +86,20 @@ impl MaterialBank {
         self.materials
     }
 
+    pub fn ordered_names(&self) -> Vec<String> {
+        let mut names = vec![String::new(); self.materials.len()];
+
+        for (name, id) in &self.names {
+            if let Some(slot) = names.get_mut(*id as usize) {
+                if slot.is_empty() {
+                    *slot = name.clone();
+                }
+            }
+        }
+
+        names
+    }
+
     pub fn load(&mut self, name: &str) -> u16 {
         self.load_packed(None, name)
     }
@@ -430,6 +444,13 @@ fn load_texture(source: &FileSource, name: &str) -> CpuImage {
     };
 
     image_from_vtf(&bytes).unwrap_or_else(CpuImage::checker)
+}
+
+pub fn read_texture(name: &str) -> Option<CpuImage> {
+    let source = FileSource::game();
+    let bytes = source.read(&vtf_path(name))?;
+
+    image_from_vtf(&bytes)
 }
 
 pub fn image_from_vtf(bytes: &[u8]) -> Option<CpuImage> {

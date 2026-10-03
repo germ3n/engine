@@ -27,6 +27,9 @@ pub enum DrawCommand {
         w: f32,
         h: f32,
         color: Color,
+        texture: u32,
+        pipeline: u32,
+        sampler: u32,
     },
     OutlinedRect {
         x: f32,
@@ -44,9 +47,59 @@ pub enum DrawCommand {
         scale: f32,
         color: Color,
     },
+    CreateShader {
+        id: u32,
+        source: String,
+    },
+    CreateTexture {
+        id: u32,
+        path: String,
+    },
+    CreateMaterial {
+        id: u32,
+        name: String,
+    },
+    CreateTarget {
+        id: u32,
+        width: u32,
+        height: u32,
+    },
+    CreateBuffer {
+        id: u32,
+        bytes: Vec<u8>,
+    },
+    CreateSampler {
+        id: u32,
+        linear: bool,
+        repeat: bool,
+    },
+    CreatePipeline {
+        id: u32,
+        shader: u32,
+        screen: bool,
+    },
+    CreateMesh {
+        id: u32,
+        verts: Vec<f32>,
+        screen: bool,
+    },
+    Free {
+        id: u32,
+    },
+    DrawMesh {
+        mesh: u32,
+        pipeline: u32,
+        texture: u32,
+        sampler: u32,
+    },
 }
 
-pub type RenderQueue = Arc<Mutex<Vec<DrawCommand>>>;
+pub struct RenderState {
+    pub commands: Vec<DrawCommand>,
+    pub book: crate::ui::gfx::Book,
+}
+
+pub type RenderQueue = Arc<Mutex<RenderState>>;
 
 #[derive(Clone, Copy)]
 pub enum Realm {
@@ -111,7 +164,10 @@ impl ScriptEngine {
             register_angle3_lib(&lua);
         }
 
-        let render_queue = Arc::new(Mutex::new(Vec::new()));
+        let render_queue = Arc::new(Mutex::new(RenderState {
+            commands: Vec::new(),
+            book: crate::ui::gfx::Book::new(),
+        }));
         if !matches!(realm, Realm::Server) {
             register_surface_lib(&lua, render_queue.clone());
         }

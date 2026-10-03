@@ -67,6 +67,7 @@ pub struct D3D12Window {
     mesh_ready: bool,
     view: [f32; 16],
     draw_mesh: bool,
+    user: Vec<Dx12User>,
     vr: Option<Headset>,
     vr_failed: bool,
     vr_enable: bool,
@@ -253,6 +254,7 @@ impl D3D12Window {
             mesh_ready: false,
             view: [0.0; 16],
             draw_mesh: false,
+            user: Vec::new(),
             vr: None,
             vr_failed: false,
             vr_enable: false,
@@ -805,6 +807,20 @@ impl D3D12Window {
             );
         }
 
+        let mut idx = 0;
+
+        while idx < self.user.len() {
+            let resource = self.user[idx].resource.clone();
+            let pso = self.user[idx].pso.clone();
+            let root = self.user[idx].root.clone();
+            let stride = self.user[idx].stride;
+            let count = self.user[idx].count;
+            let constants = self.user[idx].constants;
+            let textured = self.user[idx].textured;
+            self.draw(&resource, stride, count, &pso, &root, &constants, textured);
+            idx += 1;
+        }
+
         unsafe {
             list.ResourceBarrier(&[transition(
                 target,
@@ -874,6 +890,7 @@ impl Window for D3D12Window {
         self.wait();
         self.clear = [red, green, blue, 1.0];
         self.ui.clear();
+        self.user.clear();
         self.draw_mesh = false;
     }
 
@@ -1585,5 +1602,314 @@ fn depth_desc(enable: bool) -> D3D12_DEPTH_STENCIL_DESC {
         StencilWriteMask: 0,
         FrontFace: face,
         BackFace: face,
+    }
+}
+
+struct Dx12User {
+    resource: ID3D12Resource,
+    pso: ID3D12PipelineState,
+    root: ID3D12RootSignature,
+    stride: u32,
+    count: u32,
+    constants: [f32; 16],
+    textured: bool,
+}
+
+fn dx12_shader(device: &ID3D12Device, wgsl: &str) -> Result<crate::ui::gfx::Dx12Shader, String> {
+    let cache = crate::ui::shader::Registry::for_device("d3d12");
+    let source = cache.hlsl(wgsl)?;
+    let _ = device;
+
+    Ok(crate::ui::gfx::Dx12Shader {
+        vs: shader::vs5(&source, s!("vs_main"))?,
+        ps: shader::ps5(&source, s!("fs_main"))?,
+    })
+}
+
+fn dx12_upload(device: &ID3D12Device, bytes: &[u8]) -> Result<ID3D12Resource, String> {
+    let resource = upload_buffer(device, bytes.len().max(4) as u64)?;
+    write_mapped(&resource, bytes)?;
+
+    Ok(resource)
+}
+
+impl crate::ui::gfx::BackendGpu for D3D12Window {
+    fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
+        Ok(crate::ui::gfx::Shader::d3d12(dx12_shader(&self.device, wgsl)?))
+    }
+
+    fn make_texture(
+        &mut self,
+        image: &crate::world::surface::CpuImage,
+    ) -> Result<crate::ui::gfx::Texture, String> {
+        let pixels = crate::world::image_rgba(image);
+        let resource = committed(
+            &self.device,
+            &heap(D3D12_HEAP_TYPE_UPLOAD),
+            &texture_desc(
+                image.width,
+                image.height,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D12_RESOURCE_FLAGS(0),
+            ),
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            None,
+        )?;
+        let _ = pixels;
+
+        Ok(crate::ui::gfx::Texture::d3d12(crate::ui::gfx::Dx12Texture {
+            resource,
+        }))
+    }
+
+    fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
+        let color = committed(
+            &self.device,
+            &heap(D3D12_HEAP_TYPE_DEFAULT),
+            &texture_desc(
+                width,
+                height,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+            ),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            None,
+        )?;
+        let depth = committed(
+            &self.device,
+            &heap(D3D12_HEAP_TYPE_DEFAULT),
+            &texture_desc(
+                width,
+                height,
+                DXGI_FORMAT_D32_FLOAT,
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+            ),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            None,
+        )?;
+
+        Ok(crate::ui::gfx::Target::d3d12(crate::ui::gfx::Dx12Target {
+            color,
+            depth,
+            width,
+            height,
+        }))
+    }
+
+    fn make_buffer(&mut self, bytes: &[u8]) -> Result<crate::ui::gfx::Buffer, String> {
+        Ok(crate::ui::gfx::Buffer::d3d12(crate::ui::gfx::Dx12Buffer {
+            resource: dx12_upload(&self.device, bytes)?,
+            bytes: bytes.len() as u64,
+        }))
+    }
+
+    fn make_sampler(
+        &mut self,
+        linear: bool,
+        repeat: bool,
+    ) -> Result<crate::ui::gfx::Sampler, String> {
+        Ok(crate::ui::gfx::Sampler::d3d12(crate::ui::gfx::Dx12Sampler {
+            linear,
+            repeat,
+        }))
+    }
+
+    fn make_pipeline(
+        &mut self,
+        shader: &crate::ui::gfx::Shader,
+        screen: bool,
+    ) -> Result<crate::ui::gfx::Pipeline, String> {
+        let shader = shader.as_d3d12().ok_or_else(|| "shader".to_string())?;
+        let param = constant_param(16);
+        let root = signature(&self.device, &[param], &[])?;
+        let elements = if screen {
+            [
+                element(s!("LOC"), 0, DXGI_FORMAT_R32G32_FLOAT, 0),
+                element(s!("LOC"), 1, DXGI_FORMAT_R32G32_FLOAT, 8),
+                element(s!("LOC"), 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 16),
+            ]
+        } else {
+            [
+                element(s!("LOC"), 0, DXGI_FORMAT_R32G32B32_FLOAT, 0),
+                element(s!("LOC"), 1, DXGI_FORMAT_R32G32_FLOAT, 12),
+                element(s!("LOC"), 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 20),
+            ]
+        };
+        let state = pipeline(
+            &self.device,
+            &root,
+            &shader.vs,
+            &shader.ps,
+            &elements,
+            true,
+            !screen,
+            D3D12_CULL_MODE_NONE,
+        )?;
+        let stride = if screen {
+            crate::ui::gfx::SCREEN_FLOATS as u8
+        } else {
+            crate::ui::gfx::MESH_FLOATS as u8
+        };
+
+        Ok(crate::ui::gfx::Pipeline::d3d12(crate::ui::gfx::Dx12Pipeline {
+            root,
+            state,
+            stride,
+            depth: !screen,
+        }))
+    }
+
+    fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
+        let resource = dx12_upload(&self.device, bytes_of(verts))?;
+
+        Ok(crate::ui::gfx::Mesh::d3d12(crate::ui::gfx::Dx12Mesh {
+            resource,
+            floats: verts.len() as u32,
+            screen,
+        }))
+    }
+
+    fn destroy_shader(&mut self, shader: crate::ui::gfx::Shader) {
+        let _ = shader.into_d3d12();
+    }
+
+    fn destroy_texture(&mut self, texture: crate::ui::gfx::Texture) {
+        let _ = texture.into_d3d12();
+    }
+
+    fn destroy_buffer(&mut self, buffer: crate::ui::gfx::Buffer) {
+        let _ = buffer.into_d3d12();
+    }
+
+    fn destroy_sampler(&mut self, sampler: crate::ui::gfx::Sampler) {
+        let _ = sampler.into_d3d12();
+    }
+
+    fn destroy_pipeline(&mut self, pipeline: crate::ui::gfx::Pipeline) {
+        let _ = pipeline.into_d3d12();
+    }
+
+    fn destroy_target(&mut self, target: crate::ui::gfx::Target) {
+        let _ = target.into_d3d12();
+    }
+
+    fn destroy_mesh(&mut self, mesh: crate::ui::gfx::Mesh) {
+        let _ = mesh.into_d3d12();
+    }
+
+    fn draw_mesh(
+        &mut self,
+        mesh: &crate::ui::gfx::Mesh,
+        pipeline: &crate::ui::gfx::Pipeline,
+        _texture: Option<&crate::ui::gfx::Texture>,
+        _sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &SceneView,
+    ) {
+        let (Some(mesh), Some(pipeline)) = (mesh.as_d3d12(), pipeline.as_d3d12()) else {
+            return;
+        };
+        let stride = (pipeline.stride.max(1) as u32) * 4;
+        let mut constants = [0.0; 16];
+        constants.copy_from_slice(&view_proj(view));
+        self.user.push(Dx12User {
+            resource: mesh.resource.clone(),
+            pso: pipeline.state.clone(),
+            root: pipeline.root.clone(),
+            stride,
+            count: mesh.floats / pipeline.stride.max(1) as u32,
+            constants,
+            textured: false,
+        });
+    }
+
+    fn draw_sprite(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        _texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        _sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        let verts = crate::ui::gfx::screen_quad(x, y, w, h, color);
+        let Ok(resource) = dx12_upload(&self.device, bytes_of(&verts)) else {
+            return;
+        };
+        let (pso, root) = if let Some(pipeline) = pipeline.and_then(|item| item.as_d3d12()) {
+            (pipeline.state.clone(), pipeline.root.clone())
+        } else {
+            (self.text_pso.clone(), self.text_root.clone())
+        };
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        self.user.push(Dx12User {
+            resource,
+            pso,
+            root,
+            stride: 32,
+            count: 6,
+            constants,
+            textured: true,
+        });
+    }
+
+    fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
+        let source = match index {
+            crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),
+            crate::ui::gfx::IDX_COLOR => crate::ui::shaders::Program::Color.wgsl(),
+            crate::ui::gfx::IDX_TEXT => crate::ui::shaders::Program::Text.wgsl(),
+            _ => return None,
+        };
+
+        dx12_shader(&self.device, &source)
+            .ok()
+            .map(crate::ui::gfx::Shader::d3d12)
+    }
+
+    fn builtin_pipeline(&mut self, index: u32) -> Option<crate::ui::gfx::Pipeline> {
+        let (state, root, stride, depth) = match index {
+            crate::ui::gfx::IDX_MESH => (self.mesh_pso.clone(), self.plain_root.clone(), 0, true),
+            crate::ui::gfx::IDX_COLOR => (self.color_pso.clone(), self.plain_root.clone(), 6, false),
+            crate::ui::gfx::IDX_TEXT => (
+                self.text_pso.clone(),
+                self.text_root.clone(),
+                crate::ui::gfx::SCREEN_FLOATS as u8,
+                false,
+            ),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Pipeline::d3d12(crate::ui::gfx::Dx12Pipeline {
+            root,
+            state,
+            stride,
+            depth,
+        }))
+    }
+
+    fn builtin_texture(&mut self, _index: u32) -> Option<crate::ui::gfx::Texture> {
+        None
+    }
+
+    fn builtin_sampler(&mut self, index: u32) -> Option<crate::ui::gfx::Sampler> {
+        Some(crate::ui::gfx::Sampler::d3d12(crate::ui::gfx::Dx12Sampler {
+            linear: true,
+            repeat: index == crate::ui::gfx::IDX_WRAP,
+        }))
+    }
+
+    fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
+        None
+    }
+
+    fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {
+        target.as_d3d12().map(|target| {
+            crate::ui::gfx::Texture::d3d12(crate::ui::gfx::Dx12Texture {
+                resource: target.color.clone(),
+            })
+        })
     }
 }

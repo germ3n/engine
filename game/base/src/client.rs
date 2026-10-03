@@ -262,6 +262,11 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
             }
 
             if let Event::Suspended = &event {
+                if let Ok(mut queue) = game.script_engine.render_queue.lock() {
+                    queue.book.reset();
+                    queue.commands.clear();
+                }
+
                 held_window = None;
 
                 return;
@@ -420,14 +425,29 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
 
                     let draw_commands = {
                         let mut q = game.script_engine.render_queue.lock().unwrap();
-                        std::mem::take(&mut *q)
+                        std::mem::take(&mut q.commands)
                     };
 
                     //todo: optimize
                     for cmd in draw_commands {
                         match cmd {
-                            DrawCommand::Rect { x, y, w, h, color } => {
-                                client_window.draw_rectangle(x, y, w, h, color);
+                            DrawCommand::Rect {
+                                x,
+                                y,
+                                w,
+                                h,
+                                color,
+                                texture,
+                                pipeline,
+                                sampler,
+                            } => {
+                                if texture == 0 && pipeline == 0 {
+                                    client_window.draw_rectangle(x, y, w, h, color);
+                                } else {
+                                    client_window.draw_sprite(
+                                        x, y, w, h, color, texture, pipeline, sampler,
+                                    );
+                                }
                             }
                             DrawCommand::OutlinedRect {
                                 x,
@@ -455,6 +475,47 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                                     scale,
                                     color,
                                 );
+                            }
+                            DrawCommand::CreateShader { id, source } => {
+                                client_window.create_shader(id, &source);
+                            }
+                            DrawCommand::CreateTexture { id, path } => {
+                                client_window.create_texture(id, &path);
+                            }
+                            DrawCommand::CreateMaterial { id, name } => {
+                                client_window.create_material(id, &name);
+                            }
+                            DrawCommand::CreateTarget { id, width, height } => {
+                                client_window.create_target(id, width, height);
+                            }
+                            DrawCommand::CreateBuffer { id, bytes } => {
+                                client_window.create_buffer(id, &bytes);
+                            }
+                            DrawCommand::CreateSampler { id, linear, repeat } => {
+                                client_window.create_sampler(id, linear, repeat);
+                            }
+                            DrawCommand::CreatePipeline { id, shader, screen } => {
+                                client_window.create_pipeline(id, shader, screen);
+                            }
+                            DrawCommand::CreateMesh { id, verts, screen } => {
+                                client_window.create_mesh(id, &verts, screen);
+                            }
+                            DrawCommand::Free { id } => {
+                                client_window.free_gpu(id);
+                                game.script_engine
+                                    .render_queue
+                                    .lock()
+                                    .unwrap()
+                                    .book
+                                    .recycle(id);
+                            }
+                            DrawCommand::DrawMesh {
+                                mesh,
+                                pipeline,
+                                texture,
+                                sampler,
+                            } => {
+                                client_window.draw_mesh(mesh, pipeline, texture, sampler, &scene);
                             }
                         }
                     }

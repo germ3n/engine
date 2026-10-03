@@ -36,6 +36,15 @@ pub struct VulkanWindow {
     vr_failed: bool,
     vr_enable: bool,
     eye_views: Option<EyeViews>,
+    user: Vec<VkUser>,
+    user_done: [Vec<VkUser>; FRAMES],
+    user_pool: [Option<vk::DescriptorPool>; FRAMES],
+    user_set_layout: Option<vk::DescriptorSetLayout>,
+    user_screen_layout: Option<vk::PipelineLayout>,
+    user_mesh_layout: Option<vk::PipelineLayout>,
+    white: Option<GpuImage>,
+    wrap_sampler: Option<vk::Sampler>,
+    clamp_sampler: Option<vk::Sampler>,
 }
 
 impl VulkanWindow {
@@ -92,6 +101,15 @@ fn build_window(entry: ash::Entry, surface: &Surface) -> Result<VulkanWindow, St
         vr_failed: false,
         vr_enable: false,
         eye_views: None,
+        user: Vec::new(),
+        user_done: [Vec::new(), Vec::new()],
+        user_pool: [None, None],
+        user_set_layout: None,
+        user_screen_layout: None,
+        user_mesh_layout: None,
+        white: None,
+        wrap_sampler: None,
+        clamp_sampler: None,
     })
 }
 
@@ -100,6 +118,41 @@ impl Drop for VulkanWindow {
         unsafe {
             let _ = self.gpu.device.device_wait_idle();
         }
+        self.user.clear();
+        self.user_done[0].clear();
+        self.user_done[1].clear();
+
+        unsafe {
+            if let Some(pool) = self.user_pool[0] {
+                self.gpu.device.destroy_descriptor_pool(pool, None);
+            }
+
+            if let Some(pool) = self.user_pool[1] {
+                self.gpu.device.destroy_descriptor_pool(pool, None);
+            }
+
+            if let Some(layout) = self.user_set_layout {
+                self.gpu.device.destroy_descriptor_set_layout(layout, None);
+            }
+
+            if let Some(layout) = self.user_screen_layout {
+                self.gpu.device.destroy_pipeline_layout(layout, None);
+            }
+
+            if let Some(layout) = self.user_mesh_layout {
+                self.gpu.device.destroy_pipeline_layout(layout, None);
+            }
+
+            if let Some(sampler) = self.wrap_sampler {
+                self.gpu.device.destroy_sampler(sampler, None);
+            }
+
+            if let Some(sampler) = self.clamp_sampler {
+                self.gpu.device.destroy_sampler(sampler, None);
+            }
+        }
+
+        self.white.take();
         self.vr.take();
     }
 }
@@ -222,6 +275,8 @@ impl VulkanWindow {
     fn draw_frame(&mut self) -> Result<(), String> {
         let slot = self.frame_idx % FRAMES;
         self.frames.wait(slot)?;
+        self.user_done[slot].clear();
+        self.reset_user_pool(slot)?;
         let acquired = self.swap.acquire(self.frames.acquire[slot]);
 
         let image = match acquired {
@@ -279,6 +334,7 @@ impl VulkanWindow {
         }
 
         self.record_window(cmd, image, ui_len, text_len)?;
+        self.user_done[slot] = std::mem::take(&mut self.user);
         unsafe { self.gpu.device.end_command_buffer(cmd).map_err(vk_err)? };
         self.frames.submit(&self.gpu, slot, cmd)?;
 
@@ -364,7 +420,7 @@ impl VulkanWindow {
     }
 
     fn record_window(
-        &self,
+        &mut self,
         cmd: vk::CommandBuffer,
         image: u32,
         ui_bytes: usize,
@@ -424,6 +480,7 @@ impl VulkanWindow {
             );
         }
 
+        self.record_user(cmd, extent)?;
         unsafe { self.gpu.device.cmd_end_render_pass(cmd) };
 
         Ok(())
@@ -2295,6 +2352,774 @@ fn glyph_quad(vertex: glyph_brush::GlyphVertex<Extra>) -> GlyphQuad {
     }
 
     GlyphQuad { verts }
+}
+
+struct VkUser {
+    buffer: HostBuffer,
+    pipeline: vk::Pipeline,
+    layout: vk::PipelineLayout,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+    count: u32,
+    constants: [f32; 16],
+    constant_bytes: u32,
+}
+
+impl VulkanWindow {
+    fn reset_user_pool(&mut self, slot: usize) -> Result<(), String> {
+        if self.user_set_layout.is_none() {
+            self.user_set_layout = Some(descriptor_layout(&self.gpu.device)?);
+        }
+
+        let set_layout = self.user_set_layout.unwrap();
+
+        if self.user_screen_layout.is_none() {
+            self.user_screen_layout = Some(layout(
+                &self.gpu.device,
+                16,
+                &[set_layout],
+                vk::ShaderStageFlags::VERTEX,
+            )?);
+        }
+
+        if self.user_mesh_layout.is_none() {
+            self.user_mesh_layout = Some(layout(
+                &self.gpu.device,
+                64,
+                &[set_layout],
+                vk::ShaderStageFlags::VERTEX,
+            )?);
+        }
+
+        if let Some(pool) = self.user_pool[slot] {
+            unsafe {
+                self.gpu
+                    .device
+                    .reset_descriptor_pool(pool, vk::DescriptorPoolResetFlags::empty())
+                    .map_err(vk_err)?;
+            }
+
+            return Ok(());
+        }
+
+        let sizes = [
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_count(64),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::SAMPLER)
+                .descriptor_count(64),
+        ];
+        let info = vk::DescriptorPoolCreateInfo::default()
+            .max_sets(64)
+            .pool_sizes(&sizes);
+        let pool = unsafe { self.gpu.device.create_descriptor_pool(&info, None) }.map_err(vk_err)?;
+        self.user_pool[slot] = Some(pool);
+
+        Ok(())
+    }
+
+    fn record_user(&mut self, cmd: vk::CommandBuffer, extent: vk::Extent2D) -> Result<(), String> {
+        let slot = self.frame_idx % FRAMES;
+        let pool = self.user_pool[slot].unwrap_or_default();
+        let set_layout = self.user_set_layout.unwrap_or_default();
+        let mut idx = 0;
+
+        while idx < self.user.len() {
+            let draw = &self.user[idx];
+            let set = allocate_user_set(&self.gpu.device, pool, set_layout)?;
+            write_user_set(&self.gpu.device, set, draw.view, draw.sampler);
+            unsafe {
+                self.gpu.device.cmd_bind_pipeline(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    draw.pipeline,
+                );
+                self.gpu.device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    draw.layout,
+                    0,
+                    &[set],
+                    &[],
+                );
+                let words = (draw.constant_bytes as usize / 4).min(draw.constants.len());
+                self.gpu.device.cmd_push_constants(
+                    cmd,
+                    draw.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    bytes_of(&draw.constants[..words]),
+                );
+                self.gpu
+                    .device
+                    .cmd_bind_vertex_buffers(cmd, 0, &[draw.buffer.buffer], &[0]);
+                let _ = extent;
+                self.gpu.device.cmd_draw(cmd, draw.count, 1, 0, 0);
+            }
+            idx += 1;
+        }
+
+        Ok(())
+    }
+
+    fn user_sampler(&mut self, repeat: bool) -> Result<vk::Sampler, String> {
+        if repeat {
+            if let Some(sampler) = self.wrap_sampler {
+                return Ok(sampler);
+            }
+        } else if let Some(sampler) = self.clamp_sampler {
+            return Ok(sampler);
+        }
+
+        let address = if repeat {
+            vk::SamplerAddressMode::REPEAT
+        } else {
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        };
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(vk::Filter::LINEAR)
+            .min_filter(vk::Filter::LINEAR)
+            .address_mode_u(address)
+            .address_mode_v(address)
+            .address_mode_w(address);
+        let sampler =
+            unsafe { self.gpu.device.create_sampler(&info, None) }.map_err(vk_err)?;
+
+        if repeat {
+            self.wrap_sampler = Some(sampler);
+        } else {
+            self.clamp_sampler = Some(sampler);
+        }
+
+        Ok(sampler)
+    }
+
+    fn push_user(
+        &mut self,
+        verts: &[f32],
+        pipeline: vk::Pipeline,
+        layout: vk::PipelineLayout,
+        view: vk::ImageView,
+        sampler: vk::Sampler,
+        constants: [f32; 16],
+        constant_bytes: u32,
+        stride: u32,
+    ) -> Result<(), String> {
+        let buffer = HostBuffer::create(
+            &self.gpu,
+            (verts.len() * 4).max(4) as u64,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
+        buffer.write(bytes_of(verts));
+        self.user.push(VkUser {
+            buffer,
+            pipeline,
+            layout,
+            view,
+            sampler,
+            count: (verts.len() as u32 / stride.max(1)),
+            constants,
+            constant_bytes,
+        });
+
+        Ok(())
+    }
+}
+
+fn allocate_user_set(
+    device: &ash::Device,
+    pool: vk::DescriptorPool,
+    layout: vk::DescriptorSetLayout,
+) -> Result<vk::DescriptorSet, String> {
+    let info = vk::DescriptorSetAllocateInfo::default()
+        .descriptor_pool(pool)
+        .set_layouts(std::slice::from_ref(&layout));
+    let mut sets = unsafe { device.allocate_descriptor_sets(&info) }.map_err(vk_err)?;
+
+    sets.pop().ok_or_else(|| "descriptor set".to_string())
+}
+
+fn write_user_set(
+    device: &ash::Device,
+    set: vk::DescriptorSet,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+) {
+    let image_info = vk::DescriptorImageInfo::default()
+        .image_view(view)
+        .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+    let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
+    let writes = [
+        vk::WriteDescriptorSet::default()
+            .dst_set(set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+            .image_info(std::slice::from_ref(&image_info)),
+        vk::WriteDescriptorSet::default()
+            .dst_set(set)
+            .dst_binding(1)
+            .descriptor_type(vk::DescriptorType::SAMPLER)
+            .image_info(std::slice::from_ref(&sampler_info)),
+    ];
+    unsafe { device.update_descriptor_sets(&writes, &[]) };
+}
+
+fn export_host(buffer: HostBuffer) -> (vk::Buffer, vk::DeviceMemory) {
+    unsafe { buffer.device.unmap_memory(buffer.memory) };
+    let out = (buffer.buffer, buffer.memory);
+    std::mem::forget(buffer);
+
+    out
+}
+
+fn take_gpu_image(image: GpuImage) -> crate::ui::gfx::VkTexture {
+    let texture = crate::ui::gfx::VkTexture {
+        image: image.image,
+        memory: image.memory,
+        view: image.view,
+    };
+    std::mem::forget(image);
+
+    texture
+}
+
+fn vk_shader(gpu: &Gpu, wgsl: &str) -> Result<crate::ui::gfx::VkShader, String> {
+    let cache = shader::Registry::for_device(&device_uuid(&gpu.instance, gpu.physical));
+    let vs = cache.spirv(wgsl, naga::ShaderStage::Vertex, "vs_main")?;
+    let fs = cache.spirv(wgsl, naga::ShaderStage::Fragment, "fs_main")?;
+
+    Ok(crate::ui::gfx::VkShader {
+        vs: shader_module(&gpu.device, &vs)?,
+        fs: shader_module(&gpu.device, &fs)?,
+    })
+}
+
+fn vk_upload(window: &mut VulkanWindow, pixels: &[u8], width: u32, height: u32) -> Result<crate::ui::gfx::VkTexture, String> {
+    unsafe { window.gpu.device.device_wait_idle().map_err(vk_err)? };
+    let image = gpu_image(
+        &window.gpu,
+        width.max(1),
+        height.max(1),
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+        vk::ImageAspectFlags::COLOR,
+    )?;
+    let staging = HostBuffer::create(
+        &window.gpu,
+        pixels.len().max(4) as u64,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+    )?;
+    staging.write(pixels);
+    let cmd = window.frames.cmd[0];
+    unsafe {
+        window
+            .gpu
+            .device
+            .reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+            .map_err(vk_err)?;
+        window
+            .gpu
+            .device
+            .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
+            .map_err(vk_err)?;
+    }
+    let range = color_range();
+    let to_copy = vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image.image)
+        .subresource_range(range)
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE);
+    unsafe {
+        window.gpu.device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_copy],
+        );
+    }
+    let region = vk::BufferImageCopy::default()
+        .image_subresource(vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .image_extent(vk::Extent3D {
+            width: width.max(1),
+            height: height.max(1),
+            depth: 1,
+        });
+    unsafe {
+        window.gpu.device.cmd_copy_buffer_to_image(
+            cmd,
+            staging.buffer,
+            image.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[region],
+        );
+    }
+    let to_read = vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image.image)
+        .subresource_range(range)
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ);
+    unsafe {
+        window.gpu.device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_read],
+        );
+        window.gpu.device.end_command_buffer(cmd).map_err(vk_err)?;
+        let info = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
+        window
+            .gpu
+            .device
+            .queue_submit(window.gpu.queue, &[info], vk::Fence::null())
+            .map_err(vk_err)?;
+        window.gpu.device.device_wait_idle().map_err(vk_err)?;
+    }
+
+    Ok(take_gpu_image(image))
+}
+
+fn user_attrs(screen: bool) -> ([vk::VertexInputAttributeDescription; 3], u32) {
+    if screen {
+        return (
+            [
+                vk::VertexInputAttributeDescription::default()
+                    .location(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(0),
+                vk::VertexInputAttributeDescription::default()
+                    .location(1)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(8),
+                vk::VertexInputAttributeDescription::default()
+                    .location(2)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(16),
+            ],
+            32,
+        );
+    }
+
+    (
+        [
+            vk::VertexInputAttributeDescription::default()
+                .location(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(0),
+            vk::VertexInputAttributeDescription::default()
+                .location(1)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(12),
+            vk::VertexInputAttributeDescription::default()
+                .location(2)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(20),
+        ],
+        36,
+    )
+}
+
+impl crate::ui::gfx::BackendGpu for VulkanWindow {
+    fn make_shader(&mut self, wgsl: &str) -> Result<crate::ui::gfx::Shader, String> {
+        Ok(crate::ui::gfx::Shader::vulkan(vk_shader(&self.gpu, wgsl)?))
+    }
+
+    fn make_texture(
+        &mut self,
+        image: &crate::world::surface::CpuImage,
+    ) -> Result<crate::ui::gfx::Texture, String> {
+        let pixels = crate::world::image_rgba(image);
+
+        Ok(crate::ui::gfx::Texture::vulkan(vk_upload(
+            self,
+            &pixels,
+            image.width,
+            image.height,
+        )?))
+    }
+
+    fn make_target(&mut self, width: u32, height: u32) -> Result<crate::ui::gfx::Target, String> {
+        let width = width.max(1);
+        let height = height.max(1);
+        let color = gpu_image(
+            &self.gpu,
+            width,
+            height,
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+        let depth = gpu_image(
+            &self.gpu,
+            width,
+            height,
+            vk::Format::D32_SFLOAT,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            vk::ImageAspectFlags::DEPTH,
+        )?;
+        let color = take_gpu_image(color);
+        let depth = take_gpu_image(depth);
+
+        Ok(crate::ui::gfx::Target::vulkan(crate::ui::gfx::VkTarget {
+            color: color.image,
+            color_memory: color.memory,
+            color_view: color.view,
+            depth: depth.image,
+            depth_memory: depth.memory,
+            depth_view: depth.view,
+            width,
+            height,
+        }))
+    }
+
+    fn make_buffer(&mut self, bytes: &[u8]) -> Result<crate::ui::gfx::Buffer, String> {
+        let buffer = HostBuffer::create(&self.gpu, bytes.len().max(4) as u64, vk::BufferUsageFlags::VERTEX_BUFFER)?;
+        buffer.write(bytes);
+        let (handle, memory) = export_host(buffer);
+        let out = crate::ui::gfx::VkBuffer {
+            buffer: handle,
+            memory,
+            bytes: bytes.len() as u64,
+        };
+
+        Ok(crate::ui::gfx::Buffer::vulkan(out))
+    }
+
+    fn make_sampler(&mut self, linear: bool, repeat: bool) -> Result<crate::ui::gfx::Sampler, String> {
+        let filter = if linear { vk::Filter::LINEAR } else { vk::Filter::NEAREST };
+        let address = if repeat {
+            vk::SamplerAddressMode::REPEAT
+        } else {
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        };
+        let info = vk::SamplerCreateInfo::default()
+            .mag_filter(filter)
+            .min_filter(filter)
+            .address_mode_u(address)
+            .address_mode_v(address)
+            .address_mode_w(address);
+        let sampler = unsafe { self.gpu.device.create_sampler(&info, None) }.map_err(vk_err)?;
+
+        Ok(crate::ui::gfx::Sampler::vulkan(crate::ui::gfx::VkSampler { sampler }))
+    }
+
+    fn make_pipeline(
+        &mut self,
+        shader: &crate::ui::gfx::Shader,
+        screen: bool,
+    ) -> Result<crate::ui::gfx::Pipeline, String> {
+        self.reset_user_pool(self.frame_idx % FRAMES)?;
+        let shader = shader.as_vulkan().ok_or_else(|| "shader".to_string())?;
+        let layout = if screen {
+            self.user_screen_layout.unwrap_or_default()
+        } else {
+            self.user_mesh_layout.unwrap_or_default()
+        };
+        let (attrs, stride) = user_attrs(screen);
+        let pipeline = pipeline(
+            &self.gpu.device,
+            self.pipes.swap_pass,
+            layout,
+            shader.vs,
+            shader.fs,
+            c"vs_main",
+            c"fs_main",
+            &attrs,
+            stride,
+            !screen,
+            true,
+            false,
+        )?;
+
+        Ok(crate::ui::gfx::Pipeline::vulkan(crate::ui::gfx::VkPipeline {
+            pipeline,
+            layout,
+            stride: if screen {
+                crate::ui::gfx::SCREEN_FLOATS as u8
+            } else {
+                crate::ui::gfx::MESH_FLOATS as u8
+            },
+            depth: !screen,
+        }))
+    }
+
+    fn make_mesh(&mut self, verts: &[f32], screen: bool) -> Result<crate::ui::gfx::Mesh, String> {
+        let buffer = HostBuffer::create(
+            &self.gpu,
+            (verts.len() * 4).max(4) as u64,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+        )?;
+        buffer.write(bytes_of(verts));
+        let (handle, memory) = export_host(buffer);
+        let mesh = crate::ui::gfx::VkMesh {
+            buffer: handle,
+            memory,
+            floats: verts.len() as u32,
+            screen,
+        };
+
+        Ok(crate::ui::gfx::Mesh::vulkan(mesh))
+    }
+
+    fn destroy_shader(&mut self, shader: crate::ui::gfx::Shader) {
+        let Some(shader) = shader.into_vulkan() else {
+            return;
+        };
+        unsafe {
+            self.gpu.device.destroy_shader_module(shader.vs, None);
+            self.gpu.device.destroy_shader_module(shader.fs, None);
+        }
+    }
+
+    fn destroy_texture(&mut self, texture: crate::ui::gfx::Texture) {
+        let Some(texture) = texture.into_vulkan() else {
+            return;
+        };
+        unsafe {
+            self.gpu.device.destroy_image_view(texture.view, None);
+            self.gpu.device.destroy_image(texture.image, None);
+            self.gpu.device.free_memory(texture.memory, None);
+        }
+    }
+
+    fn destroy_buffer(&mut self, buffer: crate::ui::gfx::Buffer) {
+        let Some(buffer) = buffer.into_vulkan() else {
+            return;
+        };
+        unsafe {
+            self.gpu.device.destroy_buffer(buffer.buffer, None);
+            self.gpu.device.free_memory(buffer.memory, None);
+        }
+    }
+
+    fn destroy_sampler(&mut self, sampler: crate::ui::gfx::Sampler) {
+        let Some(sampler) = sampler.into_vulkan() else {
+            return;
+        };
+        unsafe { self.gpu.device.destroy_sampler(sampler.sampler, None) }
+    }
+
+    fn destroy_pipeline(&mut self, pipeline: crate::ui::gfx::Pipeline) {
+        let Some(pipeline) = pipeline.into_vulkan() else {
+            return;
+        };
+        unsafe {
+            self.gpu.device.destroy_pipeline(pipeline.pipeline, None);
+        }
+    }
+
+    fn destroy_target(&mut self, target: crate::ui::gfx::Target) {
+        let Some(target) = target.into_vulkan() else {
+            return;
+        };
+        unsafe {
+            self.gpu.device.destroy_image_view(target.color_view, None);
+            self.gpu.device.destroy_image(target.color, None);
+            self.gpu.device.free_memory(target.color_memory, None);
+            self.gpu.device.destroy_image_view(target.depth_view, None);
+            self.gpu.device.destroy_image(target.depth, None);
+            self.gpu.device.free_memory(target.depth_memory, None);
+        }
+    }
+
+    fn destroy_mesh(&mut self, mesh: crate::ui::gfx::Mesh) {
+        let Some(mesh) = mesh.into_vulkan() else {
+            return;
+        };
+        unsafe {
+            self.gpu.device.destroy_buffer(mesh.buffer, None);
+            self.gpu.device.free_memory(mesh.memory, None);
+        }
+    }
+
+    fn draw_mesh(
+        &mut self,
+        mesh: &crate::ui::gfx::Mesh,
+        pipeline: &crate::ui::gfx::Pipeline,
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+        view: &SceneView,
+    ) {
+        let (Some(mesh), Some(pipeline)) = (mesh.as_vulkan(), pipeline.as_vulkan()) else {
+            return;
+        };
+        let stride = pipeline.stride.max(1) as usize;
+        let count = mesh.floats as usize / stride;
+        let mut verts = vec![0.0; count * stride];
+        let bytes = count * stride * 4;
+        if let Ok(ptr) = unsafe {
+            self.gpu.device.map_memory(
+                mesh.memory,
+                0,
+                bytes.max(4) as u64,
+                vk::MemoryMapFlags::empty(),
+            )
+        } {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    ptr as *const u8,
+                    verts.as_mut_ptr() as *mut u8,
+                    bytes,
+                );
+                self.gpu.device.unmap_memory(mesh.memory);
+            }
+        }
+        let mut constants = [0.0; 16];
+        let matrix = vr::view_proj(view, true);
+        constants.copy_from_slice(&matrix);
+        let view_handle = texture
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.view)
+            .unwrap_or(vk::ImageView::null());
+        let sampler = sampler
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.sampler)
+            .unwrap_or(vk::Sampler::null());
+        let _ = self.push_user(
+            &verts,
+            pipeline.pipeline,
+            pipeline.layout,
+            view_handle,
+            sampler,
+            constants,
+            64,
+            stride as u32,
+        );
+    }
+
+    fn draw_sprite(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        texture: Option<&crate::ui::gfx::Texture>,
+        pipeline: Option<&crate::ui::gfx::Pipeline>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        let verts = crate::ui::gfx::screen_quad(x, y, w, h, color);
+        let pipe = pipeline.and_then(|item| item.as_vulkan());
+        let pipeline = pipe.map(|item| item.pipeline).unwrap_or(self.pipes.text);
+        let layout = pipe
+            .map(|item| item.layout)
+            .unwrap_or(self.pipes.text_layout);
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        let view = texture
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.view)
+            .unwrap_or(vk::ImageView::null());
+        let sampler = sampler
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.sampler)
+            .or(self.clamp_sampler)
+            .unwrap_or(vk::Sampler::null());
+        let _ = self.push_user(&verts, pipeline, layout, view, sampler, constants, 16, 8);
+    }
+
+    fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
+        let source = match index {
+            crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),
+            crate::ui::gfx::IDX_COLOR => crate::ui::shaders::Program::Color.wgsl(),
+            crate::ui::gfx::IDX_TEXT => crate::ui::shaders::Program::Text.wgsl(),
+            crate::ui::gfx::IDX_SKINNED => return None,
+            _ => return None,
+        };
+
+        vk_shader(&self.gpu, &source)
+            .ok()
+            .map(crate::ui::gfx::Shader::vulkan)
+    }
+
+    fn builtin_pipeline(&mut self, index: u32) -> Option<crate::ui::gfx::Pipeline> {
+        let (pipeline, layout, stride, depth) = match index {
+            crate::ui::gfx::IDX_MESH => (self.pipes.mesh, self.pipes.mesh_layout, 0, true),
+            crate::ui::gfx::IDX_COLOR => (self.pipes.color, self.pipes.color_layout, 6, false),
+            crate::ui::gfx::IDX_TEXT => (
+                self.pipes.text,
+                self.pipes.text_layout,
+                crate::ui::gfx::SCREEN_FLOATS as u8,
+                false,
+            ),
+            _ => return None,
+        };
+
+        Some(crate::ui::gfx::Pipeline::vulkan(crate::ui::gfx::VkPipeline {
+            pipeline,
+            layout,
+            stride,
+            depth,
+        }))
+    }
+
+    fn builtin_texture(&mut self, index: u32) -> Option<crate::ui::gfx::Texture> {
+        if index != crate::ui::gfx::IDX_WHITE && index != crate::ui::gfx::IDX_FLAT {
+            return None;
+        }
+
+        if self.white.is_none() {
+            let pixels = if index == crate::ui::gfx::IDX_FLAT {
+                [128, 128, 255, 255]
+            } else {
+                [255, 255, 255, 255]
+            };
+            self.white = vk_upload(self, &pixels, 1, 1).ok().map(|texture| GpuImage {
+                device: self.gpu.device.clone(),
+                image: texture.image,
+                memory: texture.memory,
+                view: texture.view,
+            });
+        }
+
+        self.white.as_ref().map(|image| {
+            crate::ui::gfx::Texture::vulkan(crate::ui::gfx::VkTexture {
+                image: image.image,
+                memory: image.memory,
+                view: image.view,
+            })
+        })
+    }
+
+    fn builtin_sampler(&mut self, index: u32) -> Option<crate::ui::gfx::Sampler> {
+        let repeat = index == crate::ui::gfx::IDX_WRAP;
+        let sampler = self.user_sampler(repeat).ok()?;
+
+        Some(crate::ui::gfx::Sampler::vulkan(crate::ui::gfx::VkSampler { sampler }))
+    }
+
+    fn material_alias(&self, _name: &str) -> Option<crate::ui::gfx::Texture> {
+        None
+    }
+
+    fn target_color(&self, target: &crate::ui::gfx::Target) -> Option<crate::ui::gfx::Texture> {
+        target.as_vulkan().map(|target| {
+            crate::ui::gfx::Texture::vulkan(crate::ui::gfx::VkTexture {
+                image: target.color,
+                memory: target.color_memory,
+                view: target.color_view,
+            })
+        })
+    }
 }
 
 #[cfg(test)]
