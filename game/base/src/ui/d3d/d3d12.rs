@@ -1725,7 +1725,7 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
         screen: bool,
     ) -> Result<crate::ui::gfx::Pipeline, String> {
         let shader = shader.as_d3d12().ok_or_else(|| "shader".to_string())?;
-        let param = constant_param(16);
+        let param = constants_param(16);
         let root = signature(&self.device, &[param], &[])?;
         let elements = if screen {
             [

@@ -1876,7 +1876,7 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
 
         self.make_texture(image).unwrap_or_else(|_| {
             crate::ui::gfx::Texture::d3d11(crate::ui::gfx::Dx11Texture {
-                texture: self.depth.clone().unwrap_or_else(|| self.swap.GetBuffer(0).unwrap()),
+                texture: self.depth.clone().unwrap_or_else(|| unsafe { self.swap.GetBuffer(0).unwrap() }),
                 view: self.atlas_view.clone().unwrap_or_else(|| {
                     dx11_texture(&self.device, &[255, 255, 255, 255], 1, 1)
                         .unwrap()

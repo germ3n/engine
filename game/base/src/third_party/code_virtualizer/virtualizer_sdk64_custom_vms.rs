@@ -18,7 +18,8 @@
     link(name = "VirtualizerArm64SDK", kind = "dylib")
 )]
 #[cfg_attr(not(target_arch = "aarch64"), link(name = "VirtualizerSDK64", kind = "dylib"))]
-extern {
+extern "C"
+{
     #[link_name = "CustomVM00000103_Start"]
     fn VIRTUALIZER_TIGER_WHITE_START();
 
