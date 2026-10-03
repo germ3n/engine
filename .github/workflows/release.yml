@@ -233,18 +233,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - kind: freebsd
-            binary_name: base
-            asset_name: base-freebsd-x86_64
-            editor_binary: editor
-            editor_asset: editor-freebsd-x86_64
-            rustflags: -C target-cpu=x86-64-v3
-          #- kind: dragonfly
+          #- kind: freebsd
           #  binary_name: base
-          #  asset_name: base-dragonfly-x86_64
+          #  asset_name: base-freebsd-x86_64
           #  editor_binary: editor
-          #  editor_asset: editor-dragonfly-x86_64
+          #  editor_asset: editor-freebsd-x86_64
           #  rustflags: -C target-cpu=x86-64-v3
+          - kind: dragonfly
+            binary_name: base
+            asset_name: base-dragonfly-x86_64
+            editor_binary: editor
+            editor_asset: editor-dragonfly-x86_64
+            rustflags: -C target-cpu=x86-64-v3
 
     env:
       RUSTFLAGS: ${{ matrix.rustflags }}
