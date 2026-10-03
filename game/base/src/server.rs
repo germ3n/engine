@@ -140,6 +140,14 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
                     inputs,
                     events,
                 });
+                let props = demo::capture_props(&game);
+
+                if !props.is_empty() {
+                    session.write_frame(&DemoFrame::Entities {
+                        tick: game.tick_count,
+                        entities: props,
+                    });
+                }
 
                 if game.cur_time >= session.next_shot {
                     let listed = listed_players(&players);

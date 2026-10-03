@@ -51,7 +51,8 @@ pub(crate) fn complete_shared(line: &str, lua: &mlua::Lua, realm: Realm) -> (Str
         client.as_ref(),
         Some((lua, realm)),
     );
-    let applied = apply_completion(line, &matches);
+    let mut cycle = WINDOW_CYCLE.lock().unwrap();
+    let applied = apply_completion(line, &matches, &mut cycle);
 
     (applied.line, applied.list)
 }
@@ -68,6 +69,7 @@ enum Hit {
     Done(Result<Option<String>, String>),
     Miss,
     Quit,
+    Local,
 }
 
 pub fn spawn_terminal(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
@@ -139,6 +141,7 @@ fn read_keys(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let mut line = String::new();
+    let mut cycle = None;
     paint(&line);
 
     loop {
@@ -149,6 +152,7 @@ fn read_keys(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
         match key {
             Key::Enter => {
                 println!();
+                cycle = None;
 
                 if !submit(&line, server.as_ref(), client.as_ref()) {
                     break;
@@ -159,10 +163,12 @@ fn read_keys(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
             }
             Key::Backspace => {
                 line.pop();
+                cycle = None;
                 paint(&line);
             }
             Key::Clear => {
                 line.clear();
+                cycle = None;
                 paint(&line);
             }
             Key::Eof => {
@@ -174,7 +180,7 @@ fn read_keys(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
             }
             Key::Tab => {
                 let matches = suggest_live(&line, server.as_ref(), client.as_ref());
-                let applied = apply_completion(&line, &matches);
+                let applied = apply_completion(&line, &matches, &mut cycle);
                 line = applied.line;
 
                 if !applied.list.is_empty() {
@@ -186,6 +192,7 @@ fn read_keys(server: Option<ConsoleSide>, client: Option<ConsoleSide>) {
             }
             Key::Text(text) => {
                 line.push_str(&text);
+                cycle = None;
                 paint(&line);
             }
             Key::Ignore => {}
@@ -475,6 +482,12 @@ fn suggest(
                 push_matching(&mut found, &builtin_names(client), &span.prefix);
             }
         }
+    } else if let Some((command, index)) = command_arg(line) {
+        push_matching(
+            &mut found,
+            &builtin_args(&command, index, server, client),
+            &span.prefix,
+        );
     }
 
     push_matching(&mut found, extra, &span.prefix);
@@ -500,6 +513,82 @@ fn builtin_names(side: &ConsoleSide) -> Vec<String> {
     names
 }
 
+fn command_arg(line: &str) -> Option<(String, usize)> {
+    let span = completion_span(line);
+
+    if span.command {
+        return None;
+    }
+
+    let tokens = tokenize(span.segment.trim());
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let index = if span.prefix.is_empty() {
+        tokens.len() - 1
+    } else if tokens.len() >= 2 {
+        tokens.len() - 2
+    } else {
+        return None;
+    };
+
+    Some((tokens[0].clone(), index))
+}
+
+fn builtin_args(
+    command: &str,
+    index: usize,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+) -> Vec<String> {
+    if index == 0 {
+        if let Some(values) = cvar_values(command, server, client) {
+            return values;
+        }
+    }
+
+    match (command, index) {
+        ("bind", 1) => actions(),
+        ("demo_cam", 0) => vec![
+            "first".to_string(),
+            "chase".to_string(),
+            "orbit".to_string(),
+            "free".to_string(),
+        ],
+        ("demo_loop", 0) => vec!["0".to_string(), "1".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn actions() -> Vec<String> {
+    [
+        "attack", "attack2", "use", "sprint", "walk", "duck", "jump", "reload", "forward", "back",
+        "left", "right",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn cvar_values(
+    name: &str,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+) -> Option<Vec<String>> {
+    let cvar = server
+        .and_then(|side| side.cvars.get(name).cloned())
+        .or_else(|| client.and_then(|side| side.cvars.get(name).cloned()))?;
+
+    let value = cvar.value.lock().unwrap().clone();
+
+    match value {
+        ConVarValue::Bool(_) => Some(vec!["false".to_string(), "true".to_string()]),
+        _ => None,
+    }
+}
+
 fn push_matching(found: &mut Vec<String>, names: &[String], prefix: &str) {
     let mut idx = 0;
 
@@ -513,7 +602,31 @@ fn push_matching(found: &mut Vec<String>, names: &[String], prefix: &str) {
     }
 }
 
-fn apply_completion(line: &str, matches: &[String]) -> Applied {
+struct Cycle {
+    before: String,
+    options: Vec<String>,
+    index: usize,
+}
+
+static WINDOW_CYCLE: Mutex<Option<Cycle>> = Mutex::new(None);
+
+fn apply_completion(line: &str, matches: &[String], cycle: &mut Option<Cycle>) -> Applied {
+    if let Some(state) = cycle.as_mut() {
+        let current = format!("{}{}", state.before, state.options[state.index]);
+
+        if line == current && state.options.len() > 1 {
+            state.index = (state.index + 1) % state.options.len();
+            let mut next = state.before.clone();
+            next.push_str(&state.options[state.index]);
+
+            return Applied {
+                line: next,
+                list: state.options.clone(),
+            };
+        }
+    }
+
+    *cycle = None;
     let span = completion_span(line);
 
     if matches.is_empty() {
@@ -522,8 +635,6 @@ fn apply_completion(line: &str, matches: &[String]) -> Applied {
             list: Vec::new(),
         };
     }
-
-    let shared = common_prefix(matches);
 
     if matches.len() == 1 {
         let mut next = String::new();
@@ -537,48 +648,19 @@ fn apply_completion(line: &str, matches: &[String]) -> Applied {
         };
     }
 
-    let mut next = String::new();
-    next.push_str(&line[..span.start]);
-    next.push_str(shared);
-    let list = if shared == span.prefix {
-        matches.to_vec()
-    } else {
-        Vec::new()
-    };
+    let before = line[..span.start].to_string();
+    let mut next = before.clone();
+    next.push_str(&matches[0]);
+    *cycle = Some(Cycle {
+        before,
+        options: matches.to_vec(),
+        index: 0,
+    });
 
-    Applied { line: next, list }
-}
-
-fn common_prefix(items: &[String]) -> &str {
-    let Some(first) = items.first() else {
-        return "";
-    };
-    let mut len = first.len();
-    let mut idx = 1;
-
-    while idx < items.len() {
-        let mut shared = 0;
-
-        for (left, right) in first.bytes().zip(items[idx].bytes()) {
-            if left != right {
-                break;
-            }
-
-            shared += 1;
-        }
-
-        if shared < len {
-            len = shared;
-        }
-
-        idx += 1;
+    Applied {
+        line: next,
+        list: matches.to_vec(),
     }
-
-    while len > 0 && !first.is_char_boundary(len) {
-        len -= 1;
-    }
-
-    &first[..len]
 }
 
 struct Pending {
@@ -851,6 +933,9 @@ fn run_part_realm(part: &str, server: Option<&ConsoleSide>, client: Option<&Cons
         demo::bind_realm(Realm::Server);
 
         match try_side(server, part) {
+            Hit::Done(Err(err)) if client.is_some() && err == "demo playback is client only" => {}
+            Hit::Local if holds_cvar(client, part) => {}
+            Hit::Local => return done("server", part, assign_line(server, part)),
             Hit::Done(result) => return done("server", part, result),
             Hit::Quit => return quit_outcome("server", part),
             Hit::Miss => {}
@@ -862,6 +947,7 @@ fn run_part_realm(part: &str, server: Option<&ConsoleSide>, client: Option<&Cons
 
         match try_side(client, part) {
             Hit::Done(result) => return done("client", part, result),
+            Hit::Local => return done("client", part, assign_line(client, part)),
             Hit::Quit => return quit_outcome("client", part),
             Hit::Miss => return unknown("client", part),
         }
@@ -893,10 +979,39 @@ fn try_side(side: &ConsoleSide, line: &str) -> Hit {
                 return Hit::Miss;
             };
 
+            if !cvar.is_replicated_to_clients {
+                return Hit::Local;
+            }
+
             Hit::Done(assign_cvar(cvar, &tokens[1..]))
         }
         Err(err) => Hit::Done(Err(err)),
     }
+}
+
+fn holds_cvar(side: Option<&ConsoleSide>, line: &str) -> bool {
+    let Some(side) = side else {
+        return false;
+    };
+
+    let tokens = tokenize(strip_comment(line).trim());
+    let Some(name) = tokens.first() else {
+        return false;
+    };
+
+    side.cvars.contains_key(name)
+}
+
+fn assign_line(side: &ConsoleSide, line: &str) -> Result<Option<String>, String> {
+    let tokens = tokenize(strip_comment(line).trim());
+    let Some(name) = tokens.first() else {
+        return Ok(None);
+    };
+    let Some(cvar) = side.cvars.get(name) else {
+        return Err(format!("unknown command '{name}'"));
+    };
+
+    assign_cvar(cvar, &tokens[1..])
 }
 
 fn assign_cvar(cvar: &ConVar, args: &[String]) -> Result<Option<String>, String> {
@@ -1041,15 +1156,23 @@ mod tests {
     use crate::input::{Action, Binding};
     use crate::platform::KeyCode;
 
-    fn cvar(name: &str, value: ConVarValue) -> Arc<ConVar> {
-        Arc::new(ConVar::new(name, value, "", Some(false), Some(false)))
+    fn cvar(name: &str, value: ConVarValue, replicated: bool) -> Arc<ConVar> {
+        Arc::new(ConVar::new(name, value, "", Some(false), Some(replicated)))
     }
 
     fn side(entries: Vec<(&str, ConVarValue)>) -> ConsoleSide {
+        filled(entries, false)
+    }
+
+    fn replicated_side(entries: Vec<(&str, ConVarValue)>) -> ConsoleSide {
+        filled(entries, true)
+    }
+
+    fn filled(entries: Vec<(&str, ConVarValue)>, replicated: bool) -> ConsoleSide {
         let mut cvars = HashMap::new();
 
         for (name, value) in entries {
-            cvars.insert(name.to_string(), cvar(name, value));
+            cvars.insert(name.to_string(), cvar(name, value, replicated));
         }
 
         ConsoleSide {
@@ -1089,7 +1212,38 @@ mod tests {
     fn server_error_does_not_fall_through() {
         let server = side(Vec::new());
         let client = side(Vec::new());
+        let outcomes = dispatch("bind e", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "server");
+        assert!(outcomes[0].error.is_some());
+        assert_eq!(
+            client.binds.lock().unwrap().get(Binding::Key(KeyCode::KeyE)),
+            None
+        );
+    }
+
+    #[test]
+    fn client_only_demo_commands_run_on_the_client() {
+        let server = side(Vec::new());
+        let client = side(Vec::new());
         let outcomes = dispatch("playdemo demo", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "client");
+        assert!(outcomes[0].error.is_none());
+
+        let queued = demo::drain(Realm::Client);
+        assert!(matches!(
+            queued.first(),
+            Some(demo::DemoCommand::Play { name }) if name == "demo"
+        ));
+    }
+
+    #[test]
+    fn client_only_error_stays_without_a_client() {
+        let server = side(Vec::new());
+        let outcomes = dispatch("playdemo demo", Some(&server), None);
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].side, "server");
@@ -1101,15 +1255,40 @@ mod tests {
 
     #[test]
     fn server_cvar_is_set_on_the_server() {
+        let server = replicated_side(vec![("sv_gravity", ConVarValue::Float(24.0))]);
+        let client = replicated_side(vec![("sv_gravity", ConVarValue::Float(24.0))]);
+        let outcomes = dispatch("sv_gravity 20", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "server");
+        assert!(outcomes[0].error.is_none());
+        assert_eq!(float_of(&server, "sv_gravity"), 20.0);
+        assert_eq!(float_of(&client, "sv_gravity"), 24.0);
+    }
+
+    #[test]
+    fn client_local_cvar_is_set_on_the_client() {
         let server = side(vec![("snd_volume", ConVarValue::Float(1.0))]);
         let client = side(vec![("snd_volume", ConVarValue::Float(1.0))]);
+        let outcomes = dispatch("snd_volume 0.25", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "client");
+        assert!(outcomes[0].error.is_none());
+        assert_eq!(float_of(&client, "snd_volume"), 0.25);
+        assert_eq!(float_of(&server, "snd_volume"), 1.0);
+    }
+
+    #[test]
+    fn local_cvar_without_a_client_copy_stays_on_the_server() {
+        let server = side(vec![("snd_volume", ConVarValue::Float(1.0))]);
+        let client = side(Vec::new());
         let outcomes = dispatch("snd_volume 0.25", Some(&server), Some(&client));
 
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].side, "server");
         assert!(outcomes[0].error.is_none());
         assert_eq!(float_of(&server, "snd_volume"), 0.25);
-        assert_eq!(float_of(&client, "snd_volume"), 1.0);
     }
 
     #[test]
@@ -1185,7 +1364,7 @@ mod tests {
         let server = side(Vec::new());
         let client = side(Vec::new());
         let matches = suggest("rec", Some(&server), Some(&client), &[]);
-        let applied = apply_completion("rec", &matches);
+        let applied = apply_completion("rec", &matches, &mut None);
 
         assert_eq!(applied.line, "record ");
         assert!(applied.list.is_empty());
@@ -1195,17 +1374,16 @@ mod tests {
     fn tab_lists_commands_that_share_a_prefix() {
         let server = side(Vec::new());
         let client = side(Vec::new());
+        let mut cycle = None;
         let first = suggest("d", Some(&server), Some(&client), &[]);
-        let grown = apply_completion("d", &first);
+        let grown = apply_completion("d", &first, &mut cycle);
 
-        assert_eq!(grown.line, "demo_");
-        assert!(grown.list.is_empty());
+        assert_eq!(grown.line, "demo_cam");
+        assert!(grown.list.iter().any(|name| name == "demo_pause"));
 
-        let second = suggest("demo_", Some(&server), Some(&client), &[]);
-        let listed = apply_completion("demo_", &second);
+        let listed = apply_completion(&grown.line, &[], &mut cycle);
 
-        assert_eq!(listed.line, "demo_");
-        assert!(listed.list.len() > 1);
+        assert_eq!(listed.line, "demo_loop");
         assert!(listed.list.iter().any(|name| name == "demo_pause"));
     }
 
@@ -1214,7 +1392,7 @@ mod tests {
         let server = side(vec![("snd_volume", ConVarValue::Float(1.0))]);
         let client = side(Vec::new());
         let matches = suggest("snd", Some(&server), Some(&client), &[]);
-        let applied = apply_completion("snd", &matches);
+        let applied = apply_completion("snd", &matches, &mut None);
 
         assert_eq!(applied.line, "snd_volume ");
     }
@@ -1224,7 +1402,7 @@ mod tests {
         let server = side(Vec::new());
         let client = side(vec![("cl_only", ConVarValue::Float(1.0))]);
         let matches = suggest("cl", Some(&server), Some(&client), &[]);
-        let applied = apply_completion("cl", &matches);
+        let applied = apply_completion("cl", &matches, &mut None);
 
         assert_eq!(applied.line, "cl_only ");
     }
@@ -1235,7 +1413,7 @@ mod tests {
         let client = side(Vec::new());
         let line = "bind e use; rec";
         let matches = suggest(line, Some(&server), Some(&client), &[]);
-        let applied = apply_completion(line, &matches);
+        let applied = apply_completion(line, &matches, &mut None);
 
         assert_eq!(applied.line, "bind e use; record ");
     }
@@ -1245,17 +1423,33 @@ mod tests {
         let server = side(Vec::new());
         let client = side(Vec::new());
         let extra = vec!["hall".to_string(), "hallway".to_string()];
+        let mut cycle = None;
         let matches = suggest("playdemo h", Some(&server), Some(&client), &extra);
-        let applied = apply_completion("playdemo h", &matches);
+        let applied = apply_completion("playdemo h", &matches, &mut cycle);
 
         assert_eq!(applied.line, "playdemo hall");
-        assert!(applied.list.is_empty());
+        assert_eq!(applied.list, vec!["hall".to_string(), "hallway".to_string()]);
 
-        let again = suggest("playdemo hall", Some(&server), Some(&client), &extra);
-        let listed = apply_completion("playdemo hall", &again);
+        let listed = apply_completion(&applied.line, &[], &mut cycle);
 
-        assert_eq!(listed.line, "playdemo hall");
-        assert_eq!(listed.list, vec!["hall".to_string(), "hallway".to_string()]);
+        assert_eq!(listed.line, "playdemo hallway");
+    }
+
+    #[test]
+    fn tab_completes_builtin_arguments() {
+        let server = side(Vec::new());
+        let client = side(Vec::new());
+        let matches = suggest("demo_cam ", Some(&server), Some(&client), &[]);
+        let applied = apply_completion("demo_cam ", &matches, &mut None);
+
+        assert_eq!(applied.line, "demo_cam chase");
+        assert!(applied.list.iter().any(|name| name == "free"));
+
+        let actions = suggest("bind e ", Some(&server), Some(&client), &[]);
+        let filled = apply_completion("bind e ", &actions, &mut None);
+
+        assert_eq!(filled.line, "bind e attack");
+        assert!(filled.list.iter().any(|name| name == "use"));
     }
 
     #[test]

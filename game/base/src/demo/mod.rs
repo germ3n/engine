@@ -97,6 +97,10 @@ pub enum DemoFrame {
         tick: u64,
         entities: Vec<EntityNetworked>,
     },
+    Entities {
+        tick: u64,
+        entities: Vec<EntitySnapshot>,
+    },
 }
 
 impl DemoFrame {
@@ -108,6 +112,7 @@ impl DemoFrame {
             DemoFrame::ServerTick { tick, .. } => *tick,
             DemoFrame::Checkpoint(shot) => shot.tick,
             DemoFrame::NetVars { tick, .. } => *tick,
+            DemoFrame::Entities { tick, .. } => *tick,
         }
     }
 
@@ -864,6 +869,30 @@ pub fn capture_world<In, Out>(
     }
 }
 
+pub fn capture_props<In, Out>(game: &GameState<In, Out>) -> Vec<EntitySnapshot> {
+    let mut entities = Vec::new();
+
+    for (handle, entity) in game.entities.iter() {
+        if !entity.is_spawned() || entity.class_hash() == Player::CLASS_HASH {
+            continue;
+        }
+
+        let base = entity.base();
+        entities.push(EntitySnapshot {
+            handle,
+            class_hash: entity.class_hash(),
+            health: entity.net_health(),
+            position: base.position,
+            angles: base.angles,
+            velocity: base.velocity,
+            ack: 0,
+            anim: base.anim.snapshot(),
+        });
+    }
+
+    entities
+}
+
 pub struct DemoPlay {
     pub reader: DemoReader,
     pub paused: bool,
@@ -970,7 +999,7 @@ impl DemoPlay {
 mod tests {
     use super::*;
     use crate::movement;
-    use crate::network::events::{NetValue, NetVar};
+    use crate::network::events::{AnimSnapshot, NetValue, NetVar};
     use crate::script::libs::angle3::Angle3;
     use crate::script::libs::vector3::Vector3;
     use crate::world::{BrushMap, VoxelWorld};
@@ -1238,6 +1267,48 @@ mod tests {
         assert!((replay_pos.z - full_pos.z).abs() < 1e-4);
         assert!((replay_vel.x - full_vel.x).abs() < 1e-4);
         assert!((replay_vel.z - full_vel.z).abs() < 1e-4);
+    }
+
+    #[test]
+    fn prop_snapshots_roundtrip() {
+        let (file, index) = temp_pair("props");
+        let entity = EntitySnapshot {
+            handle: EntityHandle::new(3, 1),
+            class_hash: 9,
+            health: 40,
+            position: Vector3::new(1.0, 2.0, 3.0),
+            angles: Angle3::new(0.0, 90.0, 0.0),
+            velocity: Vector3::new(0.5, 0.0, 0.0),
+            ack: 0,
+            anim: AnimSnapshot {
+                sequence: 2,
+                gesture: 4,
+                sequence_tick: 8,
+                gesture_tick: 9,
+                sequence_rate: 1.0,
+                gesture_rate: 1.0,
+                gesture_weight: 1.0,
+            },
+        };
+        let mut writer = DemoWriter::create_at(&file, &index, &header()).unwrap();
+        writer
+            .write_frame(&DemoFrame::Entities {
+                tick: 6,
+                entities: vec![entity.clone()],
+            })
+            .unwrap();
+        drop(writer);
+
+        let mut reader = DemoReader::open_at(&file, &index).unwrap();
+        let frame = reader.next_frame().unwrap().unwrap();
+        assert_eq!(frame.tick(), 6);
+        let DemoFrame::Entities { entities, .. } = frame else {
+            panic!("expected entity frame");
+        };
+        assert_eq!(entities.len(), 1);
+        assert!((entities[0].position.x - 1.0).abs() < 1e-9);
+        assert_eq!(entities[0].anim.sequence, 2);
+        assert_eq!(entities[0].anim.gesture, 4);
     }
 
     #[test]

@@ -1849,6 +1849,42 @@ fn dispatch_frame(
         DemoFrame::NetVars { entities, .. } => {
             game.apply_networked(&entities, now);
         }
+        DemoFrame::Entities { tick, entities } => {
+            let mut idx = 0;
+
+            while idx < entities.len() {
+                let snapshot = entities[idx].clone();
+                idx += 1;
+
+                if snapshot.class_hash == Player::CLASS_HASH {
+                    continue;
+                }
+
+                if !game.entities.is_valid(snapshot.handle) {
+                    apply_spawn(
+                        game,
+                        remotes,
+                        now,
+                        game.tick_interval,
+                        snapshot.clone(),
+                        EntityHandle::NULL,
+                        &[],
+                    );
+                    remotes.remove(&snapshot.handle);
+                }
+
+                let Some(entity) = game.entities.get_mut(snapshot.handle) else {
+                    continue;
+                };
+                let base = entity.base_mut();
+                base.position = snapshot.position;
+                base.angles = snapshot.angles;
+                base.velocity = snapshot.velocity;
+                base.anim.apply_remote(&snapshot.anim, tick);
+                base.anim.draw_tick = tick;
+                base.anim.draw_frac = 0.0;
+            }
+        }
     }
 }
 
