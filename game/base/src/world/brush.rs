@@ -1493,51 +1493,10 @@ impl CompiledMap {
     }
 
     pub fn add_box(&mut self, min: Vector3, max: Vector3, texture: &str) -> Option<usize> {
-        if Brush::aabb(min, max, 1).is_none() || !valid_texture(texture) {
-            return None;
-        }
-
-        let material = texture_material(texture);
-        let texture = texture.to_string();
-        let specs = [
-            (Vector3::new(1.0, 0.0, 0.0), max.x),
-            (Vector3::new(-1.0, 0.0, 0.0), -min.x),
-            (Vector3::new(0.0, 1.0, 0.0), max.y),
-            (Vector3::new(0.0, -1.0, 0.0), -min.y),
-            (Vector3::new(0.0, 0.0, 1.0), max.z),
-            (Vector3::new(0.0, 0.0, -1.0), -min.z),
-        ];
-        let mut faces = Vec::with_capacity(specs.len());
-
-        for (normal, distance) in specs {
-            let (axis_u, axis_v) = quake_axes(normal);
-            faces.push(CompiledFace {
-                texture: texture.clone(),
-                normal,
-                distance,
-                material,
-                axis_u,
-                axis_v,
-                shift_u: 0.0,
-                shift_v: 0.0,
-                scale_u: 1.0,
-                scale_v: 1.0,
-            });
-        }
-
+        let brush = box_brush(min, max, texture)?;
         let entity_index = self.worldspawn_index();
-        let mut flat = 0;
-        let mut idx = 0;
-
-        while idx < entity_index {
-            flat += self.entities[idx].brushes.len();
-            idx += 1;
-        }
-
-        flat += self.entities[entity_index].brushes.len();
-        self.entities[entity_index]
-            .brushes
-            .push(CompiledBrush { faces });
+        let flat = self.flat_index(entity_index, self.entities[entity_index].brushes.len());
+        self.entities[entity_index].brushes.push(brush);
 
         Some(flat)
     }
@@ -1720,6 +1679,475 @@ impl CompiledMap {
         true
     }
 
+    pub fn brush_bounds(&self, index: usize) -> Option<(Vector3, Vector3)> {
+        compiled_bounds(self.brush(index)?)
+    }
+
+    pub fn set_brush_size(&mut self, index: usize, size: Vector3) -> bool {
+        if !finite(size) || size.x <= 1e-4 || size.y <= 1e-4 || size.z <= 1e-4 {
+            return false;
+        }
+
+        let Some((min, max)) = self.brush_bounds(index) else {
+            return false;
+        };
+        let old = Vector3::new(max.x - min.x, max.y - min.y, max.z - min.z);
+
+        if (old.x - size.x).abs() < 1e-9
+            && (old.y - size.y).abs() < 1e-9
+            && (old.z - size.z).abs() < 1e-9
+        {
+            return false;
+        }
+
+        if self.brush_box(index).is_some() {
+            return self.set_brush_box(
+                index,
+                min,
+                Vector3::new(min.x + size.x, min.y + size.y, min.z + size.z),
+            );
+        }
+
+        let scale = [size.x / old.x, size.y / old.y, size.z / old.z];
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let backup = brush.faces.clone();
+
+        for face in &mut brush.faces {
+            let normal = face.normal;
+            let raw = Vector3::new(normal.x / scale[0], normal.y / scale[1], normal.z / scale[2]);
+            let len = raw.len();
+
+            if len <= LENGTH_EPS {
+                brush.faces = backup;
+
+                return false;
+            }
+
+            let inv = 1.0 / len;
+            let rhs = face.distance - normal.dot(min) + raw.dot(min);
+            face.normal = Vector3::new(raw.x * inv, raw.y * inv, raw.z * inv);
+            face.distance = rhs * inv;
+        }
+
+        if compiled_bounds(brush).is_none() {
+            brush.faces = backup;
+
+            return false;
+        }
+
+        true
+    }
+
+    pub fn snap_brush(&mut self, index: usize, grid: f64) -> bool {
+        if !grid.is_finite() || grid <= 0.0 {
+            return false;
+        }
+
+        let Some((min, _)) = self.brush_bounds(index) else {
+            return false;
+        };
+        let snapped = Vector3::new(
+            (min.x / grid).round() * grid,
+            (min.y / grid).round() * grid,
+            (min.z / grid).round() * grid,
+        );
+        let delta = Vector3::new(snapped.x - min.x, snapped.y - min.y, snapped.z - min.z);
+
+        if delta.x.abs() < 1e-9 && delta.y.abs() < 1e-9 && delta.z.abs() < 1e-9 {
+            return false;
+        }
+
+        self.translate_brush(index, delta)
+    }
+
+    pub fn flip_brush(&mut self, index: usize, axis: usize) -> bool {
+        if axis > 2 {
+            return false;
+        }
+
+        let Some((min, max)) = self.brush_bounds(index) else {
+            return false;
+        };
+        let center = [
+            (min.x + max.x) * 0.5,
+            (min.y + max.y) * 0.5,
+            (min.z + max.z) * 0.5,
+        ];
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let backup = brush.faces.clone();
+
+        for face in &mut brush.faces {
+            let normal = [face.normal.x, face.normal.y, face.normal.z];
+            let mut flipped = normal;
+            flipped[axis] = -flipped[axis];
+            face.normal = Vector3::new(flipped[0], flipped[1], flipped[2]);
+            face.distance -= 2.0 * normal[axis] * center[axis];
+            face.axis_u = flip_axis(face.axis_u, axis);
+            face.axis_v = flip_axis(face.axis_v, axis);
+        }
+
+        if compiled_bounds(brush).is_none() {
+            brush.faces = backup;
+
+            return false;
+        }
+
+        true
+    }
+
+    pub fn hollow_brush(&mut self, index: usize, thickness: f64) -> Option<usize> {
+        if !thickness.is_finite() || thickness <= 0.0 {
+            return None;
+        }
+
+        let (min, max) = self.brush_box(index)?;
+        let span = [max.x - min.x, max.y - min.y, max.z - min.z];
+
+        if thickness * 2.0 >= span[0] || thickness * 2.0 >= span[1] || thickness * 2.0 >= span[2] {
+            return None;
+        }
+
+        let texture = self.brush(index)?.faces.first()?.texture.clone();
+        let (entity, local) = self.brush_place(index)?;
+        let low_z = min.z + thickness;
+        let high_z = max.z - thickness;
+        let low_y = min.y + thickness;
+        let high_y = max.y - thickness;
+        let walls = [
+            (
+                Vector3::new(min.x, min.y, min.z),
+                Vector3::new(max.x, max.y, low_z),
+            ),
+            (
+                Vector3::new(min.x, min.y, high_z),
+                Vector3::new(max.x, max.y, max.z),
+            ),
+            (
+                Vector3::new(min.x, min.y, low_z),
+                Vector3::new(max.x, low_y, high_z),
+            ),
+            (
+                Vector3::new(min.x, high_y, low_z),
+                Vector3::new(max.x, max.y, high_z),
+            ),
+            (
+                Vector3::new(min.x, low_y, low_z),
+                Vector3::new(min.x + thickness, high_y, high_z),
+            ),
+            (
+                Vector3::new(max.x - thickness, low_y, low_z),
+                Vector3::new(max.x, high_y, high_z),
+            ),
+        ];
+        let mut built = Vec::with_capacity(walls.len());
+
+        for (low, high) in walls {
+            built.push(box_brush(low, high, &texture)?);
+        }
+
+        self.entities[entity].brushes.remove(local);
+        let mut offset = 0;
+
+        while offset < built.len() {
+            let brush = built[offset].clone();
+            self.entities[entity].brushes.insert(local + offset, brush);
+            offset += 1;
+        }
+
+        Some(self.flat_index(entity, local))
+    }
+
+    pub fn paste_brush(&mut self, source: &CompiledBrush, offset: Vector3) -> Option<usize> {
+        if !finite(offset) || source.faces.len() < 4 {
+            return None;
+        }
+
+        let mut copy = source.clone();
+
+        for face in &mut copy.faces {
+            if !valid_texture(&face.texture) || !finite(face.normal) || !face.distance.is_finite() {
+                return None;
+            }
+
+            face.distance += face.normal.dot(offset);
+        }
+
+        if compiled_bounds(&copy).is_none() {
+            return None;
+        }
+
+        let entity = self.worldspawn_index();
+        let local = self.entities[entity].brushes.len();
+        let flat = self.flat_index(entity, local);
+        self.entities[entity].brushes.push(copy);
+
+        Some(flat)
+    }
+
+    pub fn tie_brush(&mut self, index: usize, classname: &str) -> Option<usize> {
+        if classname.is_empty() || !valid_line(classname) {
+            return None;
+        }
+
+        let (entity, local) = self.brush_place(index)?;
+        let already = self.entities[entity].brushes.len() == 1
+            && !self.entity_is_worldspawn(entity)
+            && self.entities[entity]
+                .keys
+                .iter()
+                .any(|pair| pair.key == "classname" && pair.value == classname);
+
+        if already {
+            return None;
+        }
+
+        let brush = self.entities[entity].brushes.remove(local);
+        self.drop_empty_entity(entity);
+        self.entities.push(CompiledEntity {
+            keys: vec![CompiledPair {
+                key: "classname".to_string(),
+                value: classname.to_string(),
+            }],
+            brushes: vec![brush],
+        });
+
+        Some(self.brush_count() - 1)
+    }
+
+    pub fn move_brush_to_world(&mut self, index: usize) -> Option<usize> {
+        let (entity, local) = self.brush_place(index)?;
+
+        if self.entity_is_worldspawn(entity) {
+            return None;
+        }
+
+        let brush = self.entities[entity].brushes.remove(local);
+        self.drop_empty_entity(entity);
+        let world = self.worldspawn_index();
+        let local = self.entities[world].brushes.len();
+        let flat = self.flat_index(world, local);
+        self.entities[world].brushes.push(brush);
+
+        Some(flat)
+    }
+
+    pub fn set_entity_keys(&mut self, index: usize, keys: Vec<(String, String)>) -> bool {
+        if keys.is_empty() {
+            return false;
+        }
+
+        for (key, value) in &keys {
+            if key.is_empty() || !valid_line(key) || !valid_line(value) {
+                return false;
+            }
+        }
+
+        let Some((entity, _)) = self.brush_place(index) else {
+            return false;
+        };
+        let same = self.entities[entity].keys.len() == keys.len()
+            && self.entities[entity]
+                .keys
+                .iter()
+                .zip(&keys)
+                .all(|(pair, (key, value))| pair.key == *key && pair.value == *value);
+
+        if same {
+            return false;
+        }
+
+        self.entities[entity].keys = keys
+            .into_iter()
+            .map(|(key, value)| CompiledPair { key, value })
+            .collect();
+
+        true
+    }
+
+    pub fn set_face_texture(&mut self, index: usize, face: usize, texture: &str) -> bool {
+        if !valid_texture(texture) {
+            return false;
+        }
+
+        let material = texture_material(texture);
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let Some(face) = brush.faces.get_mut(face) else {
+            return false;
+        };
+
+        if face.texture == texture {
+            return false;
+        }
+
+        face.texture = texture.to_string();
+        face.material = material;
+
+        true
+    }
+
+    pub fn set_face_scale(&mut self, index: usize, face: usize, scale_u: f64, scale_v: f64) -> bool {
+        if !scale_u.is_finite() || !scale_v.is_finite() || scale_u.abs() < 1e-6 || scale_v.abs() < 1e-6 {
+            return false;
+        }
+
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let Some(face) = brush.faces.get_mut(face) else {
+            return false;
+        };
+
+        if (face.scale_u - scale_u).abs() < 1e-12 && (face.scale_v - scale_v).abs() < 1e-12 {
+            return false;
+        }
+
+        face.scale_u = scale_u;
+        face.scale_v = scale_v;
+
+        true
+    }
+
+    pub fn set_face_shift(&mut self, index: usize, face: usize, shift_u: f64, shift_v: f64) -> bool {
+        if !shift_u.is_finite() || !shift_v.is_finite() {
+            return false;
+        }
+
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let Some(face) = brush.faces.get_mut(face) else {
+            return false;
+        };
+
+        if (face.shift_u - shift_u).abs() < 1e-12 && (face.shift_v - shift_v).abs() < 1e-12 {
+            return false;
+        }
+
+        face.shift_u = shift_u;
+        face.shift_v = shift_v;
+
+        true
+    }
+
+    pub fn replace_texture(&mut self, from: &str, to: &str, only: Option<usize>) -> usize {
+        if from == to || !valid_texture(to) {
+            return 0;
+        }
+
+        let material = texture_material(to);
+        let mut count = 0;
+        let mut flat = 0;
+
+        for entity in &mut self.entities {
+            for brush in &mut entity.brushes {
+                let hit = match only {
+                    Some(index) => index == flat,
+                    None => true,
+                };
+
+                if hit {
+                    for face in &mut brush.faces {
+                        if face.texture == from {
+                            face.texture = to.to_string();
+                            face.material = material;
+                            count += 1;
+                        }
+                    }
+                }
+
+                flat += 1;
+            }
+        }
+
+        count
+    }
+
+    pub fn problems(&self) -> Vec<(Option<usize>, String)> {
+        let mut out = Vec::new();
+        let mut flat = 0;
+        let mut entity_index = 0;
+
+        while entity_index < self.entities.len() {
+            let entity = &self.entities[entity_index];
+            let mut class = String::new();
+            let mut key = 0;
+
+            while key < entity.keys.len() {
+                let pair = &entity.keys[key];
+
+                if pair.key == "classname" {
+                    class = pair.value.clone();
+                }
+
+                if !valid_line(&pair.key) || !valid_line(&pair.value) {
+                    out.push((
+                        None,
+                        format!("entity {entity_index} has a key that cannot be saved"),
+                    ));
+                }
+
+                key += 1;
+            }
+
+            if class.is_empty() {
+                out.push((
+                    None,
+                    format!("entity {entity_index} has no classname"),
+                ));
+            }
+
+            if entity.brushes.is_empty() && class != "worldspawn" {
+                out.push((
+                    None,
+                    format!("entity {entity_index} ({class}) has no brushes"),
+                ));
+            }
+
+            let mut local = 0;
+
+            while local < entity.brushes.len() {
+                let brush = &entity.brushes[local];
+
+                if brush.faces.len() < 4 {
+                    out.push((Some(flat), format!("brush {flat} has fewer than 4 faces")));
+                }
+
+                if compiled_bounds(brush).is_none() {
+                    out.push((Some(flat), format!("brush {flat} has no volume")));
+                }
+
+                for face in &brush.faces {
+                    if !valid_texture(&face.texture) {
+                        out.push((
+                            Some(flat),
+                            format!("brush {flat} has an invalid texture"),
+                        ));
+                    }
+
+                    if face.scale_u.abs() < 1e-8 || face.scale_v.abs() < 1e-8 {
+                        out.push((
+                            Some(flat),
+                            format!("brush {flat} has a zero texture scale"),
+                        ));
+                    }
+                }
+
+                flat += 1;
+                local += 1;
+            }
+
+            entity_index += 1;
+        }
+
+        out
+    }
+
     pub fn textures(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
 
@@ -1781,6 +2209,59 @@ impl CompiledMap {
         }
 
         None
+    }
+
+    fn brush_place(&self, index: usize) -> Option<(usize, usize)> {
+        let mut cursor = 0;
+        let mut entity = 0;
+
+        while entity < self.entities.len() {
+            let count = self.entities[entity].brushes.len();
+
+            if index < cursor + count {
+                return Some((entity, index - cursor));
+            }
+
+            cursor += count;
+            entity += 1;
+        }
+
+        None
+    }
+
+    fn flat_index(&self, entity: usize, local: usize) -> usize {
+        let mut flat = local;
+        let mut idx = 0;
+
+        while idx < entity && idx < self.entities.len() {
+            flat += self.entities[idx].brushes.len();
+            idx += 1;
+        }
+
+        flat
+    }
+
+    fn entity_is_worldspawn(&self, entity: usize) -> bool {
+        self.entities.get(entity).is_some_and(|entity| {
+            entity
+                .keys
+                .iter()
+                .any(|pair| pair.key == "classname" && pair.value == "worldspawn")
+        })
+    }
+
+    fn drop_empty_entity(&mut self, entity: usize) {
+        if self.entity_is_worldspawn(entity) {
+            return;
+        }
+
+        if self
+            .entities
+            .get(entity)
+            .is_some_and(|entity| entity.brushes.is_empty())
+        {
+            self.entities.remove(entity);
+        }
     }
 }
 
@@ -1894,6 +2375,81 @@ fn format_component(value: f64) -> String {
     }
 
     format!("{value:.17}")
+}
+
+fn box_brush(min: Vector3, max: Vector3, texture: &str) -> Option<CompiledBrush> {
+    if Brush::aabb(min, max, 1).is_none() || !valid_texture(texture) {
+        return None;
+    }
+
+    let material = texture_material(texture);
+    let texture = texture.to_string();
+    let specs = [
+        (Vector3::new(1.0, 0.0, 0.0), max.x),
+        (Vector3::new(-1.0, 0.0, 0.0), -min.x),
+        (Vector3::new(0.0, 1.0, 0.0), max.y),
+        (Vector3::new(0.0, -1.0, 0.0), -min.y),
+        (Vector3::new(0.0, 0.0, 1.0), max.z),
+        (Vector3::new(0.0, 0.0, -1.0), -min.z),
+    ];
+    let mut faces = Vec::with_capacity(specs.len());
+
+    for (normal, distance) in specs {
+        let (axis_u, axis_v) = quake_axes(normal);
+        faces.push(CompiledFace {
+            texture: texture.clone(),
+            normal,
+            distance,
+            material,
+            axis_u,
+            axis_v,
+            shift_u: 0.0,
+            shift_v: 0.0,
+            scale_u: 1.0,
+            scale_v: 1.0,
+        });
+    }
+
+    Some(CompiledBrush { faces })
+}
+
+fn compiled_bounds(brush: &CompiledBrush) -> Option<(Vector3, Vector3)> {
+    let mut planes = Vec::with_capacity(brush.faces.len());
+
+    for face in &brush.faces {
+        planes.push(Plane::new(face.normal, face.distance, face.material)?);
+    }
+
+    let points = vertices(&planes);
+
+    if points.is_empty() {
+        return None;
+    }
+
+    let mut min = points[0];
+    let mut max = points[0];
+
+    for point in &points[1..] {
+        min.x = min.x.min(point.x);
+        min.y = min.y.min(point.y);
+        min.z = min.z.min(point.z);
+        max.x = max.x.max(point.x);
+        max.y = max.y.max(point.y);
+        max.z = max.z.max(point.z);
+    }
+
+    if !finite(min) || !finite(max) || max.x <= min.x || max.y <= min.y || max.z <= min.z {
+        return None;
+    }
+
+    Some((min, max))
+}
+
+fn flip_axis(value: Vector3, axis: usize) -> Vector3 {
+    let mut coords = [value.x, value.y, value.z];
+    coords[axis] = -coords[axis];
+
+    Vector3::new(coords[0], coords[1], coords[2])
 }
 
 fn box_axis(normal: [f64; 3]) -> Option<usize> {
@@ -3722,6 +4278,190 @@ mod tests {
                 Vector3::new(1001.0, 0.5, 0.5),
             )
             .is_none());
+    }
+
+    #[test]
+    fn brush_size_keeps_the_minimum_corner() {
+        let mut map = CompiledMap::worldspawn();
+
+        assert!(map
+            .add_box(
+                Vector3::new(1.0, 2.0, 3.0),
+                Vector3::new(3.0, 6.0, 4.0),
+                "solid"
+            )
+            .is_some());
+        assert!(map.set_brush_size(0, Vector3::new(5.0, 4.0, 1.0)));
+        let (min, max) = map.brush_box(0).unwrap();
+
+        assert!(near(min.x, 1.0));
+        assert!(near(min.y, 2.0));
+        assert!(near(min.z, 3.0));
+        assert!(near(max.x - min.x, 5.0));
+        assert!(near(max.y - min.y, 4.0));
+        assert!(near(max.z - min.z, 1.0));
+        assert!(!map.set_brush_size(0, Vector3::new(5.0, 4.0, 1.0)));
+    }
+
+    #[test]
+    fn ramp_size_scales_about_the_minimum_corner() {
+        let (_, mut map) = CompiledMap::open_source("hall").unwrap();
+        let mut index = 0;
+        let mut ramp = None;
+
+        while index < map.brush_count() {
+            if map.brush_box(index).is_none() {
+                ramp = Some(index);
+
+                break;
+            }
+
+            index += 1;
+        }
+
+        let index = ramp.expect("hall has a ramp");
+        let (min, max) = map.brush_bounds(index).unwrap();
+        let size = Vector3::new((max.x - min.x) * 2.0, max.y - min.y, max.z - min.z);
+
+        assert!(map.set_brush_size(index, size));
+        let (low, high) = map.brush_bounds(index).unwrap();
+
+        assert!(near(low.x, min.x));
+        assert!(near(low.y, min.y));
+        assert!(near(low.z, min.z));
+        assert!(near(high.x - low.x, size.x));
+        assert!(near(high.y - low.y, size.y));
+        assert!(near(high.z - low.z, size.z));
+    }
+
+    #[test]
+    fn snap_moves_the_minimum_corner_onto_the_grid() {
+        let mut map = CompiledMap::worldspawn();
+
+        assert!(map
+            .add_box(
+                Vector3::new(0.4, 0.2, 1.0),
+                Vector3::new(2.4, 1.2, 2.0),
+                "solid"
+            )
+            .is_some());
+        assert!(map.snap_brush(0, 1.0));
+        let (min, max) = map.brush_box(0).unwrap();
+
+        assert!(near(min.x, 0.0));
+        assert!(near(min.y, 0.0));
+        assert!(near(min.z, 1.0));
+        assert!(near(max.x - min.x, 2.0));
+        assert!(near(max.y - min.y, 1.0));
+        assert!(!map.snap_brush(0, 1.0));
+    }
+
+    #[test]
+    fn flip_reverses_a_ramp_and_a_second_flip_restores_it() {
+        let (_, mut map) = CompiledMap::open_source("hall").unwrap();
+        let mut index = 0;
+        let mut ramp = None;
+
+        while index < map.brush_count() {
+            if map.brush_box(index).is_none() {
+                ramp = Some(index);
+
+                break;
+            }
+
+            index += 1;
+        }
+
+        let index = ramp.expect("hall has a ramp");
+        let before = map.brush(index).unwrap().clone();
+        let (min, max) = map.brush_bounds(index).unwrap();
+
+        assert!(map.flip_brush(index, 0));
+        let (low, high) = map.brush_bounds(index).unwrap();
+
+        assert!(near(low.x, min.x));
+        assert!(near(high.x, max.x));
+        assert!(map.flip_brush(index, 0));
+
+        let after = map.brush(index).unwrap();
+        assert_eq!(before.faces.len(), after.faces.len());
+        let mut face = 0;
+
+        while face < before.faces.len() {
+            assert!(near(before.faces[face].normal.x, after.faces[face].normal.x));
+            assert!(near(before.faces[face].distance, after.faces[face].distance));
+            face += 1;
+        }
+    }
+
+    #[test]
+    fn hollow_replaces_a_box_with_six_walls() {
+        let mut map = CompiledMap::worldspawn();
+
+        assert!(map
+            .add_box(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(10.0, 8.0, 6.0),
+                "solid"
+            )
+            .is_some());
+        assert!(map.hollow_brush(0, 5.0).is_none());
+        assert_eq!(map.hollow_brush(0, 1.0), Some(0));
+        assert_eq!(map.brush_count(), 6);
+        let (min, max) = map.brush_box(0).unwrap();
+
+        assert!(near(min.z, 0.0));
+        assert!(near(max.z, 1.0));
+        assert!(near(max.x - min.x, 10.0));
+        assert!(near(max.y - min.y, 8.0));
+    }
+
+    #[test]
+    fn tie_and_move_to_world_keep_the_brush() {
+        let mut map = CompiledMap::worldspawn();
+
+        assert!(map
+            .add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), "solid")
+            .is_some());
+        let tied = map.tie_brush(0, "func_detail").unwrap();
+
+        assert_eq!(map.brush_count(), 1);
+        assert!(map.brush_owner(tied).unwrap().keys.iter().any(|pair| {
+            pair.key == "classname" && pair.value == "func_detail"
+        }));
+        assert!(map.tie_brush(tied, "func_detail").is_none());
+        let world = map.move_brush_to_world(tied).unwrap();
+
+        assert!(map.brush_owner(world).unwrap().keys.iter().any(|pair| {
+            pair.key == "classname" && pair.value == "worldspawn"
+        }));
+        assert!(map.move_brush_to_world(world).is_none());
+    }
+
+    #[test]
+    fn replace_texture_rewrites_matching_faces() {
+        let mut map = CompiledMap::worldspawn();
+
+        assert!(map
+            .add_box(Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0), "solid")
+            .is_some());
+        assert_eq!(map.replace_texture("solid", "floor", None), 6);
+        assert_eq!(map.brush(0).unwrap().faces[0].texture, "floor");
+        assert_eq!(map.replace_texture("missing", "floor", None), 0);
+    }
+
+    #[test]
+    fn problems_flag_an_entity_with_no_classname() {
+        let mut map = CompiledMap::worldspawn();
+        map.entities.push(CompiledEntity {
+            keys: Vec::new(),
+            brushes: Vec::new(),
+        });
+        let problems = map.problems();
+
+        assert!(problems
+            .iter()
+            .any(|(_, text)| text.contains("no classname")));
     }
 
     fn faces_point_outward(mesh: &[f32], center: [f32; 3]) -> bool {

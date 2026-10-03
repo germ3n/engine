@@ -10,7 +10,7 @@ use crate::ui::voxel::FlyCamera;
 use crate::ui::window::Window;
 use crate::world::{
     block_rgb, find_voxel_file, texture_name_ok, Block, BlockPos, BrushHit, BrushMap,
-    CompiledEntity, CompiledMap, Face, TraceHit, VoxelWorld,
+    CompiledBrush, CompiledEntity, CompiledMap, Face, TraceHit, VoxelWorld,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -154,6 +154,17 @@ struct Editor {
     confirm: Option<Confirm>,
     quit: bool,
     fps: f32,
+    clipboard: Option<CompiledBrush>,
+    wall: f64,
+    tie_class: String,
+    entity_draft: Vec<(String, String)>,
+    entity_brush: Option<usize>,
+    draft_rev: u64,
+    doc_rev: u64,
+    find_tex: String,
+    swap_tex: String,
+    show_replace: bool,
+    show_problems: bool,
 }
 
 pub fn run(map_name: &str) {
@@ -541,6 +552,17 @@ fn open_editor(name: &str) -> Result<Editor, String> {
         confirm: None,
         quit: false,
         fps: 60.0,
+        clipboard: None,
+        wall: 1.0,
+        tie_class: "func_detail".to_string(),
+        entity_draft: Vec::new(),
+        entity_brush: None,
+        draft_rev: 0,
+        doc_rev: 0,
+        find_tex: String::new(),
+        swap_tex: String::new(),
+        show_replace: false,
+        show_problems: false,
     })
 }
 
@@ -700,6 +722,11 @@ impl Editor {
                 KeyCode::KeyZ => self.undo(),
                 KeyCode::KeyY => self.redo(),
                 KeyCode::KeyD if !repeat => self.duplicate_selection(),
+                KeyCode::KeyC if !repeat => self.copy_selection(),
+                KeyCode::KeyV if !repeat => self.paste_selection(),
+                KeyCode::KeyB if !repeat => self.snap_selection(),
+                KeyCode::KeyT if shift && !repeat => self.tie_selection(),
+                KeyCode::KeyW if shift && !repeat => self.move_selection_to_world(),
                 _ => {}
             }
 
@@ -720,8 +747,20 @@ impl Editor {
             KeyCode::KeyT => self.cycle_texture(),
             KeyCode::KeyF => self.focus_selection(),
             KeyCode::F1 => self.view.help = !self.view.help,
-            KeyCode::BracketLeft => self.bump_block(-1),
-            KeyCode::BracketRight => self.bump_block(1),
+            KeyCode::BracketLeft => {
+                if self.mode == Mode::Brush {
+                    self.step_grid(-1);
+                } else {
+                    self.bump_block(-1);
+                }
+            }
+            KeyCode::BracketRight => {
+                if self.mode == Mode::Brush {
+                    self.step_grid(1);
+                } else {
+                    self.bump_block(1);
+                }
+            }
             KeyCode::Minus => self.bump_size(-1),
             KeyCode::Equal => self.bump_size(1),
             KeyCode::ArrowLeft => self.nudge(-self.grid, 0.0, 0.0),
@@ -1098,6 +1137,254 @@ impl Editor {
         });
     }
 
+    fn set_size(&mut self, index: usize, size: [f64; 3]) {
+        if self.mode != Mode::Brush {
+            self.set_mode(Mode::Brush);
+        }
+
+        self.selected = Some(index);
+        let Some((min, max)) = self.document.brush_bounds(index) else {
+            return;
+        };
+        let same = (max.x - min.x - size[0]).abs() < 1e-9
+            && (max.y - min.y - size[1]).abs() < 1e-9
+            && (max.z - min.z - size[2]).abs() < 1e-9;
+
+        if same {
+            return;
+        }
+
+        let size = Vector3::new(size[0], size[1], size[2]);
+
+        if !self.edit("resize brush", Some(("resize", index)), |document| {
+            document.set_brush_size(index, size)
+        }) {
+            self.warn("that size does not fit this brush");
+        }
+    }
+
+    fn copy_selection(&mut self) {
+        let Some(index) = self.selected else {
+            self.notify("select a brush first");
+
+            return;
+        };
+        let Some(brush) = self.document.brush(index).cloned() else {
+            return;
+        };
+
+        self.clipboard = Some(brush);
+        self.notify(format!("copied brush {index}"));
+    }
+
+    fn paste_selection(&mut self) {
+        let Some(brush) = self.clipboard.clone() else {
+            self.notify("clipboard is empty");
+
+            return;
+        };
+
+        if self.mode != Mode::Brush {
+            self.set_mode(Mode::Brush);
+        }
+
+        let offset = Vector3::new(self.grid, self.grid, 0.0);
+        let mut created = None;
+        let pasted = self.edit("paste brush", None, |document| {
+            created = document.paste_brush(&brush, offset);
+
+            created.is_some()
+        });
+
+        if pasted {
+            self.selected = created;
+            self.notify("pasted brush");
+        }
+    }
+
+    fn snap_selection(&mut self) {
+        let Some(index) = self.selected else {
+            self.notify("select a brush first");
+
+            return;
+        };
+        let grid = self.grid;
+
+        if self.edit("snap brush", None, |document| document.snap_brush(index, grid)) {
+            self.notify(format!("snapped brush {index} to the grid"));
+        } else {
+            self.notify("brush is already on the grid");
+        }
+    }
+
+    fn flip_selection(&mut self, axis: usize) {
+        let Some(index) = self.selected else {
+            return;
+        };
+        let name = ["X", "Y", "Z"][axis];
+
+        if self.edit("flip brush", None, |document| document.flip_brush(index, axis)) {
+            self.notify(format!("flipped brush {index} on {name}"));
+        }
+    }
+
+    fn hollow_selection(&mut self) {
+        let Some(index) = self.selected else {
+            self.notify("select a brush first");
+
+            return;
+        };
+        let thickness = self.wall;
+        let mut created = None;
+        let hollowed = self.edit("hollow brush", None, |document| {
+            created = document.hollow_brush(index, thickness);
+
+            created.is_some()
+        });
+
+        if hollowed {
+            self.selected = created;
+            self.notify(format!("hollowed brush {index}"));
+        } else {
+            self.warn("hollow needs a box thicker than twice the wall");
+        }
+    }
+
+    fn tie_selection(&mut self) {
+        let Some(index) = self.selected else {
+            self.notify("select a brush first");
+
+            return;
+        };
+        let class = self.tie_class.trim().to_string();
+
+        if class.is_empty() {
+            self.warn("enter a classname first");
+
+            return;
+        }
+
+        let mut created = None;
+        let tied = self.edit("tie to entity", None, |document| {
+            created = document.tie_brush(index, &class);
+
+            created.is_some()
+        });
+
+        if tied {
+            self.selected = created;
+            self.entity_brush = None;
+            self.notify(format!("tied brush to {class}"));
+        } else {
+            self.warn("could not tie that brush");
+        }
+    }
+
+    fn move_selection_to_world(&mut self) {
+        let Some(index) = self.selected else {
+            self.notify("select a brush first");
+
+            return;
+        };
+        let mut created = None;
+        let moved = self.edit("move to world", None, |document| {
+            created = document.move_brush_to_world(index);
+
+            created.is_some()
+        });
+
+        if moved {
+            self.selected = created;
+            self.entity_brush = None;
+            self.notify("moved brush to the world");
+        } else {
+            self.notify("brush is already in the world");
+        }
+    }
+
+    fn replace_textures(&mut self, selection_only: bool) {
+        let from = self.find_tex.trim().to_string();
+        let to = self.swap_tex.trim().to_string();
+
+        if from.is_empty() || to.is_empty() {
+            self.warn("enter both texture names");
+
+            return;
+        }
+
+        if selection_only && self.selected.is_none() {
+            self.warn("select a brush first");
+
+            return;
+        }
+
+        let only = if selection_only { self.selected } else { None };
+        let mut count = 0;
+        let replaced = self.edit("replace textures", None, |document| {
+            count = document.replace_texture(&from, &to, only);
+
+            count > 0
+        });
+
+        if replaced {
+            self.notify(format!("replaced {count} faces"));
+        } else {
+            self.warn(format!("no faces use {from}"));
+        }
+    }
+
+    fn commit_entity_draft(&mut self) {
+        let Some(index) = self.selected else {
+            return;
+        };
+
+        if !entity_keys_ok(&self.entity_draft) {
+            return;
+        }
+
+        let keys = self.entity_draft.clone();
+        self.edit("edit entity", Some(("entity", index)), |document| {
+            document.set_entity_keys(index, keys)
+        });
+        self.draft_rev = self.doc_rev;
+    }
+
+    fn ensure_entity_draft(&mut self) {
+        if self.entity_brush == self.selected && self.draft_rev == self.doc_rev {
+            return;
+        }
+
+        self.entity_brush = self.selected;
+        self.draft_rev = self.doc_rev;
+        self.entity_draft = match self.selected.and_then(|index| self.document.brush_owner(index)) {
+            Some(entity) => entity
+                .keys
+                .iter()
+                .map(|pair| (pair.key.clone(), pair.value.clone()))
+                .collect(),
+            None => Vec::new(),
+        };
+    }
+
+    fn paint_face_texture(&mut self, index: usize, face: usize) {
+        let texture = self.texture.clone();
+        self.edit("texture face", Some(("face-tex", index)), |document| {
+            document.set_face_texture(index, face, &texture)
+        });
+    }
+
+    fn paint_face_scale(&mut self, index: usize, face: usize, scale_u: f64, scale_v: f64) {
+        self.edit("texture scale", Some(("face-scale", index)), |document| {
+            document.set_face_scale(index, face, scale_u, scale_v)
+        });
+    }
+
+    fn paint_face_shift(&mut self, index: usize, face: usize, shift_u: f64, shift_v: f64) {
+        self.edit("texture shift", Some(("face-shift", index)), |document| {
+            document.set_face_shift(index, face, shift_u, shift_v)
+        });
+    }
+
     fn save(&mut self) {
         self.end_stroke();
         let compiled = match self.document.save_source(&self.map_path) {
@@ -1196,6 +1483,8 @@ impl Editor {
         {
             self.selected = None;
         }
+
+        self.doc_rev = self.doc_rev.wrapping_add(1);
     }
 
     fn cancel(&mut self) {
@@ -1256,6 +1545,31 @@ impl Editor {
         while idx < GRIDS.len() {
             if (GRIDS[idx] - self.grid).abs() < 1e-6 {
                 self.grid = GRIDS[(idx + 1) % GRIDS.len()];
+                self.notify(format!("grid {}", number_label(self.grid)));
+
+                return;
+            }
+
+            idx += 1;
+        }
+
+        self.grid = 1.0;
+        self.notify(format!("grid {}", number_label(self.grid)));
+    }
+
+    fn step_grid(&mut self, dir: i32) {
+        let mut idx = 0;
+
+        while idx < GRIDS.len() {
+            if (GRIDS[idx] - self.grid).abs() < 1e-6 {
+                let next = idx as i32 + dir;
+
+                if next < 0 || next as usize >= GRIDS.len() {
+                    return;
+                }
+
+                self.grid = GRIDS[next as usize];
+                self.notify(format!("grid {}", number_label(self.grid)));
 
                 return;
             }
@@ -1401,6 +1715,8 @@ fn draw_ui(ctx: &egui::Context, editor: &mut Editor, aim: &Aim) {
     viewport_overlay(ctx, editor, aim);
     help_window(ctx, editor);
     confirm_modal(ctx, editor);
+    replace_window(ctx, editor);
+    problems_window(ctx, editor);
 }
 
 fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
@@ -1408,6 +1724,9 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
     let undo_key = command_key(ctx, egui::Key::Z, false);
     let redo_key = command_key(ctx, egui::Key::Z, true);
     let duplicate_key = command_key(ctx, egui::Key::D, false);
+    let copy_key = command_key(ctx, egui::Key::C, false);
+    let paste_key = command_key(ctx, egui::Key::V, false);
+    let snap_key = command_key(ctx, egui::Key::B, false);
 
     egui::TopBottomPanel::top("menu").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
@@ -1494,6 +1813,92 @@ fn menu_bar(ctx: &egui::Context, editor: &mut Editor) {
                     .clicked()
                 {
                     editor.selected = None;
+                    ui.close_menu();
+                }
+
+                ui.separator();
+
+                if ui
+                    .add_enabled(selected, egui::Button::new("Copy brush").shortcut_text(&copy_key))
+                    .clicked()
+                {
+                    editor.copy_selection();
+                    ui.close_menu();
+                }
+
+                if ui
+                    .add_enabled(
+                        editor.clipboard.is_some(),
+                        egui::Button::new("Paste brush").shortcut_text(&paste_key),
+                    )
+                    .clicked()
+                {
+                    editor.paste_selection();
+                    ui.close_menu();
+                }
+            });
+            ui.menu_button("Tools", |ui| {
+                let selected = editor.mode == Mode::Brush && editor.selected.is_some();
+
+                if ui
+                    .add_enabled(selected, egui::Button::new("Snap to grid").shortcut_text(&snap_key))
+                    .clicked()
+                {
+                    editor.snap_selection();
+                    ui.close_menu();
+                }
+
+                ui.menu_button("Flip", |ui| {
+                    if ui.add_enabled(selected, egui::Button::new("Flip X")).clicked() {
+                        editor.flip_selection(0);
+                        ui.close_menu();
+                    }
+
+                    if ui.add_enabled(selected, egui::Button::new("Flip Y")).clicked() {
+                        editor.flip_selection(1);
+                        ui.close_menu();
+                    }
+
+                    if ui.add_enabled(selected, egui::Button::new("Flip Z")).clicked() {
+                        editor.flip_selection(2);
+                        ui.close_menu();
+                    }
+                });
+
+                if ui
+                    .add_enabled(selected, egui::Button::new("Hollow"))
+                    .on_hover_text("Wall thickness is set in the inspector")
+                    .clicked()
+                {
+                    editor.hollow_selection();
+                    ui.close_menu();
+                }
+
+                ui.separator();
+
+                if ui
+                    .add_enabled(selected, egui::Button::new("Tie to entity"))
+                    .on_hover_text("Uses the classname in the inspector")
+                    .clicked()
+                {
+                    editor.tie_selection();
+                    ui.close_menu();
+                }
+
+                if ui.add_enabled(selected, egui::Button::new("Move to world")).clicked() {
+                    editor.move_selection_to_world();
+                    ui.close_menu();
+                }
+
+                ui.separator();
+
+                if ui.button("Replace textures…").clicked() {
+                    editor.show_replace = true;
+                    ui.close_menu();
+                }
+
+                if ui.button("Check for problems").clicked() {
+                    editor.show_problems = true;
                     ui.close_menu();
                 }
             });
@@ -1752,8 +2157,8 @@ fn status_bar(ctx: &egui::Context, editor: &mut Editor, aim: &Aim) {
 fn outliner(ctx: &egui::Context, editor: &mut Editor) {
     egui::SidePanel::left("outliner")
         .resizable(true)
-        .default_width(250.0)
-        .width_range(190.0..=460.0)
+        .default_width(360.0)
+        .width_range(280.0..=560.0)
         .show(ctx, |ui| {
             ui.add_space(4.0);
             section(ui, "Map");
@@ -1790,37 +2195,49 @@ fn outliner(ctx: &egui::Context, editor: &mut Editor) {
                 .collect();
             ui.label(
                 egui::RichText::new(if filter.is_empty() {
-                    format!("{total} brushes · double-click to focus")
+                    format!("{total} brushes · drag a size, the near corner stays put")
                 } else {
                     format!("{} of {total} brushes", rows.len())
                 })
                 .small()
                 .color(MUTED),
             );
-            let row_height = ui.spacing().interact_size.y;
+            ui.horizontal(|ui| {
+                let height = ui.spacing().interact_size.y;
+                ui.add_space(4.0);
+                ui.add_sized([48.0, height], egui::Label::new(egui::RichText::new("#").small().color(MUTED)));
+                ui.add_sized(
+                    [96.0, height],
+                    egui::Label::new(egui::RichText::new("texture").small().color(MUTED)),
+                );
+                ui.add_sized(
+                    [62.0, height],
+                    egui::Label::new(egui::RichText::new("X").small().color(egui::Color32::from_rgb(230, 90, 90))),
+                );
+                ui.add_sized(
+                    [62.0, height],
+                    egui::Label::new(
+                        egui::RichText::new("Y")
+                            .small()
+                            .color(egui::Color32::from_rgb(110, 210, 120)),
+                    ),
+                );
+                ui.add_sized(
+                    [62.0, height],
+                    egui::Label::new(
+                        egui::RichText::new("Z")
+                            .small()
+                            .color(egui::Color32::from_rgb(100, 150, 255)),
+                    ),
+                );
+            });
+            let row_height = ui.spacing().interact_size.y + 6.0;
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show_rows(ui, row_height, rows.len(), |ui, range| {
-                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-                        for row in range {
-                            let index = rows[row];
-                            let text = brush_row(editor, index);
-                            let response = ui.selectable_label(editor.selected == Some(index), text);
-
-                            if response.hovered() {
-                                editor.hover = Some(index);
-                            }
-
-                            if response.clicked() {
-                                editor.select(index);
-                            }
-
-                            if response.double_clicked() {
-                                editor.select(index);
-                                editor.focus_selection();
-                            }
-                        }
-                    });
+                    for row in range {
+                        brush_line(ui, editor, rows[row]);
+                    }
                 });
         });
 }
@@ -1911,6 +2328,8 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
                 let mut low = [min.x, min.y, min.z];
                 let mut high = [max.x, max.y, max.z];
                 let mut changed = false;
+                let mut size_changed = false;
+                let mut dims = [max.x - min.x, max.y - min.y, max.z - min.z];
                 let speed = (editor.grid * 0.05).max(0.01);
                 egui::Grid::new("bounds")
                     .num_columns(4)
@@ -1940,10 +2359,18 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
 
                         ui.end_row();
                         ui.label(egui::RichText::new("Size").color(MUTED));
+                        dims = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
                         let mut axis = 0;
 
                         while axis < 3 {
-                            ui.label(number_label(high[axis] - low[axis]));
+                            size_changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut dims[axis])
+                                        .speed(speed)
+                                        .range(0.01..=1.0e7)
+                                        .max_decimals(3),
+                                )
+                                .changed();
                             axis += 1;
                         }
 
@@ -1952,16 +2379,37 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
 
                 if changed {
                     editor.resize_selection(low, high);
+                } else if size_changed {
+                    editor.set_size(index, dims);
                 }
-            } else if let Some((min, max)) = editor.brushes.bounds(index) {
+            } else if let Some((min, max)) = editor.document.brush_bounds(index) {
+                let mut dims = [max.x - min.x, max.y - min.y, max.z - min.z];
+                let mut size_changed = false;
+                let speed = (editor.grid * 0.25).max(0.01);
+                ui.horizontal(|ui| {
+                    caption(ui, "SIZE");
+                    let mut axis = 0;
+
+                    while axis < 3 {
+                        size_changed |= ui
+                            .add(
+                                egui::DragValue::new(&mut dims[axis])
+                                    .speed(speed)
+                                    .range(0.01..=1.0e7)
+                                    .max_decimals(3),
+                            )
+                            .changed();
+                        axis += 1;
+                    }
+                });
+
+                if size_changed {
+                    editor.set_size(index, dims);
+                }
+
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Bounds {} → {}  ({})",
-                        point_label(min),
-                        point_label(max),
-                        size_label(min, max)
-                    ))
-                    .color(MUTED),
+                    egui::RichText::new("Sloped brush. Size keeps the near corner where it is.")
+                        .color(MUTED),
                 );
             }
 
@@ -2010,6 +2458,9 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
                     editor.delete_selection();
                 }
             });
+            brush_tools(ui, editor);
+            entity_fields(ui, editor);
+            face_fields(ui, editor, index);
         }
     }
 
@@ -2061,6 +2512,417 @@ fn brush_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
             ui.label(format!("Height offset {}", number_label(editor.lift)));
         }
     }
+}
+
+fn brush_line(ui: &mut egui::Ui, editor: &mut Editor, index: usize) {
+    let selected = editor.selected == Some(index);
+    let texture = brush_texture(&editor.document, index);
+    let owner = editor
+        .document
+        .brush_owner(index)
+        .map(entity_class)
+        .unwrap_or_default();
+    let bounds = editor.document.brush_bounds(index);
+    let name = if owner.is_empty() || owner == "worldspawn" {
+        texture
+    } else {
+        format!("{texture}  [{owner}]")
+    };
+
+    ui.push_id(index, |ui| {
+        let mut frame = egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 1));
+
+        if selected {
+            frame = frame.fill(ui.visuals().selection.bg_fill).corner_radius(4);
+        }
+
+        let response = frame
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let height = ui.spacing().interact_size.y;
+                    let id = ui.add_sized(
+                        [48.0, height],
+                        egui::Label::new(
+                            egui::RichText::new(format!("#{index}"))
+                                .monospace()
+                                .strong(),
+                        )
+                        .sense(egui::Sense::click()),
+                    );
+
+                    if id.clicked() {
+                        editor.select(index);
+                    }
+
+                    if id.double_clicked() {
+                        editor.select(index);
+                        editor.focus_selection();
+                    }
+
+                    let name = ui.add_sized(
+                        [96.0, height],
+                        egui::Label::new(egui::RichText::new(name).monospace())
+                            .truncate()
+                            .sense(egui::Sense::click()),
+                    );
+
+                    if name.clicked() {
+                        editor.select(index);
+                    }
+
+                    if name.double_clicked() {
+                        editor.select(index);
+                        editor.focus_selection();
+                    }
+
+                    let Some((min, max)) = bounds else {
+                        ui.label(egui::RichText::new("—").color(MUTED));
+
+                        return;
+                    };
+                    let mut dims = [max.x - min.x, max.y - min.y, max.z - min.z];
+                    let speed = (editor.grid * 0.25).max(0.01);
+                    let mut changed = false;
+                    let mut axis = 0;
+
+                    while axis < 3 {
+                        let drag = ui.add_sized(
+                            [62.0, height],
+                            egui::DragValue::new(&mut dims[axis])
+                                .speed(speed)
+                                .range(0.01..=1.0e7)
+                                .max_decimals(3),
+                        );
+
+                        if drag.clicked() || drag.drag_started() {
+                            editor.select(index);
+                        }
+
+                        changed |= drag.changed();
+                        axis += 1;
+                    }
+
+                    if changed {
+                        editor.set_size(index, dims);
+                    }
+                });
+            })
+            .response;
+
+        if response.hovered() || response.clicked() {
+            editor.hover = Some(index);
+        }
+    });
+}
+
+fn brush_tools(ui: &mut egui::Ui, editor: &mut Editor) {
+    section(ui, "Tools");
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Snap to grid").clicked() {
+            editor.snap_selection();
+        }
+
+        if ui.button("Flip X").clicked() {
+            editor.flip_selection(0);
+        }
+
+        if ui.button("Flip Y").clicked() {
+            editor.flip_selection(1);
+        }
+
+        if ui.button("Flip Z").clicked() {
+            editor.flip_selection(2);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut editor.wall)
+                .speed(0.1)
+                .range(0.01..=1.0e4)
+                .max_decimals(3)
+                .prefix("wall "),
+        );
+
+        if ui.button("Hollow").clicked() {
+            editor.hollow_selection();
+        }
+    });
+    ui.label(
+        egui::RichText::new("Hollow turns a box into six walls. Ramps and wedges are left alone.")
+            .small()
+            .color(MUTED),
+    );
+}
+
+fn entity_fields(ui: &mut egui::Ui, editor: &mut Editor) {
+    section(ui, "Entity");
+    editor.ensure_entity_draft();
+    let shared = editor
+        .selected
+        .and_then(|index| editor.document.brush_owner(index))
+        .map(|entity| entity.brushes.len())
+        .unwrap_or(0);
+
+    if shared > 1 {
+        ui.label(
+            egui::RichText::new(format!("Shared by {shared} brushes"))
+                .small()
+                .color(WARN),
+        );
+    }
+
+    let mut changed = false;
+    let mut remove_at = None;
+    let mut row = 0;
+
+    while row < editor.entity_draft.len() {
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut editor.entity_draft[row].0)
+                        .desired_width(100.0)
+                        .hint_text("key"),
+                )
+                .changed();
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut editor.entity_draft[row].1)
+                        .desired_width(120.0)
+                        .hint_text("value"),
+                )
+                .changed();
+
+            if editor.entity_draft.len() > 1 && ui.small_button("×").clicked() {
+                remove_at = Some(row);
+            }
+        });
+        row += 1;
+    }
+
+    if let Some(row) = remove_at {
+        editor.entity_draft.remove(row);
+        changed = true;
+    }
+
+    if ui.button("Add key").clicked() {
+        editor.entity_draft.push(("key".to_string(), "value".to_string()));
+        changed = true;
+    }
+
+    if changed {
+        editor.commit_entity_draft();
+    }
+
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut editor.tie_class)
+                .desired_width(120.0)
+                .hint_text("classname"),
+        );
+
+        if ui.button("Tie to entity").clicked() {
+            editor.tie_selection();
+        }
+    });
+
+    if ui.button("Move to world").clicked() {
+        editor.move_selection_to_world();
+    }
+}
+
+fn face_fields(ui: &mut egui::Ui, editor: &mut Editor, index: usize) {
+    let faces: Vec<(String, Vector3, f64, f64, f64, f64)> = match editor.document.brush(index) {
+        Some(brush) => brush
+            .faces
+            .iter()
+            .map(|face| {
+                (
+                    face.texture.clone(),
+                    face.normal,
+                    face.scale_u,
+                    face.scale_v,
+                    face.shift_u,
+                    face.shift_v,
+                )
+            })
+            .collect(),
+        None => return,
+    };
+
+    section(ui, "Faces");
+    ui.label(
+        egui::RichText::new("Scale and shift stay on the face. Set applies the current texture.")
+            .small()
+            .color(MUTED),
+    );
+    let mut face = 0;
+
+    while face < faces.len() {
+        let (texture, normal, mut scale_u, mut scale_v, mut shift_u, mut shift_v) = faces[face].clone();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(face_label(normal)).monospace().color(ACCENT));
+            ui.label(egui::RichText::new(texture).color(MUTED));
+
+            if ui.small_button("Set").clicked() {
+                editor.paint_face_texture(index, face);
+            }
+
+            caption(ui, "SCALE");
+            let scale_changed = ui
+                .add(egui::DragValue::new(&mut scale_u).speed(0.05).max_decimals(3))
+                .changed()
+                | ui.add(egui::DragValue::new(&mut scale_v).speed(0.05).max_decimals(3))
+                    .changed();
+
+            if scale_changed {
+                editor.paint_face_scale(index, face, scale_u, scale_v);
+            }
+
+            caption(ui, "SHIFT");
+            let shift_changed = ui
+                .add(egui::DragValue::new(&mut shift_u).speed(0.5).max_decimals(3))
+                .changed()
+                | ui.add(egui::DragValue::new(&mut shift_v).speed(0.5).max_decimals(3))
+                    .changed();
+
+            if shift_changed {
+                editor.paint_face_shift(index, face, shift_u, shift_v);
+            }
+        });
+        face += 1;
+    }
+}
+
+fn replace_window(ctx: &egui::Context, editor: &mut Editor) {
+    if !editor.show_replace {
+        return;
+    }
+
+    let mut open = editor.show_replace;
+    let mut scope = None;
+    egui::Window::new("Replace textures")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.set_min_width(280.0);
+            ui.label("Swap a texture on every face, or only the selected brush.");
+            ui.horizontal(|ui| {
+                ui.label("Find");
+                ui.add(
+                    egui::TextEdit::singleline(&mut editor.find_tex)
+                        .hint_text("solid")
+                        .desired_width(160.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Replace");
+                ui.add(
+                    egui::TextEdit::singleline(&mut editor.swap_tex)
+                        .hint_text("floor")
+                        .desired_width(160.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Replace in map").clicked() {
+                    scope = Some(false);
+                }
+
+                if ui.button("Selected brush").clicked() {
+                    scope = Some(true);
+                }
+            });
+        });
+    editor.show_replace = open;
+
+    if let Some(selection_only) = scope {
+        editor.replace_textures(selection_only);
+    }
+}
+
+fn problems_window(ctx: &egui::Context, editor: &mut Editor) {
+    if !editor.show_problems {
+        return;
+    }
+
+    let problems = editor.document.problems();
+    let mut open = editor.show_problems;
+    let mut pick = None;
+    egui::Window::new("Check for problems")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(420.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            if problems.is_empty() {
+                ui.label(egui::RichText::new("No problems found.").color(GOOD));
+
+                return;
+            }
+
+            ui.label(format!("{} problems", problems.len()));
+            egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                let mut idx = 0;
+
+                while idx < problems.len() {
+                    let (brush, text) = &problems[idx];
+
+                    if ui.button(text).clicked() {
+                        pick = *brush;
+                    }
+
+                    idx += 1;
+                }
+            });
+        });
+    editor.show_problems = open;
+
+    if let Some(index) = pick {
+        editor.select(index);
+        editor.focus_selection();
+    }
+}
+
+fn entity_keys_ok(keys: &[(String, String)]) -> bool {
+    if keys.is_empty() {
+        return false;
+    }
+
+    for (key, value) in keys {
+        if key.is_empty()
+            || key.contains('\n')
+            || key.contains('\r')
+            || value.contains('\n')
+            || value.contains('\r')
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn face_label(normal: Vector3) -> String {
+    let names = ["X", "Y", "Z"];
+    let coords = [normal.x, normal.y, normal.z];
+    let mut axis = 0;
+
+    while axis < 3 {
+        let other_a = coords[(axis + 1) % 3].abs();
+        let other_b = coords[(axis + 2) % 3].abs();
+
+        if (coords[axis].abs() - 1.0).abs() < 1e-4 && other_a < 1e-4 && other_b < 1e-4 {
+            let sign = if coords[axis] > 0.0 { "+" } else { "−" };
+
+            return format!("{sign}{}", names[axis]);
+        }
+
+        axis += 1;
+    }
+
+    "slope".to_string()
 }
 
 fn voxel_inspector(ui: &mut egui::Ui, editor: &mut Editor) {
@@ -2211,8 +3073,8 @@ fn help_window(ctx: &egui::Context, editor: &mut Editor) {
                 ("Tab, B, V".to_string(), "switch mode"),
                 ("1 / 2".to_string(), "select or box, paint or erase"),
                 ("G".to_string(), "cycle grid size"),
+                ("[ / ]".to_string(), "grid size, or voxel block"),
                 ("T".to_string(), "cycle texture"),
-                ("[ / ] or wheel".to_string(), "cycle voxel block"),
                 ("- / =".to_string(), "voxel brush size"),
             ],
         ),
@@ -2223,6 +3085,9 @@ fn help_window(ctx: &egui::Context, editor: &mut Editor) {
                 ("Arrows, Q / E".to_string(), "nudge selection"),
                 ("Delete".to_string(), "delete brush / erase voxels"),
                 (format!("{command}+D"), "duplicate brush"),
+                (format!("{command}+C"), "copy brush"),
+                (format!("{command}+V"), "paste brush"),
+                (format!("{command}+B"), "snap brush to the grid"),
                 (format!("{command}+Z"), "undo"),
                 (format!("{command}+Shift+Z"), "redo"),
                 ("Esc".to_string(), "cancel / deselect"),
@@ -2482,27 +3347,6 @@ fn brush_matches(editor: &Editor, index: usize, filter: &str) -> bool {
         .document
         .brush_owner(index)
         .is_some_and(|entity| entity_class(entity).to_lowercase().contains(filter))
-}
-
-fn brush_row(editor: &Editor, index: usize) -> egui::RichText {
-    let texture = brush_texture(&editor.document, index);
-    let size = editor
-        .brushes
-        .bounds(index)
-        .map(|(min, max)| size_label(min, max))
-        .unwrap_or_default();
-    let owner = editor
-        .document
-        .brush_owner(index)
-        .map(entity_class)
-        .unwrap_or_default();
-    let owner = if owner == "worldspawn" {
-        String::new()
-    } else {
-        format!("  [{owner}]")
-    };
-
-    egui::RichText::new(format!("#{index:<4} {texture:<10} {size}{owner}")).monospace()
 }
 
 fn number_label(value: f64) -> String {
@@ -3281,6 +4125,43 @@ mod tests {
         let (low, high) = brush_cells(BlockPos::new(0, 0, 0), 4);
 
         assert_eq!(high.x - low.x + 1, 4);
+    }
+
+    #[test]
+    fn copy_paste_snaps_and_resizes() {
+        let mut editor = open_editor("hall").unwrap();
+        let texture = editor.texture.clone();
+        let mut created = None;
+
+        assert!(editor.edit("add brush", None, |document| {
+            created = document.add_box(
+                Vector3::new(0.4, 0.2, 0.0),
+                Vector3::new(2.4, 1.2, 1.0),
+                &texture,
+            );
+
+            created.is_some()
+        }));
+        let index = created.unwrap();
+        editor.selected = Some(index);
+        editor.set_size(index, [4.0, 1.0, 1.0]);
+        let (min, max) = editor.document.brush_box(index).unwrap();
+
+        assert!((min.x - 0.4).abs() < 1e-6);
+        assert!((max.x - min.x - 4.0).abs() < 1e-6);
+
+        editor.grid = 1.0;
+        editor.snap_selection();
+        let (min, _) = editor.document.brush_box(editor.selected.unwrap()).unwrap();
+
+        assert!((min.x - 0.0).abs() < 1e-6);
+        assert!((min.y - 0.0).abs() < 1e-6);
+
+        editor.copy_selection();
+        let count = editor.document.brush_count();
+        editor.paste_selection();
+
+        assert_eq!(editor.document.brush_count(), count + 1);
     }
 
     #[test]

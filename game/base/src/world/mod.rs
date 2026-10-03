@@ -8,8 +8,8 @@ mod voxel;
 use std::path::PathBuf;
 
 pub use brush::{
-    compile_map, texture_name_ok, BrushEdit, BrushHit, BrushMap, BrushPlane, CompiledEntity,
-    CompiledMap,
+    compile_map, texture_name_ok, BrushEdit, BrushHit, BrushMap, BrushPlane, CompiledBrush,
+    CompiledEntity, CompiledMap,
 };
 pub use material::{image_from_vtf, image_rgba, read_texture};
 pub use surface::{
