@@ -7,15 +7,18 @@ mod voxel;
 
 use std::path::PathBuf;
 
-pub use brush::{compile_map, BrushEdit, BrushHit, BrushMap, BrushPlane, CompiledMap};
+pub use brush::{
+    compile_map, texture_name_ok, BrushEdit, BrushHit, BrushMap, BrushPlane, CompiledEntity,
+    CompiledMap,
+};
 pub use material::{image_from_vtf, image_rgba, read_texture};
 pub use surface::{
     push_shaded_tri, DrawMesh, MapGraphics, SurfaceRange, CUBEMAP_NONE, MATERIAL_NONE, PASS_OPAQUE,
     STRIDE,
 };
 pub use voxel::{
-    cwd_vmap_path, find_voxel_file, Block, BlockPos, ChunkPos, ChunkUpdate, Face, TraceHit,
-    VoxelWorld, CHUNK_EDGE,
+    block_rgb, cwd_vmap_path, find_voxel_file, Block, BlockPos, ChunkPos, ChunkUpdate, Face,
+    TraceHit, VoxelWorld, CHUNK_EDGE,
 };
 
 pub(crate) fn content_dirs() -> Vec<PathBuf> {

@@ -489,6 +489,12 @@ impl BrushMap {
         self.revision
     }
 
+    pub fn bounds(&self, index: usize) -> Option<(Vector3, Vector3)> {
+        let aabb = self.bounds.get(index)?;
+
+        Some((aabb.min, aabb.max))
+    }
+
     pub fn hulls(&self) -> Vec<Vec<Vector3>> {
         let mut out = Vec::with_capacity(self.brushes.len());
         let mut idx = 0;
@@ -1569,6 +1575,167 @@ impl CompiledMap {
         true
     }
 
+    pub fn brush(&self, index: usize) -> Option<&CompiledBrush> {
+        let mut cursor = 0;
+
+        for entity in &self.entities {
+            if index < cursor + entity.brushes.len() {
+                return Some(&entity.brushes[index - cursor]);
+            }
+
+            cursor += entity.brushes.len();
+        }
+
+        None
+    }
+
+    pub fn brush_owner(&self, index: usize) -> Option<&CompiledEntity> {
+        let mut cursor = 0;
+
+        for entity in &self.entities {
+            if index < cursor + entity.brushes.len() {
+                return Some(entity);
+            }
+
+            cursor += entity.brushes.len();
+        }
+
+        None
+    }
+
+    pub fn set_brush_texture(&mut self, index: usize, texture: &str) -> bool {
+        if !valid_texture(texture) {
+            return false;
+        }
+
+        let material = texture_material(texture);
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let mut changed = false;
+
+        for face in &mut brush.faces {
+            if face.texture != texture {
+                face.texture = texture.to_string();
+                face.material = material;
+                changed = true;
+            }
+        }
+
+        changed
+    }
+
+    pub fn duplicate_brush(&mut self, index: usize, offset: Vector3) -> Option<usize> {
+        if !finite(offset) {
+            return None;
+        }
+
+        let mut cursor = 0;
+        let mut idx = 0;
+
+        while idx < self.entities.len() {
+            let count = self.entities[idx].brushes.len();
+
+            if index < cursor + count {
+                let mut copy = self.entities[idx].brushes[index - cursor].clone();
+
+                for face in &mut copy.faces {
+                    face.distance += face.normal.x * offset.x
+                        + face.normal.y * offset.y
+                        + face.normal.z * offset.z;
+                }
+
+                self.entities[idx].brushes.push(copy);
+
+                return Some(cursor + count);
+            }
+
+            cursor += count;
+            idx += 1;
+        }
+
+        None
+    }
+
+    pub fn brush_box(&self, index: usize) -> Option<(Vector3, Vector3)> {
+        let brush = self.brush(index)?;
+        let mut min = [f64::NAN; 3];
+        let mut max = [f64::NAN; 3];
+
+        for face in &brush.faces {
+            let normal = [face.normal.x, face.normal.y, face.normal.z];
+            let axis = box_axis(normal)?;
+
+            if normal[axis] > 0.0 {
+                max[axis] = face.distance;
+            } else {
+                min[axis] = -face.distance;
+            }
+        }
+
+        let mut axis = 0;
+
+        while axis < 3 {
+            if !min[axis].is_finite() || !max[axis].is_finite() || max[axis] <= min[axis] {
+                return None;
+            }
+
+            axis += 1;
+        }
+
+        Some((
+            Vector3::new(min[0], min[1], min[2]),
+            Vector3::new(max[0], max[1], max[2]),
+        ))
+    }
+
+    pub fn set_brush_box(&mut self, index: usize, min: Vector3, max: Vector3) -> bool {
+        if !finite(min) || !finite(max) || max.x <= min.x || max.y <= min.y || max.z <= min.z {
+            return false;
+        }
+
+        if self.brush_box(index).is_none() {
+            return false;
+        }
+
+        let Some(brush) = self.brush_mut(index) else {
+            return false;
+        };
+        let low = [min.x, min.y, min.z];
+        let high = [max.x, max.y, max.z];
+
+        for face in &mut brush.faces {
+            let normal = [face.normal.x, face.normal.y, face.normal.z];
+            let Some(axis) = box_axis(normal) else {
+                return false;
+            };
+
+            face.distance = if normal[axis] > 0.0 {
+                high[axis]
+            } else {
+                -low[axis]
+            };
+        }
+
+        true
+    }
+
+    pub fn textures(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+
+        for entity in &self.entities {
+            for brush in &entity.brushes {
+                for face in &brush.faces {
+                    if !out.iter().any(|name| name == &face.texture) {
+                        out.push(face.texture.clone());
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
     fn worldspawn_index(&mut self) -> usize {
         let mut idx = 0;
 
@@ -1727,6 +1894,27 @@ fn format_component(value: f64) -> String {
     }
 
     format!("{value:.17}")
+}
+
+fn box_axis(normal: [f64; 3]) -> Option<usize> {
+    let mut axis = 0;
+
+    while axis < 3 {
+        let other_a = normal[(axis + 1) % 3];
+        let other_b = normal[(axis + 2) % 3];
+
+        if (normal[axis].abs() - 1.0).abs() < 1e-9 && other_a.abs() < 1e-9 && other_b.abs() < 1e-9 {
+            return Some(axis);
+        }
+
+        axis += 1;
+    }
+
+    None
+}
+
+pub fn texture_name_ok(texture: &str) -> bool {
+    valid_texture(texture)
 }
 
 fn valid_texture(texture: &str) -> bool {

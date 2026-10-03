@@ -2019,6 +2019,45 @@ impl crate::ui::gfx::BackendGpu for MetalWindow {
         );
     }
 
+    fn draw_screen(
+        &mut self,
+        verts: &[f32],
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if verts.len() < crate::ui::gfx::SCREEN_FLOATS {
+            return;
+        }
+
+        let pipeline = self.text_pipeline.clone();
+        let mut constants = [0.0; 16];
+        let (width, height) = if self.bound_color.is_some() {
+            (self.bound_size.0 as f32, self.bound_size.1 as f32)
+        } else {
+            (self.width as f32, self.height as f32)
+        };
+        constants[0] = width;
+        constants[1] = height;
+        let texture = texture
+            .and_then(|item| item.as_metal())
+            .map(|item| item.texture.clone())
+            .unwrap_or_else(|| self.white.clone());
+        let sampler = sampler
+            .and_then(|item| item.as_metal())
+            .map(|item| item.state.clone())
+            .unwrap_or_else(|| self.clamp_sampler.clone());
+        self.push_user(
+            verts.to_vec(),
+            &pipeline,
+            Some(&texture),
+            Some(&sampler),
+            false,
+            constants,
+            16,
+            crate::ui::gfx::SCREEN_FLOATS as u64,
+        );
+    }
+
     fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
         let source = match index {
             crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),

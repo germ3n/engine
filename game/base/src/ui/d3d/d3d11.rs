@@ -1623,6 +1623,41 @@ impl crate::ui::gfx::BackendGpu for D3D11Window {
         });
     }
 
+    fn draw_screen(
+        &mut self,
+        verts: &[f32],
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if verts.len() < crate::ui::gfx::SCREEN_FLOATS {
+            return;
+        }
+
+        let bytes = bytes_of(verts);
+        let Ok(buffer) = write_dynamic(&self.device, &self.context, None, bytes, 32) else {
+            return;
+        };
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        self.user.push(DxUser {
+            buffer,
+            vs: self.text_vs.clone(),
+            ps: self.text_ps.clone(),
+            layout: self.text_layout.clone(),
+            texture: texture.and_then(|item| item.as_d3d11()).map(|item| item.view.clone()),
+            sampler: sampler
+                .and_then(|item| item.as_d3d11())
+                .map(|item| item.state.clone())
+                .or_else(|| Some(self.sampler.clone())),
+            count: (verts.len() / crate::ui::gfx::SCREEN_FLOATS) as u32,
+            depth: false,
+            constants,
+            rtv: self.bound_rtv.clone(),
+            dsv: self.bound_dsv.clone(),
+        });
+    }
+
     fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
         let source = match index {
             crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),

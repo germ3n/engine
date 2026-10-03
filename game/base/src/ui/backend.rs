@@ -8,6 +8,7 @@ use crate::ui::voxel::SceneView;
 use crate::ui::vulkan::VulkanWindow;
 use crate::ui::window::Window;
 use crate::ui::Color;
+use crate::world::surface::CpuImage;
 
 pub struct GfxWindow {
     gpu: Store,
@@ -38,6 +39,15 @@ fn host(backend: Backend) -> GfxWindow {
 }
 
 pub fn create(surface: &Surface) -> GfxWindow {
+    pick(surface, true)
+}
+
+pub fn create_tool(surface: &Surface) -> GfxWindow {
+    pick(surface, std::env::var("ENGINE_GFX").is_ok())
+}
+
+#[allow(unused_variables)]
+fn pick(surface: &Surface, allow_d3d12: bool) -> GfxWindow {
     #[cfg(target_os = "ios")]
     {
         log::info!("[gfx] metal");
@@ -62,7 +72,7 @@ pub fn create(surface: &Surface) -> GfxWindow {
     }
 
     #[cfg(windows)]
-    if chosen("d3d12") {
+    if allow_d3d12 && chosen("d3d12") {
         match crate::ui::d3d::D3D12Window::try_new(surface) {
             Ok(window) => {
                 log::info!("[gfx] d3d12");
@@ -320,6 +330,26 @@ impl GfxWindow {
             Ok(texture) => self.gpu.put_texture(id, texture, true, false, None),
             Err(err) => log::warn!("[gfx] texture {err}"),
         }
+    }
+
+    pub fn create_image(&mut self, id: u32, image: &CpuImage) {
+        match self.with_backend(|window| window.make_texture(image)) {
+            Ok(texture) => self.gpu.put_texture(id, texture, true, false, None),
+            Err(err) => log::warn!("[gfx] image {err}"),
+        }
+    }
+
+    pub fn draw_screen(&mut self, verts: &[f32], texture: u32, sampler: u32) {
+        let texture_item = if texture == 0 {
+            self.resolve_texture(gfx::TEX_WHITE)
+        } else {
+            self.resolve_texture(texture)
+        };
+        let sampler_item = self.resolve_sampler(sampler);
+
+        self.with_backend(|window| {
+            window.draw_screen(verts, texture_item.as_ref(), sampler_item.as_ref());
+        });
     }
 
     pub fn create_material(&mut self, id: u32, name: &str) {

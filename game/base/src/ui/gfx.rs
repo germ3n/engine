@@ -1237,6 +1237,7 @@ pub trait BackendGpu {
         sampler: Option<&Sampler>,
         view: &SceneView,
     );
+    fn draw_screen(&mut self, verts: &[f32], texture: Option<&Texture>, sampler: Option<&Sampler>);
     fn draw_text_user(
         &mut self,
         text: &str,

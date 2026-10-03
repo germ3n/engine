@@ -1398,7 +1398,7 @@ fn push_block(
     }
 }
 
-fn block_rgb(id: u16) -> [f32; 3] {
+pub fn block_rgb(id: u16) -> [f32; 3] {
     let color = match id {
         1 => [0.45, 0.45, 0.48],
         2 => [0.45, 0.32, 0.18],

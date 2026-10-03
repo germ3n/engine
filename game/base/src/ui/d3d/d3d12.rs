@@ -1861,6 +1861,16 @@ impl crate::ui::gfx::BackendGpu for D3D12Window {
         });
     }
 
+    fn draw_screen(
+        &mut self,
+        _verts: &[f32],
+        _texture: Option<&crate::ui::gfx::Texture>,
+        _sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        static WARN: std::sync::Once = std::sync::Once::new();
+        WARN.call_once(|| log::warn!("[gfx] d3d12 cannot draw textured screen meshes"));
+    }
+
     fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
         let source = match index {
             crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),

@@ -3724,6 +3724,23 @@ impl crate::ui::gfx::BackendGpu for OpenGLWindow {
         }
     }
 
+    fn draw_screen(
+        &mut self,
+        verts: &[f32],
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        let texture = texture
+            .and_then(|item| item.as_opengl())
+            .map(|item| item.name)
+            .or(Some(self.colored_mesh.white));
+        let sampler = sampler
+            .and_then(|item| item.as_opengl())
+            .map(|item| item.name)
+            .or(Some(self.clamp_sampler));
+        self.draw_screen_verts(verts, self.sprite, texture, sampler);
+    }
+
     fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
         let source = match index {
             crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),

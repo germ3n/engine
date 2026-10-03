@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod gfx;
+pub mod gui;
 pub mod batch;
 pub mod color;
 pub mod d3d;

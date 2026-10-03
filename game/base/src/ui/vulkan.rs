@@ -3170,6 +3170,40 @@ impl crate::ui::gfx::BackendGpu for VulkanWindow {
         let _ = self.push_user(&verts, pipeline, layout, view, sampler, constants, 16, 8);
     }
 
+    fn draw_screen(
+        &mut self,
+        verts: &[f32],
+        texture: Option<&crate::ui::gfx::Texture>,
+        sampler: Option<&crate::ui::gfx::Sampler>,
+    ) {
+        if verts.len() < crate::ui::gfx::SCREEN_FLOATS {
+            return;
+        }
+
+        let mut constants = [0.0; 16];
+        constants[0] = self.width as f32;
+        constants[1] = self.height as f32;
+        let view = texture
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.view)
+            .unwrap_or(vk::ImageView::null());
+        let sampler = sampler
+            .and_then(|item| item.as_vulkan())
+            .map(|item| item.sampler)
+            .or(self.clamp_sampler)
+            .unwrap_or(vk::Sampler::null());
+        let _ = self.push_user(
+            verts,
+            self.pipes.text,
+            self.pipes.text_layout,
+            view,
+            sampler,
+            constants,
+            16,
+            8,
+        );
+    }
+
     fn builtin_shader(&mut self, index: u32) -> Option<crate::ui::gfx::Shader> {
         let source = match index {
             crate::ui::gfx::IDX_MESH => crate::ui::shaders::Program::Mesh.wgsl(),
