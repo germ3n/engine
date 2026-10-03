@@ -18,8 +18,8 @@ use crate::network::{
     OUTBOUND_CAP, RECV_BUDGET,
 };
 use crate::platform::{
-    DeviceEvent, ElementState, Event, HostKind, KeyCode, MouseButton, PlatformHost, Touch,
-    TouchPhase, WindowEvent,
+    DeviceEvent, ElementState, Event, HostKind, KeyCode, MouseButton, MouseScrollDelta,
+    PlatformHost, Touch, TouchPhase, WindowEvent,
 };
 use crate::r#enum::InputButtons;
 use crate::script::engine::DrawCommand;
@@ -289,24 +289,69 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                 WindowEvent::Resized { width, height } => {
                     client_window.set_size(width, height);
                 }
+                WindowEvent::Focused(focused) => {
+                    if !focused {
+                        game.script_engine.pointer.lock().unwrap().release_all();
+                        keys.clear();
+                        mouse.clear();
+                    }
+                }
+                WindowEvent::ModifiersChanged(mods) => {
+                    let mut pointer = game.script_engine.pointer.lock().unwrap();
+                    pointer.shift = mods.shift;
+                    pointer.control = mods.control;
+                    pointer.alt = mods.alt;
+                    pointer.super_key = mods.super_key;
+                }
                 WindowEvent::KeyboardInput(input) => {
                     if let Some(code) = input.key_code {
-                        if code == KeyCode::BracketLeft && input.state == ElementState::Pressed {
-                            game.send_reliable(ClientToServer::ScaleMaps { ratio: 0.5 });
-                        } else if code == KeyCode::BracketRight
-                            && input.state == ElementState::Pressed
-                        {
-                            game.send_reliable(ClientToServer::ScaleMaps { ratio: 2.0 });
-                        } else if code == KeyCode::Escape && input.state == ElementState::Pressed {
-                            captured = false;
-                            mouse.clear();
-                            host.set_cursor_grabbed(false);
-                        } else if input.state == ElementState::Pressed {
-                            keys.insert(code);
-                        } else {
+                        let pressed = input.state == ElementState::Pressed;
+                        game.script_engine
+                            .pointer
+                            .lock()
+                            .unwrap()
+                            .set_key(code, pressed);
+
+                        let mut consumed = false;
+
+                        if pressed {
+                            let name = crate::script::libs::input::key_label(code);
+                            let handled: Option<bool> =
+                                game.run_hook("GuiKeyPressed", (name, input.repeat));
+                            consumed = handled == Some(true);
+                        }
+
+                        if !consumed {
+                            if code == KeyCode::BracketLeft && pressed {
+                                game.send_reliable(ClientToServer::ScaleMaps { ratio: 0.5 });
+                            } else if code == KeyCode::BracketRight && pressed {
+                                game.send_reliable(ClientToServer::ScaleMaps { ratio: 2.0 });
+                            } else if code == KeyCode::Escape && pressed {
+                                captured = false;
+                                mouse.clear();
+                                host.set_cursor_grabbed(false);
+                            } else if pressed {
+                                keys.insert(code);
+                            } else {
+                                keys.remove(&code);
+                            }
+                        } else if !pressed {
                             keys.remove(&code);
                         }
                     }
+                }
+                WindowEvent::TextInput { text } => {
+                    game.script_engine.pointer.lock().unwrap().push_text(&text);
+                    let _: Option<bool> = game.run_hook("GuiText", text);
+                }
+                WindowEvent::MouseWheel { delta } => {
+                    let (x, y) = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
+                        MouseScrollDelta::PixelDelta(x, y) => (x, y),
+                    };
+                    let mut pointer = game.script_engine.pointer.lock().unwrap();
+                    pointer.wheel_x += x;
+                    pointer.wheel_y += y;
                 }
                 WindowEvent::CursorMoved { x, y } => {
                     let mut pointer = game.script_engine.pointer.lock().unwrap();
@@ -677,8 +722,8 @@ pub fn client_loop(mut game: GameState<FromServer, ClientToServer>, shutdown: Ar
                     );
                     client_window.render_text();
                     client_window.present();
+                    game.script_engine.pointer.lock().unwrap().end_frame();
                 }
-                _ => (),
             },
             Event::Device(DeviceEvent::MouseMotion { delta }) => {
                 if captured && !client_window.vr_input().active {

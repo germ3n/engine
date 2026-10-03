@@ -209,9 +209,56 @@ mod tests {
                 surface.push_scissor(50, 50, 100, 100)
                 surface.pop_scissor()
                 surface.pop_scissor()
+                assert(input.key_down("w") == false)
+                assert(input.typed() == "")
+                assert(input.wheel() == 0)
                 "#,
             )
             .exec()
             .unwrap();
+        {
+            let mut pointer = engine.pointer.lock().unwrap();
+            pointer.set_key(crate::platform::KeyCode::KeyW, true);
+            pointer.push_text("Ab");
+            pointer.shift = true;
+            pointer.wheel_y = -1.0;
+        }
+        let down: bool = engine
+            .lua
+            .load("return input.key_down('W')")
+            .eval()
+            .unwrap();
+        let pressed: bool = engine
+            .lua
+            .load("return input.key_pressed('w')")
+            .eval()
+            .unwrap();
+        let typed: String = engine.lua.load("return input.typed()").eval().unwrap();
+        let shift: bool = engine.lua.load("return input.shift()").eval().unwrap();
+        let wheel_y: f64 = engine
+            .lua
+            .load("return select(2, input.wheel())")
+            .eval()
+            .unwrap();
+        assert!(down);
+        assert!(pressed);
+        assert_eq!(typed, "Ab");
+        assert!(shift);
+        assert_eq!(wheel_y, -1.0);
+        engine.pointer.lock().unwrap().end_frame();
+        let typed_after: String = engine.lua.load("return input.typed()").eval().unwrap();
+        let pressed_after: bool = engine
+            .lua
+            .load("return input.key_pressed('w')")
+            .eval()
+            .unwrap();
+        let still_down: bool = engine
+            .lua
+            .load("return input.key_down('w')")
+            .eval()
+            .unwrap();
+        assert_eq!(typed_after, "");
+        assert!(!pressed_after);
+        assert!(still_down);
     }
 }

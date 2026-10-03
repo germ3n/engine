@@ -418,7 +418,7 @@ pub fn load_or_defaults(path: &Path) -> Binds {
     binds
 }
 
-fn key_name(code: KeyCode) -> &'static str {
+pub(crate) fn key_name(code: KeyCode) -> &'static str {
     match code {
         KeyCode::Escape => "escape",
         KeyCode::Enter => "enter",
@@ -526,7 +526,7 @@ fn key_name(code: KeyCode) -> &'static str {
     }
 }
 
-fn parse_key(name: &str) -> Option<KeyCode> {
+pub(crate) fn parse_key(name: &str) -> Option<KeyCode> {
     Some(match name {
         "escape" | "esc" => KeyCode::Escape,
         "enter" | "return" => KeyCode::Enter,
