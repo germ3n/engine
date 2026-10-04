@@ -5,7 +5,7 @@ use crate::entities::{EntityHandle, Player, ScriptedEntity};
 use crate::input::Action;
 use crate::movement::{self, NetPose, Prediction, UserCommand};
 use crate::network::events::{
-    EntityModel, EntityNetworked, EntityOwnership, EntitySnapshot, NetVar,
+    EntityBones, EntityModel, EntityNetworked, EntityOwnership, EntitySnapshot, NetVar,
 };
 use crate::network::packet::{
     bundle_part, owned_payload, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT,
@@ -123,6 +123,7 @@ struct BuiltSnapshot {
     networked: Vec<EntityNetworked>,
     owners: Vec<EntityOwnership>,
     models: Vec<EntityModel>,
+    bones: Vec<EntityBones>,
 }
 
 struct SnapshotIngress {
@@ -136,6 +137,7 @@ struct SnapshotIngress {
             Vec<EntityNetworked>,
             Vec<EntityOwnership>,
             Vec<EntityModel>,
+            Vec<EntityBones>,
         )>,
     >,
 }
@@ -161,6 +163,7 @@ impl SnapshotIngress {
         networked: Vec<EntityNetworked>,
         owners: Vec<EntityOwnership>,
         models: Vec<EntityModel>,
+        bones: Vec<EntityBones>,
     ) -> Option<BuiltSnapshot> {
         if part_count == 0 || part >= part_count || part_count > 1024 {
             return None;
@@ -182,7 +185,7 @@ impl SnapshotIngress {
         }
 
         if self.parts[part as usize].is_none() {
-            self.parts[part as usize] = Some((entities, networked, owners, models));
+            self.parts[part as usize] = Some((entities, networked, owners, models, bones));
             self.filled = self.filled.saturating_add(1);
         }
 
@@ -194,12 +197,14 @@ impl SnapshotIngress {
         let mut built_networked = Vec::new();
         let mut built_owners = Vec::new();
         let mut built_models = Vec::new();
+        let mut built_bones = Vec::new();
         for slot in self.parts.drain(..) {
-            if let Some((batch, networked, owners, models)) = slot {
+            if let Some((batch, networked, owners, models, bones)) = slot {
                 built_entities.extend(batch);
                 built_networked.extend(networked);
                 built_owners.extend(owners);
                 built_models.extend(models);
+                built_bones.extend(bones);
             }
         }
 
@@ -209,6 +214,7 @@ impl SnapshotIngress {
             networked: built_networked,
             owners: built_owners,
             models: built_models,
+            bones: built_bones,
         };
         self.filled = 0;
         self.part_count = 0;
@@ -903,21 +909,23 @@ pub fn client_loop(
                                 networked,
                                 owners,
                                 models,
+                                bones,
                             } = message
                             {
                                 log::info!(
-                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={} models={})",
+                                    "[cl] WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={} models={} bones={})",
                                     entities.len(),
                                     networked.len(),
                                     owners.len(),
-                                    models.len()
+                                    models.len(),
+                                    bones.len()
                                 );
 
                                 if generation == world_generation {
                                     if let Some(built) = snapshot_ingress
                                         .push(
                                             generation, reset, part, parts, entities, networked,
-                                            owners, models,
+                                            owners, models, bones,
                                         )
                                     {
                                         if built.reset {
@@ -968,6 +976,10 @@ pub fn client_loop(
 
                                         for model in built.models {
                                             apply_anim_model(&mut game, model);
+                                        }
+
+                                        for bones in built.bones {
+                                            apply_anim_bones(&mut game, bones);
                                         }
 
                                         hold_events = false;
@@ -2132,6 +2144,13 @@ fn apply_world_shot(
         idx += 1;
     }
 
+    idx = 0;
+
+    while idx < shot.bones.len() {
+        apply_anim_bones(game, shot.bones[idx].clone());
+        idx += 1;
+    }
+
     let playing = game.sound.baseline();
     idx = 0;
 
@@ -2927,6 +2946,8 @@ fn apply_server_event(
                     if let Some(entity) = game.entities.get_mut(anim.handle) {
                         entity.base_mut().anim.apply_remote(&anim.anim, player.ack);
                     }
+
+                    game.anims.apply_bone_net(anim.handle.0, &anim.bones);
                 }
 
                 reconcile_player(game, prediction, &player, &entities);
@@ -2943,6 +2964,15 @@ fn apply_server_event(
                     handle,
                     mesh,
                     clips,
+                },
+            );
+        }
+        ServerToClient::AnimBones { handle, bones } => {
+            apply_anim_bones(
+                game,
+                EntityBones {
+                    handle,
+                    bones,
                 },
             );
         }
@@ -3871,6 +3901,10 @@ fn apply_anim_model(game: &mut GameState<FromServer, ClientToServer>, model: Ent
         entity.base_mut().anim.mesh = mesh;
         entity.base_mut().anim.clips = clips;
     }
+}
+
+fn apply_anim_bones(game: &mut GameState<FromServer, ClientToServer>, bones: EntityBones) {
+    game.anims.apply_bone_net(bones.handle.0, &bones.bones);
 }
 
 fn apply_spawn(

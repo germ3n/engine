@@ -46,6 +46,7 @@ pub struct WorldShot {
     pub networked: Vec<EntityNetworked>,
     pub owners: Vec<EntityOwnership>,
     pub models: Vec<EntityModel>,
+    pub bones: Vec<crate::network::events::EntityBones>,
     pub voxels: Vec<ChunkUpdate>,
     pub voxel_scale: f64,
     pub brush_edits: Vec<BrushEdit>,
@@ -803,6 +804,7 @@ pub fn capture_world<In, Out>(
     let mut entities = Vec::new();
     let mut owners = Vec::new();
     let mut models = Vec::new();
+    let mut bones = Vec::new();
 
     for (handle, entity) in game.entities.iter() {
         if !entity.is_spawned() {
@@ -836,6 +838,12 @@ pub fn capture_world<In, Out>(
                 clips,
             });
         }
+
+        let entity_bones = game.anims.entity_bones(handle.0);
+
+        if !entity_bones.bones.is_empty() {
+            bones.push(entity_bones);
+        }
     }
 
     let pending = game.sound.baseline();
@@ -864,6 +872,7 @@ pub fn capture_world<In, Out>(
         networked,
         owners,
         models,
+        bones,
         voxels: game.voxel_world.baseline(),
         voxel_scale: game.voxel_world.scale(),
         brush_edits: game.brush_world.edits().to_vec(),
@@ -1049,6 +1058,7 @@ mod tests {
             networked: Vec::new(),
             owners: Vec::new(),
             models: Vec::new(),
+            bones: Vec::new(),
             voxels: Vec::new(),
             voxel_scale: 1.0,
             brush_edits: Vec::new(),

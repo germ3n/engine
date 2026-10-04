@@ -5,11 +5,11 @@ mod rig;
 
 use crate::anim::format::{read_clips, read_mesh, Mesh};
 use crate::anim::pose::{
-    elapsed, events_between, locals_from_tracks, palette, root_delta, sees, strip_root, wrap_time,
-    ClipSet, FADE_SECONDS,
+    elapsed, events_between, locals_from_tracks, mul_mat, palette, root_delta, sees, strip_root,
+    wrap_time, ClipSet, FADE_SECONDS,
 };
 use crate::movement::RootStep;
-use crate::network::events::AnimSnapshot;
+use crate::network::events::{AnimSnapshot, BoneOverrideNet, EntityBones};
 use crate::ui::skin::{SkinBatch, SkinGroup};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +21,12 @@ pub const NONE_ASSET: u32 = u32::MAX;
 pub const NONE_SEQ: u16 = u16::MAX;
 pub const TEST_MESH: &str = "models/test.mdl";
 pub const TEST_CLIPS: &str = "models/test.anm";
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoneOverride {
+    pub pos: Option<[f32; 3]>,
+    pub angles: Option<[f32; 3]>,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct AnimPlayback {
@@ -123,6 +129,34 @@ impl AnimPlayback {
         self.gesture_weight = 0.0;
     }
 
+    pub fn reset_sequence(&mut self, tick: u64) {
+        self.sequence_tick = tick;
+        self.fade_sequence = NONE_SEQ;
+    }
+
+    pub fn set_cycle(&mut self, duration: f32, loops: bool, cycle: f32, tick: u64, dt: f64) {
+        let cycle = if cycle.is_finite() {
+            if loops {
+                cycle.rem_euclid(1.0)
+            } else {
+                cycle.clamp(0.0, 1.0)
+            }
+        } else {
+            0.0
+        };
+        let duration = duration.max(0.0);
+        let time = cycle * duration;
+        let rate = sanitize_rate(self.sequence_rate);
+        let steps = if rate <= 1e-6 || dt <= 1e-12 {
+            0.0
+        } else {
+            f64::from(time) / (dt * f64::from(rate))
+        };
+        let start = (tick as f64 - steps).max(0.0).round() as u64;
+        self.sequence_tick = start;
+        self.fade_sequence = NONE_SEQ;
+    }
+
     pub fn finish_gesture(&mut self, clips: &crate::anim::pose::ClipSet, tick: u64, dt: f64) {
         let Some(sequence) = clips.sequences.get(self.gesture as usize) else {
             return;
@@ -177,6 +211,7 @@ impl AnimPlayback {
 
 #[derive(Clone, Copy)]
 pub struct DrawInput {
+    pub entity: u32,
     pub mesh: u32,
     pub clips: u32,
     pub playback: AnimPlayback,
@@ -308,6 +343,8 @@ pub struct AnimAssets {
     mesh_names: HashMap<String, u32>,
     clip_names: HashMap<String, u32>,
     bone_maps: HashMap<(u32, u32), Vec<u16>>,
+    bone_overrides: HashMap<u32, Vec<(u16, BoneOverride)>>,
+    dirty_bones: Vec<u32>,
     scratch_pos: Vec<[f32; 3]>,
     scratch_rot: Vec<[f32; 4]>,
     scratch_pos_b: Vec<[f32; 3]>,
@@ -328,6 +365,8 @@ impl AnimAssets {
             mesh_names: HashMap::new(),
             clip_names: HashMap::new(),
             bone_maps: HashMap::new(),
+            bone_overrides: HashMap::new(),
+            dirty_bones: Vec::new(),
             scratch_pos: Vec::new(),
             scratch_rot: Vec::new(),
             scratch_pos_b: Vec::new(),
@@ -447,6 +486,269 @@ impl AnimAssets {
         None
     }
 
+    pub fn sequence_count(&self, clips: u32) -> u16 {
+        self.clips
+            .get(clips as usize)
+            .map(|clips| clips.sequences.len() as u16)
+            .unwrap_or(0)
+    }
+
+    pub fn sequence_name(&self, clips: u32, sequence: u16) -> Option<&str> {
+        Some(self.sequence(clips, sequence)?.name.as_str())
+    }
+
+    pub fn sequence_duration(&self, clips: u32, sequence: u16) -> Option<f32> {
+        Some(self.sequence(clips, sequence)?.duration)
+    }
+
+    pub fn sequence_loops(&self, clips: u32, sequence: u16) -> Option<bool> {
+        Some(self.sequence(clips, sequence)?.loops())
+    }
+
+    pub fn sequence_cycle(&self, playback: &AnimPlayback, time: f64, dt: f64) -> f32 {
+        let Some(sequence) = self.sequence(playback.clips, playback.sequence) else {
+            return 0.0;
+        };
+
+        if sequence.duration <= 1e-5 {
+            return 0.0;
+        }
+
+        let sample = wrap_time(
+            elapsed(time, playback.sequence_tick, playback.sequence_rate, dt),
+            sequence.duration,
+            sequence.loops(),
+        );
+
+        (sample / sequence.duration).clamp(0.0, 1.0)
+    }
+
+    pub fn bone_count(&self, mesh: u32) -> u16 {
+        self.meshes
+            .get(mesh as usize)
+            .map(|mesh| mesh.parents.len() as u16)
+            .unwrap_or(0)
+    }
+
+    pub fn bone_name(&self, mesh: u32, bone: u16) -> Option<&str> {
+        self.meshes
+            .get(mesh as usize)?
+            .mesh
+            .bones
+            .get(bone as usize)
+            .map(|bone| bone.name.as_str())
+    }
+
+    pub fn bone_parent(&self, mesh: u32, bone: u16) -> Option<i16> {
+        self.meshes
+            .get(mesh as usize)?
+            .parents
+            .get(bone as usize)
+            .copied()
+    }
+
+    pub fn bone_id(&self, mesh: u32, name: &str) -> Option<u16> {
+        let bones = &self.meshes.get(mesh as usize)?.mesh.bones;
+        let mut idx = 0;
+
+        while idx < bones.len() {
+            if bones[idx].name == name {
+                return Some(idx as u16);
+            }
+
+            idx += 1;
+        }
+
+        None
+    }
+
+    pub fn manipulate_bone_position(&mut self, entity: u32, bone: u16, pos: [f32; 3]) {
+        self.bone_slot(entity, bone).pos = Some(pos);
+        self.mark_bones_dirty(entity);
+    }
+
+    pub fn manipulate_bone_angles(&mut self, entity: u32, bone: u16, angles: [f32; 3]) {
+        self.bone_slot(entity, bone).angles = Some(angles);
+        self.mark_bones_dirty(entity);
+    }
+
+    pub fn clear_bone_manipulations(&mut self, entity: u32) {
+        self.bone_overrides.remove(&entity);
+        self.mark_bones_dirty(entity);
+    }
+
+    pub fn entity_bones(&self, entity: u32) -> EntityBones {
+        EntityBones {
+            handle: crate::entities::EntityHandle(entity),
+            bones: self.bone_net_list(entity),
+        }
+    }
+
+    pub fn take_dirty_bones(&mut self) -> Vec<EntityBones> {
+        let raw = std::mem::take(&mut self.dirty_bones);
+        let mut out: Vec<EntityBones> = Vec::new();
+        let mut idx = 0;
+
+        while idx < raw.len() {
+            let entity = raw[idx];
+            let mut seen = false;
+            let mut check = 0;
+
+            while check < out.len() {
+                if out[check].handle.0 == entity {
+                    seen = true;
+
+                    break;
+                }
+
+                check += 1;
+            }
+
+            if !seen {
+                out.push(self.entity_bones(entity));
+            }
+
+            idx += 1;
+        }
+
+        out
+    }
+
+    pub fn all_entity_bones(&self) -> Vec<EntityBones> {
+        let mut out = Vec::new();
+
+        for entity in self.bone_overrides.keys() {
+            let bones = self.entity_bones(*entity);
+
+            if !bones.bones.is_empty() {
+                out.push(bones);
+            }
+        }
+
+        out
+    }
+
+    pub fn apply_bone_net(&mut self, entity: u32, bones: &[BoneOverrideNet]) {
+        self.bone_overrides.remove(&entity);
+
+        if bones.is_empty() {
+            return;
+        }
+
+        let mut list = Vec::with_capacity(bones.len());
+        let mut idx = 0;
+
+        while idx < bones.len() {
+            let entry = bones[idx];
+            let mut over = BoneOverride::default();
+
+            if entry.has_pos() {
+                over.pos = Some(entry.pos);
+            }
+
+            if entry.has_angles() {
+                over.angles = Some(entry.angles);
+            }
+
+            list.push((entry.bone, over));
+            idx += 1;
+        }
+
+        self.bone_overrides.insert(entity, list);
+    }
+
+    fn bone_net_list(&self, entity: u32) -> Vec<BoneOverrideNet> {
+        let Some(list) = self.bone_overrides.get(&entity) else {
+            return Vec::new();
+        };
+        let mut out = Vec::with_capacity(list.len());
+        let mut idx = 0;
+
+        while idx < list.len() {
+            let (bone, over) = &list[idx];
+            let mut flags = 0u8;
+            let mut pos = [0.0, 0.0, 0.0];
+            let mut angles = [0.0, 0.0, 0.0];
+
+            if let Some(value) = over.pos {
+                flags |= BoneOverrideNet::HAS_POS;
+                pos = value;
+            }
+
+            if let Some(value) = over.angles {
+                flags |= BoneOverrideNet::HAS_ANGLES;
+                angles = value;
+            }
+
+            if flags != 0 {
+                out.push(BoneOverrideNet {
+                    bone: *bone,
+                    flags,
+                    pos,
+                    angles,
+                });
+            }
+
+            idx += 1;
+        }
+
+        out
+    }
+
+    fn mark_bones_dirty(&mut self, entity: u32) {
+        if self.replicate {
+            self.dirty_bones.push(entity);
+        }
+    }
+
+    pub fn bone_pose(
+        &mut self,
+        entity: u32,
+        playback: &AnimPlayback,
+        bone: u16,
+        position: [f32; 3],
+        pitch: f32,
+        yaw: f32,
+        roll: f32,
+        time: f64,
+        dt: f64,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        if !self.sample_palette(
+            playback.mesh,
+            playback.clips,
+            playback,
+            time,
+            dt,
+            entity,
+        ) {
+            return None;
+        }
+
+        let local = *self.scratch_world.get(bone as usize)?;
+        let world = mul_mat(pose_matrix(position, pitch, yaw, roll), local);
+        let pos = [world[12], world[13], world[14]];
+        let angles = angles_from_pose(world);
+
+        Some((pos, angles))
+    }
+
+    fn bone_slot(&mut self, entity: u32, bone: u16) -> &mut BoneOverride {
+        let list = self.bone_overrides.entry(entity).or_default();
+        let mut idx = 0;
+
+        while idx < list.len() {
+            if list[idx].0 == bone {
+                return &mut list[idx].1;
+            }
+
+            idx += 1;
+        }
+
+        list.push((bone, BoneOverride::default()));
+
+        &mut list.last_mut().unwrap().1
+    }
+
     pub fn assign(
         &mut self,
         raw: u32,
@@ -466,6 +768,8 @@ impl AnimAssets {
         playback.sequence = NONE_SEQ;
         playback.gesture = NONE_SEQ;
         playback.fade_sequence = NONE_SEQ;
+        self.bone_overrides.remove(&raw);
+        self.mark_bones_dirty(raw);
         self.bone_map(mesh_id, clip_id);
 
         if self.replicate {
@@ -582,7 +886,14 @@ impl AnimAssets {
                 let world = pose_matrix(input.position, input.pitch, input.yaw, input.roll);
                 instances.extend_from_slice(&world);
 
-                if self.sample_palette(input.mesh, input.clips, &input.playback, input.time, dt) {
+                if self.sample_palette(
+                    input.mesh,
+                    input.clips,
+                    &input.playback,
+                    input.time,
+                    dt,
+                    input.entity,
+                ) {
                     let mut bone_idx = 0;
 
                     while bone_idx < self.scratch_palette.len() {
@@ -693,6 +1004,7 @@ impl AnimAssets {
         playback: &AnimPlayback,
         time: f64,
         dt: f64,
+        entity: u32,
     ) -> bool {
         let bone_count = match self.meshes.get(mesh as usize) {
             Some(stored) => stored.parents.len(),
@@ -762,10 +1074,11 @@ impl AnimAssets {
             self.blend_from_c(ramp);
         }
 
+        self.apply_bone_overrides(entity);
         let mut worlds = std::mem::take(&mut self.scratch_world);
         let mut posed = std::mem::take(&mut self.scratch_palette);
-        let mut pos = std::mem::take(&mut self.scratch_pos);
-        let mut rot = std::mem::take(&mut self.scratch_rot);
+        let pos = std::mem::take(&mut self.scratch_pos);
+        let rot = std::mem::take(&mut self.scratch_rot);
         let stored = &self.meshes[mesh as usize];
         palette(
             &stored.parents,
@@ -781,6 +1094,29 @@ impl AnimAssets {
         self.scratch_rot = rot;
 
         true
+    }
+
+    fn apply_bone_overrides(&mut self, entity: u32) {
+        let Some(overrides) = self.bone_overrides.get(&entity).cloned() else {
+            return;
+        };
+        let mut idx = 0;
+
+        while idx < overrides.len() {
+            let bone = overrides[idx].0 as usize;
+
+            if bone < self.scratch_pos.len() {
+                if let Some(pos) = overrides[idx].1.pos {
+                    self.scratch_pos[bone] = pos;
+                }
+
+                if let Some(angles) = overrides[idx].1.angles {
+                    self.scratch_rot[bone] = quat_from_angles(angles[0], angles[1], angles[2]);
+                }
+            }
+
+            idx += 1;
+        }
     }
 
     fn write_locals(
@@ -877,6 +1213,58 @@ fn sanitize_rate(rate: f32) -> f32 {
     }
 }
 
+fn quat_from_angles(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [f32; 4] {
+    quat_from_mat(pose_matrix([0.0, 0.0, 0.0], pitch_deg, yaw_deg, roll_deg))
+}
+
+fn quat_from_mat(mat: [f32; 16]) -> [f32; 4] {
+    let m00 = mat[0];
+    let m10 = mat[1];
+    let m20 = mat[2];
+    let m01 = mat[4];
+    let m11 = mat[5];
+    let m21 = mat[6];
+    let m02 = mat[8];
+    let m12 = mat[9];
+    let m22 = mat[10];
+    let trace = m00 + m11 + m22;
+
+    if trace > 0.0 {
+        let s = 2.0 * (trace + 1.0).sqrt();
+
+        return norm_quat([(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]);
+    }
+
+    if m00 > m11 && m00 > m22 {
+        let s = 2.0 * (1.0 + m00 - m11 - m22).sqrt();
+
+        return norm_quat([0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]);
+    }
+
+    if m11 > m22 {
+        let s = 2.0 * (1.0 + m11 - m00 - m22).sqrt();
+
+        return norm_quat([(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]);
+    }
+
+    let s = 2.0 * (1.0 + m22 - m00 - m11).sqrt();
+
+    norm_quat([(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s])
+}
+
+fn norm_quat(quat: [f32; 4]) -> [f32; 4] {
+    let len =
+        (quat[0] * quat[0] + quat[1] * quat[1] + quat[2] * quat[2] + quat[3] * quat[3]).sqrt();
+
+    if len <= 1e-8 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+
+    let inv = 1.0 / len;
+
+    [quat[0] * inv, quat[1] * inv, quat[2] * inv, quat[3] * inv]
+}
+
 fn store_mesh(mesh: Mesh) -> StoredMesh {
     let mut bind_pos = Vec::with_capacity(mesh.bones.len());
     let mut bind_rot = Vec::with_capacity(mesh.bones.len());
@@ -962,6 +1350,7 @@ mod tests {
         assert!(again.is_empty());
 
         let input = DrawInput {
+            entity: 0,
             mesh: mesh_id,
             clips: clip_id,
             playback,

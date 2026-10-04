@@ -106,10 +106,15 @@ pub fn load_bytes(
     let materials = read_materials(&gltf);
     let images = read_images(&gltf, &buffers, read_uri)?;
     drop(gltf);
-    let baked = bake_tree(&mut nodes)?;
+    let full_worlds = node_worlds(&nodes)?;
+    bake_tree(&mut nodes)?;
     convert_nodes(&mut nodes);
+    let full_worlds = full_worlds
+        .into_iter()
+        .map(convert_mat)
+        .collect::<Vec<_>>();
     let (bones, node_bone) = build_bones(&nodes, &prims, &skins)?;
-    let bones = assign_binds(bones, &node_bone, &skins, baked)?;
+    let bones = assign_binds(bones, &node_bone, &skins, &full_worlds)?;
     let (atlas, rects) = build_atlas(&prims, &materials, &images)?;
     let mesh = build_mesh(&nodes, &prims, &skins, &bones, &node_bone, &rects, atlas)?;
     let clips = build_clips(&nodes, &bones, &node_bone, &anims)?;
@@ -1049,14 +1054,13 @@ fn decode_jpeg(bytes: &[u8]) -> Result<Rgba, String> {
     })
 }
 
-fn bake_tree(nodes: &mut [NodeRec]) -> Result<bool, String> {
+fn bake_tree(nodes: &mut [NodeRec]) -> Result<(), String> {
     let mut state = vec![0u8; nodes.len()];
-    let mut baked = false;
     let mut idx = 0;
 
     while idx < nodes.len() {
         if nodes[idx].parent.is_none() {
-            bake_node(nodes, idx, 1.0, &mut state, &mut baked)?;
+            bake_node(nodes, idx, 1.0, &mut state)?;
         }
 
         idx += 1;
@@ -1072,7 +1076,7 @@ fn bake_tree(nodes: &mut [NodeRec]) -> Result<bool, String> {
         idx += 1;
     }
 
-    Ok(baked)
+    Ok(())
 }
 
 fn bake_node(
@@ -1080,7 +1084,6 @@ fn bake_node(
     idx: usize,
     accumulated: f32,
     state: &mut [u8],
-    baked: &mut bool,
 ) -> Result<(), String> {
     if state[idx] == 1 {
         return Err("gltf hierarchy".to_string());
@@ -1091,26 +1094,17 @@ fn bake_node(
     }
 
     state[idx] = 1;
-    let scale = nodes[idx].scale;
-
-    if !scale_ok(scale) {
-        return Err("gltf non-uniform scale".to_string());
-    }
-
-    if (scale[0] - 1.0).abs() > 1.0e-4 {
-        *baked = true;
-    }
-
+    let factor = scale_factor(nodes[idx].scale)?;
     nodes[idx].key_scale = accumulated;
-    nodes[idx].vertex_scale = scale[0];
+    nodes[idx].vertex_scale = factor;
     nodes[idx].translation = mul_scalar(nodes[idx].translation, accumulated);
     nodes[idx].scale = [1.0, 1.0, 1.0];
-    let next = accumulated * scale[0];
+    let next = accumulated * factor;
     let children = nodes[idx].children.clone();
     let mut child_idx = 0;
 
     while child_idx < children.len() {
-        bake_node(nodes, children[child_idx], next, state, baked)?;
+        bake_node(nodes, children[child_idx], next, state)?;
         child_idx += 1;
     }
 
@@ -1119,13 +1113,28 @@ fn bake_node(
     Ok(())
 }
 
-fn scale_ok(scale: [f32; 3]) -> bool {
-    scale[0].is_finite()
-        && scale[1].is_finite()
-        && scale[2].is_finite()
-        && scale[0] > 1.0e-6
-        && (scale[0] - scale[1]).abs() <= 1.0e-3 * scale[0].abs().max(1.0)
-        && (scale[1] - scale[2]).abs() <= 1.0e-3 * scale[0].abs().max(1.0)
+fn scale_factor(scale: [f32; 3]) -> Result<f32, String> {
+    if !scale[0].is_finite()
+        || !scale[1].is_finite()
+        || !scale[2].is_finite()
+        || scale[0] <= 1.0e-6
+        || scale[1] <= 1.0e-6
+        || scale[2] <= 1.0e-6
+    {
+        return Err("gltf scale".to_string());
+    }
+
+    let avg = (scale[0] + scale[1] + scale[2]) / 3.0;
+    let limit = 1.0e-3 * avg.abs().max(1.0);
+
+    if (scale[0] - avg).abs() <= limit
+        && (scale[1] - avg).abs() <= limit
+        && (scale[2] - avg).abs() <= limit
+    {
+        return Ok(avg);
+    }
+
+    Ok((scale[0] * scale[1] * scale[2]).cbrt())
 }
 
 fn convert_nodes(nodes: &mut [NodeRec]) {
@@ -1136,6 +1145,53 @@ fn convert_nodes(nodes: &mut [NodeRec]) {
         nodes[idx].rotation = convert_quat(nodes[idx].rotation);
         idx += 1;
     }
+}
+
+fn node_worlds(nodes: &[NodeRec]) -> Result<Vec<[f32; 16]>, String> {
+    let mut worlds = vec![pose::IDENTITY; nodes.len()];
+    let mut state = vec![0u8; nodes.len()];
+    let mut idx = 0;
+
+    while idx < nodes.len() {
+        write_node_world(nodes, idx, &mut worlds, &mut state)?;
+        idx += 1;
+    }
+
+    Ok(worlds)
+}
+
+fn write_node_world(
+    nodes: &[NodeRec],
+    idx: usize,
+    worlds: &mut [[f32; 16]],
+    state: &mut [u8],
+) -> Result<(), String> {
+    if state[idx] == 1 {
+        return Err("gltf hierarchy".to_string());
+    }
+
+    if state[idx] == 2 {
+        return Ok(());
+    }
+
+    state[idx] = 1;
+
+    if let Some(parent) = nodes[idx].parent {
+        write_node_world(nodes, parent, worlds, state)?;
+    }
+
+    let local = trs_scale(
+        nodes[idx].translation,
+        nodes[idx].rotation,
+        nodes[idx].scale,
+    );
+    worlds[idx] = match nodes[idx].parent {
+        Some(parent) => pose::mul_mat(worlds[parent], local),
+        None => local,
+    };
+    state[idx] = 2;
+
+    Ok(())
 }
 
 fn build_bones(
@@ -1270,29 +1326,12 @@ fn assign_binds(
     mut bones: Vec<Bone>,
     node_bone: &[Option<usize>],
     skins: &[SkinRec],
-    baked: bool,
+    full_worlds: &[[f32; 16]],
 ) -> Result<Vec<Bone>, String> {
-    if baked {
-        let worlds = bone_worlds(&bones);
-        let mut idx = 0;
-
-        while idx < bones.len() {
-            bones[idx].inverse_bind = invert_affine(worlds[idx])?;
-            idx += 1;
-        }
-
-        return Ok(bones);
-    }
-
+    let tr_worlds = bone_worlds(&bones);
     let mut idx = 0;
 
     while idx < skins.len() {
-        if skins[idx].ibms.is_empty() {
-            idx += 1;
-
-            continue;
-        }
-
         let mut joint_idx = 0;
 
         while joint_idx < skins[idx].joints.len() {
@@ -1301,7 +1340,17 @@ fn assign_binds(
                 .get(node)
                 .and_then(|bone| *bone)
                 .ok_or_else(|| "gltf joint".to_string())?;
-            bones[bone].inverse_bind = convert_mat(skins[idx].ibms[joint_idx]);
+            let bind_tr = tr_worlds[bone];
+            let bind_full = *full_worlds
+                .get(node)
+                .ok_or_else(|| "gltf joint".to_string())?;
+            let ibm = if joint_idx < skins[idx].ibms.len() {
+                convert_mat(skins[idx].ibms[joint_idx])
+            } else {
+                invert_affine(bind_full)?
+            };
+            bones[bone].inverse_bind =
+                pose::mul_mat(invert_affine(bind_tr)?, pose::mul_mat(bind_full, ibm));
             joint_idx += 1;
         }
 
@@ -1535,7 +1584,6 @@ fn build_mesh(
             &prims[idx],
             nodes,
             skins,
-            bones,
             node_bone,
             rects,
             atlas.w,
@@ -1564,7 +1612,6 @@ fn append_prim(
     prim: &PrimRec,
     nodes: &[NodeRec],
     skins: &[SkinRec],
-    bones: &[Bone],
     node_bone: &[Option<usize>],
     rects: &[(Option<usize>, Rect)],
     atlas_w: u32,
@@ -1613,29 +1660,6 @@ fn append_prim(
         }
         None => Vec::new(),
     };
-
-    if prim.skin.is_none() {
-        let bone = node_bone
-            .get(prim.node)
-            .and_then(|bone| *bone)
-            .ok_or_else(|| "gltf bones".to_string())?;
-        let inverse = bones[bone].inverse_bind;
-
-        if !is_identity(inverse) {
-            let pose = invert_affine(inverse)?;
-            let mut vert_idx = 0;
-
-            while vert_idx < positions.len() {
-                positions[vert_idx] = mul_point(pose, positions[vert_idx]);
-
-                if vert_idx < normals.len() {
-                    normals[vert_idx] = normalize3(mul_transpose_dir(inverse, normals[vert_idx]));
-                }
-
-                vert_idx += 1;
-            }
-        }
-    }
 
     if normals.len() != positions.len() {
         normals = generate_normals(&positions, &prim.indices);
@@ -1905,16 +1929,39 @@ fn build_sequence(
     let fallback = if anim.name.is_empty() {
         format!("anim_{index}")
     } else {
-        anim.name.clone()
+        sequence_label(&anim.name)
     };
+    let flags = sequence_flags(&fallback);
 
     Ok(Sequence {
         name: unique_name(&fallback, index, names),
-        flags: FLAG_LOOP,
+        flags,
         duration,
         events: Vec::new(),
         tracks,
     })
+}
+
+fn sequence_label(raw: &str) -> String {
+    match raw.rfind('|') {
+        Some(idx) => raw[idx + 1..].to_string(),
+        None => raw.to_string(),
+    }
+}
+
+fn sequence_flags(name: &str) -> u16 {
+    let lower = name.to_ascii_lowercase();
+
+    if lower.contains("idle")
+        || lower.contains("walk")
+        || lower.contains("sprint")
+        || lower.contains("run")
+        || lower.contains("loop")
+    {
+        FLAG_LOOP
+    } else {
+        0
+    }
 }
 
 fn remap_uv(uv: [f32; 2], rect: &Rect, atlas_w: u32, atlas_h: u32) -> [f32; 2] {
@@ -2151,18 +2198,22 @@ fn clip_len(name: &str, max: usize) -> String {
     name[..end].to_string()
 }
 
+fn trs_scale(pos: [f32; 3], rot: [f32; 4], scale: [f32; 3]) -> [f32; 16] {
+    let rotation = pose::trs(pos, rot);
+    let scale = [
+        scale[0], 0.0, 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 0.0, scale[2], 0.0, 0.0, 0.0, 0.0,
+        1.0,
+    ];
+
+    pose::mul_mat(rotation, scale)
+}
+
 fn convert_point(value: [f32; 3]) -> [f32; 3] {
-    [value[2], value[0], value[1]]
+    [-value[2], value[0], value[1]]
 }
 
 fn convert_quat(value: [f32; 4]) -> [f32; 4] {
-    let change = [0.5, 0.5, 0.5, 0.5];
-    let inverse = [-0.5, -0.5, -0.5, 0.5];
-
-    normalize_quat(pose::quat_mul(
-        pose::quat_mul(change, normalize_quat(value)),
-        inverse,
-    ))
+    quat_from_mat(convert_mat(pose::trs([0.0, 0.0, 0.0], normalize_quat(value))))
 }
 
 fn convert_mat(value: [f32; 16]) -> [f32; 16] {
@@ -2171,14 +2222,49 @@ fn convert_mat(value: [f32; 16]) -> [f32; 16] {
 
 fn basis() -> [f32; 16] {
     [
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
 fn basis_inv() -> [f32; 16] {
     [
-        0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
+}
+
+fn quat_from_mat(mat: [f32; 16]) -> [f32; 4] {
+    let m00 = mat[0];
+    let m10 = mat[1];
+    let m20 = mat[2];
+    let m01 = mat[4];
+    let m11 = mat[5];
+    let m21 = mat[6];
+    let m02 = mat[8];
+    let m12 = mat[9];
+    let m22 = mat[10];
+    let trace = m00 + m11 + m22;
+
+    if trace > 0.0 {
+        let s = 2.0 * (trace + 1.0).sqrt();
+
+        return normalize_quat([(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]);
+    }
+
+    if m00 > m11 && m00 > m22 {
+        let s = 2.0 * (1.0 + m00 - m11 - m22).sqrt();
+
+        return normalize_quat([0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]);
+    }
+
+    if m11 > m22 {
+        let s = 2.0 * (1.0 + m11 - m00 - m22).sqrt();
+
+        return normalize_quat([(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]);
+    }
+
+    let s = 2.0 * (1.0 + m22 - m00 - m11).sqrt();
+
+    normalize_quat([(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s])
 }
 
 fn flatten_mat(value: [[f32; 4]; 4]) -> [f32; 16] {
@@ -2233,38 +2319,6 @@ fn invert_affine(mat: [f32; 16]) -> Result<[f32; 16], String> {
     out[15] = 1.0;
 
     Ok(out)
-}
-
-fn is_identity(mat: [f32; 16]) -> bool {
-    let mut idx = 0;
-
-    while idx < 16 {
-        let expected = if idx % 5 == 0 { 1.0 } else { 0.0 };
-
-        if (mat[idx] - expected).abs() > 1.0e-5 {
-            return false;
-        }
-
-        idx += 1;
-    }
-
-    true
-}
-
-fn mul_point(mat: [f32; 16], point: [f32; 3]) -> [f32; 3] {
-    [
-        mat[0] * point[0] + mat[4] * point[1] + mat[8] * point[2] + mat[12],
-        mat[1] * point[0] + mat[5] * point[1] + mat[9] * point[2] + mat[13],
-        mat[2] * point[0] + mat[6] * point[1] + mat[10] * point[2] + mat[14],
-    ]
-}
-
-fn mul_transpose_dir(mat: [f32; 16], direction: [f32; 3]) -> [f32; 3] {
-    [
-        mat[0] * direction[0] + mat[1] * direction[1] + mat[2] * direction[2],
-        mat[4] * direction[0] + mat[5] * direction[1] + mat[6] * direction[2],
-        mat[8] * direction[0] + mat[9] * direction[1] + mat[10] * direction[2],
-    ]
 }
 
 fn normalize_quat(value: [f32; 4]) -> [f32; 4] {
@@ -2538,16 +2592,17 @@ mod tests {
             sample_idx += 1;
         }
 
-        assert!(near3(convert_point([0.0, 1.0, 1.0]), [1.0, 0.0, 1.0]));
+        assert!(near3(convert_point([0.0, 1.0, 1.0]), [-1.0, 0.0, 1.0]));
+        assert!(near3(convert_point([0.0, 0.0, -1.0]), [1.0, 0.0, 0.0]));
     }
 
     #[test]
     fn glb_places_up_and_forward() {
         let mut bin = Bin::new();
-        let positions = bin.push(&f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]));
+        let positions = bin.push(&f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0]));
         let indices = bin.push(&u16s(&[0, 1, 2]));
         let json = format!(
-            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"name":"root","mesh":0,"translation":[0,2,0]}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],"accessors":[{{"bufferView":{positions},"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,0,1]}},{{"bufferView":{indices},"componentType":5123,"count":3,"type":"SCALAR"}}],"bufferViews":{},"buffers":[{{"byteLength":{}}}]}}"#,
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"name":"root","mesh":0,"translation":[0,2,0]}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],"accessors":[{{"bufferView":{positions},"componentType":5126,"count":3,"type":"VEC3","min":[0,0,-1],"max":[1,0,0]}},{{"bufferView":{indices},"componentType":5123,"count":3,"type":"SCALAR"}}],"bufferViews":{},"buffers":[{{"byteLength":{}}}]}}"#,
             bin.views_json(),
             bin.bytes.len()
         );
@@ -2557,6 +2612,7 @@ mod tests {
         assert_eq!(loaded.mesh.bones[0].name, "root");
         assert!(near3(loaded.mesh.bones[0].local_pos, [0.0, 0.0, 2.0]));
         assert!(near3(vertex(&loaded.mesh, 1), [0.0, 1.0, 0.0]));
+        assert!(near3(vertex(&loaded.mesh, 2), [1.0, 0.0, 0.0]));
         let (pos, rot) = bind_pose(&loaded.mesh);
 
         assert!(near3(skinned(&loaded.mesh, 1, &pos, &rot), [0.0, 1.0, 2.0]));
@@ -2566,7 +2622,7 @@ mod tests {
     }
 
     #[test]
-    fn skin_rotates_about_the_engine_up_axis() {
+    fn skin_rotates_about_the_engine_right_axis() {
         let mut bin = Bin::new();
         let positions = bin.push(&f32s(&[0.0, 1.0, 0.5, 0.1, 1.0, 0.5, 0.0, 1.1, 0.5]));
         let joints = bin.push(&[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
@@ -2594,11 +2650,11 @@ mod tests {
         assert!(near3(loaded.mesh.bones[1].local_pos, [0.0, 0.0, 1.0]));
         let (pos, rot) = bind_pose(&loaded.mesh);
 
-        assert!(near3(skinned(&loaded.mesh, 0, &pos, &rot), [0.5, 0.0, 1.0]));
+        assert!(near3(skinned(&loaded.mesh, 0, &pos, &rot), [-0.5, 0.0, 1.0]));
         let sequence = &loaded.clips.sequences[0];
 
         assert_eq!(sequence.name, "bend");
-        assert_ne!(sequence.flags & FLAG_LOOP, 0);
+        assert_eq!(sequence.flags & FLAG_LOOP, 0);
         assert!(near(sequence.duration, 1.0));
         let mut posed_rot = rot.clone();
         posed_rot[1] = sample_quat(
@@ -2629,16 +2685,58 @@ mod tests {
     }
 
     #[test]
-    fn non_uniform_scale_is_rejected() {
-        let err = load_bytes(
-            &glb(
-                r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"scale":[1,2,1]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],"buffers":[{"byteLength":36}]}"#,
-                &f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
-            ),
-            &mut |_| Err("gltf uri".to_string()),
-        );
+    fn non_uniform_scale_loads() {
+        let loaded = load(&glb(
+            r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"root","mesh":0,"scale":[1,2,1]}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36}],"buffers":[{"byteLength":36}]}"#,
+            &f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+        ));
+        let (pos, rot) = bind_pose(&loaded.mesh);
+        let point = skinned(&loaded.mesh, 1, &pos, &rot);
 
-        assert!(err.is_err());
+        assert!(point.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn skinned_root_scale_keeps_file_ibms() {
+        let mut bin = Bin::new();
+        let positions = bin.push(&f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0]));
+        let joints = bin.push(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let weights = bin.push(&f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        ]));
+        let indices = bin.push(&u16s(&[0, 1, 2]));
+        let ibms = bin.push(&f32s(&[
+            0.01, 0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]));
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0,2]}}],"nodes":[{{"name":"root","scale":[100,100,100],"children":[1]}},{{"name":"joint"}},{{"name":"mesh","mesh":0,"skin":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},"indices":3}}]}}],"skins":[{{"joints":[1],"inverseBindMatrices":4}}],"accessors":[{{"bufferView":{positions},"componentType":5126,"count":3,"type":"VEC3","min":[0,0,-1],"max":[1,0,0]}},{{"bufferView":{joints},"componentType":5121,"count":3,"type":"VEC4"}},{{"bufferView":{weights},"componentType":5126,"count":3,"type":"VEC4"}},{{"bufferView":{indices},"componentType":5123,"count":3,"type":"SCALAR"}},{{"bufferView":{ibms},"componentType":5126,"count":1,"type":"MAT4"}}],"bufferViews":{},"buffers":[{{"byteLength":{}}}]}}"#,
+            bin.views_json(),
+            bin.bytes.len()
+        );
+        let loaded = load(&glb(&json, &bin.bytes));
+        let (pos, rot) = bind_pose(&loaded.mesh);
+        let point = skinned(&loaded.mesh, 1, &pos, &rot);
+
+        assert!(near3(point, [0.0, 1.0, 0.0]));
+        assert!(near3(skinned(&loaded.mesh, 2, &pos, &rot), [1.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn sequence_name_strips_armature_prefix() {
+        let mut bin = Bin::new();
+        let positions = bin.push(&f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0]));
+        let indices = bin.push(&u16s(&[0, 1, 2]));
+        let times = bin.push(&f32s(&[0.0, 1.0]));
+        let translations = bin.push(&f32s(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"name":"root","mesh":0}}],"meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},"indices":1}}]}}],"animations":[{{"name":"Armature|wpn_val_idle","channels":[{{"sampler":0,"target":{{"node":0,"path":"translation"}}}}],"samplers":[{{"input":2,"output":3,"interpolation":"LINEAR"}}]}}],"accessors":[{{"bufferView":{positions},"componentType":5126,"count":3,"type":"VEC3","min":[0,0,-1],"max":[1,0,0]}},{{"bufferView":{indices},"componentType":5123,"count":3,"type":"SCALAR"}},{{"bufferView":{times},"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]}},{{"bufferView":{translations},"componentType":5126,"count":2,"type":"VEC3"}}],"bufferViews":{},"buffers":[{{"byteLength":{}}}]}}"#,
+            bin.views_json(),
+            bin.bytes.len()
+        );
+        let loaded = load(&glb(&json, &bin.bytes));
+
+        assert_eq!(loaded.clips.sequences[0].name, "wpn_val_idle");
+        assert_ne!(loaded.clips.sequences[0].flags & FLAG_LOOP, 0);
     }
 
     #[test]
@@ -2692,6 +2790,35 @@ mod tests {
         let point = skinned(&loaded.mesh, 0, &pos, &rot);
 
         assert!(point[2] >= -0.01 && point[2] <= 1.01);
+    }
+
+    #[test]
+    fn uzi_viewmodel_loads() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/uzi.glb");
+        let bytes = std::fs::read(&path).unwrap();
+        let loaded = load(&bytes);
+
+        assert!(loaded.mesh.bones.len() > 1);
+        assert!(loaded.mesh.bones.len() <= crate::anim::format::MAX_BONES);
+        assert!(loaded.clips.sequences.iter().any(|sequence| sequence.name == "wpn_val_idle"));
+        assert!(loaded
+            .clips
+            .sequences
+            .iter()
+            .find(|sequence| sequence.name == "wpn_val_idle")
+            .unwrap()
+            .loops());
+        assert!(!loaded
+            .clips
+            .sequences
+            .iter()
+            .find(|sequence| sequence.name == "wpn_val_shoot")
+            .unwrap()
+            .loops());
+        let (pos, rot) = bind_pose(&loaded.mesh);
+        let point = skinned(&loaded.mesh, 0, &pos, &rot);
+
+        assert!(point.iter().all(|value| value.is_finite()));
     }
 
     #[test]

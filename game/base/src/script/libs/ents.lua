@@ -138,8 +138,30 @@ return function(native)
     local native_get_owner = native.get_owner;
     local native_set_model = native.set_model;
     local native_set_sequence = native.set_sequence;
+    local native_set_sequence_id = native.set_sequence_id;
     local native_play_gesture = native.play_gesture;
     local native_stop_gesture = native.stop_gesture;
+    local native_lookup_sequence = native.lookup_sequence;
+    local native_get_sequence = native.get_sequence;
+    local native_get_sequence_name = native.get_sequence_name;
+    local native_sequence_count = native.sequence_count;
+    local native_sequence_duration = native.sequence_duration;
+    local native_sequence_loops = native.sequence_loops;
+    local native_get_playback_rate = native.get_playback_rate;
+    local native_get_cycle = native.get_cycle;
+    local native_set_cycle = native.set_cycle;
+    local native_reset_sequence = native.reset_sequence;
+    local native_get_model = native.get_model;
+    local native_get_clips = native.get_clips;
+    local native_lookup_bone = native.lookup_bone;
+    local native_get_bone_count = native.get_bone_count;
+    local native_get_bone_name = native.get_bone_name;
+    local native_get_bone_parent = native.get_bone_parent;
+    local native_get_bone_position = native.get_bone_position;
+    local native_get_bone_angles = native.get_bone_angles;
+    local native_manipulate_bone_position = native.manipulate_bone_position;
+    local native_manipulate_bone_angles = native.manipulate_bone_angles;
+    local native_clear_bone_manipulations = native.clear_bone_manipulations;
     local attach_owned;
 
     local function report(ent, name, err)
@@ -1472,6 +1494,304 @@ return function(native)
     ]=]
     function meta:set_sequence(name, rate)
         native_set_sequence(self._handle, name, rate or 1);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "set_sequence_id",
+    realm = "shared",
+    summary = "Plays a sequence by numeric id from the entity's animation file.",
+    params = {
+        id = { ty = "number", desc = "Sequence id from lookup_sequence." },
+        rate = { ty = "number", desc = "Playback rate. Defaults to 1.", optional = true },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:lookup_sequence, Entity:set_sequence",
+    ]=]
+    function meta:set_sequence_id(id, rate)
+        native_set_sequence_id(self._handle, id, rate or 1);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "lookup_sequence",
+    realm = "shared",
+    summary = "Returns the sequence id for a name, or nil.",
+    params = {
+        name = { ty = "string", desc = "Sequence name." },
+    },
+    returns = { ty = "number?", desc = "Sequence id." },
+    see_also = "Entity:set_sequence_id, Entity:get_sequence_name",
+    ]=]
+    function meta:lookup_sequence(name)
+        return native_lookup_sequence(self._handle, name);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_sequence",
+    realm = "shared",
+    summary = "Returns the current sequence id, or nil.",
+    returns = { ty = "number?", desc = "Current sequence id." },
+    see_also = "Entity:get_sequence_name, Entity:set_sequence",
+    ]=]
+    function meta:get_sequence()
+        return native_get_sequence(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_sequence_name",
+    realm = "shared",
+    summary = "Returns a sequence name. Omit the id to use the current sequence.",
+    params = {
+        id = { ty = "number", desc = "Sequence id.", optional = true },
+    },
+    returns = { ty = "string?", desc = "Sequence name." },
+    see_also = "Entity:lookup_sequence, Entity:get_sequence",
+    ]=]
+    function meta:get_sequence_name(id)
+        return native_get_sequence_name(self._handle, id);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "sequence_count",
+    realm = "shared",
+    summary = "Returns how many sequences the animation file contains.",
+    returns = { ty = "number", desc = "Sequence count." },
+    ]=]
+    function meta:sequence_count()
+        return native_sequence_count(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "sequence_duration",
+    realm = "shared",
+    summary = "Returns sequence duration in seconds. Pass an id, a name, or omit for the current sequence.",
+    params = {
+        sequence = { ty = "number|string", desc = "Sequence id or name.", optional = true },
+    },
+    returns = { ty = "number?", desc = "Duration in seconds." },
+    ]=]
+    function meta:sequence_duration(sequence)
+        return native_sequence_duration(self._handle, sequence);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "sequence_loops",
+    realm = "shared",
+    summary = "Returns whether a sequence loops. Pass an id, a name, or omit for the current sequence.",
+    params = {
+        sequence = { ty = "number|string", desc = "Sequence id or name.", optional = true },
+    },
+    returns = { ty = "boolean?", desc = "True when the sequence loops." },
+    ]=]
+    function meta:sequence_loops(sequence)
+        return native_sequence_loops(self._handle, sequence);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_playback_rate",
+    realm = "shared",
+    summary = "Returns the current sequence playback rate.",
+    returns = { ty = "number", desc = "Playback rate." },
+    ]=]
+    function meta:get_playback_rate()
+        return native_get_playback_rate(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_cycle",
+    realm = "shared",
+    summary = "Returns the current sequence cycle from 0 to 1.",
+    returns = { ty = "number", desc = "Cycle." },
+    see_also = "Entity:set_cycle",
+    ]=]
+    function meta:get_cycle()
+        return native_get_cycle(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "set_cycle",
+    realm = "shared",
+    summary = "Sets the current sequence cycle from 0 to 1.",
+    params = {
+        cycle = { ty = "number", desc = "Cycle from 0 to 1." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:get_cycle",
+    ]=]
+    function meta:set_cycle(cycle)
+        native_set_cycle(self._handle, cycle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "reset_sequence",
+    realm = "shared",
+    summary = "Restarts the current sequence from the beginning.",
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:set_sequence",
+    ]=]
+    function meta:reset_sequence()
+        native_reset_sequence(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_model",
+    realm = "shared",
+    summary = "Returns the mesh path set by set_model.",
+    returns = { ty = "string?", desc = "Mesh path." },
+    see_also = "Entity:get_clips, Entity:set_model",
+    ]=]
+    function meta:get_model()
+        return native_get_model(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_clips",
+    realm = "shared",
+    summary = "Returns the animation clip path set by set_model.",
+    returns = { ty = "string?", desc = "Clip path." },
+    see_also = "Entity:get_model, Entity:set_model",
+    ]=]
+    function meta:get_clips()
+        return native_get_clips(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "lookup_bone",
+    realm = "shared",
+    summary = "Returns the bone index for a name, or nil.",
+    params = {
+        name = { ty = "string", desc = "Bone name." },
+    },
+    returns = { ty = "number?", desc = "Bone index." },
+    ]=]
+    function meta:lookup_bone(name)
+        return native_lookup_bone(self._handle, name);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_count",
+    realm = "shared",
+    summary = "Returns how many bones the mesh contains.",
+    returns = { ty = "number", desc = "Bone count." },
+    ]=]
+    function meta:get_bone_count()
+        return native_get_bone_count(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_name",
+    realm = "shared",
+    summary = "Returns the bone name for an index.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+    },
+    returns = { ty = "string?", desc = "Bone name." },
+    ]=]
+    function meta:get_bone_name(bone)
+        return native_get_bone_name(self._handle, bone);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_parent",
+    realm = "shared",
+    summary = "Returns the parent bone index, or -1 for a root.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+    },
+    returns = { ty = "number?", desc = "Parent bone index." },
+    ]=]
+    function meta:get_bone_parent(bone)
+        return native_get_bone_parent(self._handle, bone);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_position",
+    realm = "shared",
+    summary = "Returns the world position of a bone for the current pose.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+    },
+    returns = { ty = "Vector3?", desc = "World position." },
+    see_also = "Entity:get_bone_angles",
+    ]=]
+    function meta:get_bone_position(bone)
+        return native_get_bone_position(self._handle, bone);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_angles",
+    realm = "shared",
+    summary = "Returns the world angles of a bone for the current pose.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+    },
+    returns = { ty = "Angle3?", desc = "World angles." },
+    see_also = "Entity:get_bone_position",
+    ]=]
+    function meta:get_bone_angles(bone)
+        return native_get_bone_angles(self._handle, bone);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "manipulate_bone_position",
+    realm = "shared",
+    summary = "Overrides a bone's local position for drawing.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+        pos = { ty = "Vector3", desc = "Local position." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:manipulate_bone_angles, Entity:clear_bone_manipulations",
+    ]=]
+    function meta:manipulate_bone_position(bone, pos)
+        native_manipulate_bone_position(self._handle, bone, pos.x, pos.y, pos.z);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "manipulate_bone_angles",
+    realm = "shared",
+    summary = "Overrides a bone's local angles for drawing.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+        angles = { ty = "Angle3", desc = "Local pitch, yaw, and roll." },
+    },
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:manipulate_bone_position, Entity:clear_bone_manipulations",
+    ]=]
+    function meta:manipulate_bone_angles(bone, angles)
+        native_manipulate_bone_angles(self._handle, bone, angles.p, angles.y, angles.r);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "clear_bone_manipulations",
+    realm = "shared",
+    summary = "Clears bone position and angle overrides.",
+    returns = { ty = "nil", desc = "" },
+    see_also = "Entity:manipulate_bone_position, Entity:manipulate_bone_angles",
+    ]=]
+    function meta:clear_bone_manipulations()
+        native_clear_bone_manipulations(self._handle);
     end
 
     --[=[document

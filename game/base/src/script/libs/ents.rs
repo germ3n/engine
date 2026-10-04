@@ -94,6 +94,21 @@ fn clock(lua: &Lua) -> u64 {
     tick
 }
 
+fn tick_interval(lua: &Lua) -> f64 {
+    let Ok(engine) = lua.globals().get::<Table>("engine") else {
+        return 1.0 / 66.0;
+    };
+    let Ok(interval) = engine.get::<f64>("tick_interval") else {
+        return 1.0 / 66.0;
+    };
+
+    if interval.is_finite() && interval > 0.0 {
+        interval
+    } else {
+        1.0 / 66.0
+    }
+}
+
 fn entities(access: &AtomicPtr<EntityList>) -> Result<&mut EntityList> {
     let ptr = access.load(Ordering::Relaxed);
 
@@ -502,6 +517,341 @@ fn build_native(
             .get_mut(EntityHandle(raw))
             .ok_or_else(|| invalid(raw))?;
         entity.base_mut().anim.clear_gesture();
+
+        Ok(())
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "lookup_sequence", move |_, (raw, name): (u32, String)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        let clips = entity.base().anim.clips;
+
+        Ok(bank.sequence_id(clips, &name))
+    });
+
+    let ents_access = access.clone();
+    add_native(lua, &native, "get_sequence", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        let sequence = entity.base().anim.sequence;
+
+        if sequence == crate::anim::NONE_SEQ {
+            Ok(None)
+        } else {
+            Ok(Some(sequence))
+        }
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "get_sequence_name",
+        move |_, (raw, sequence): (u32, Option<u16>)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let clips = entity.base().anim.clips;
+            let sequence = sequence.unwrap_or(entity.base().anim.sequence);
+
+            Ok(bank.sequence_name(clips, sequence).map(|name| name.to_string()))
+        },
+    );
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "sequence_count", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank.sequence_count(entity.base().anim.clips))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "sequence_duration",
+        move |_, (raw, sequence): (u32, Value)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let clips = entity.base().anim.clips;
+            let id = match sequence {
+                Value::Nil => entity.base().anim.sequence,
+                Value::Integer(value) => value as u16,
+                Value::Number(value) => value as u16,
+                Value::String(value) => {
+                    let name = value.to_str()?.to_string();
+                    bank.sequence_id(clips, &name).ok_or_else(|| {
+                        Error::RuntimeError(format!("unknown sequence {name}"))
+                    })?
+                }
+                _ => {
+                    return Err(Error::RuntimeError(
+                        "sequence_duration expects id or name".to_string(),
+                    ));
+                }
+            };
+
+            Ok(bank.sequence_duration(clips, id))
+        },
+    );
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "sequence_loops",
+        move |_, (raw, sequence): (u32, Value)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let clips = entity.base().anim.clips;
+            let id = match sequence {
+                Value::Nil => entity.base().anim.sequence,
+                Value::Integer(value) => value as u16,
+                Value::Number(value) => value as u16,
+                Value::String(value) => {
+                    let name = value.to_str()?.to_string();
+                    bank.sequence_id(clips, &name).ok_or_else(|| {
+                        Error::RuntimeError(format!("unknown sequence {name}"))
+                    })?
+                }
+                _ => {
+                    return Err(Error::RuntimeError(
+                        "sequence_loops expects id or name".to_string(),
+                    ));
+                }
+            };
+
+            Ok(bank.sequence_loops(clips, id))
+        },
+    );
+
+    let ents_access = access.clone();
+    add_native(lua, &native, "get_playback_rate", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(entity.base().anim.sequence_rate as f64)
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_cycle", move |lua, raw: u32| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        let playback = entity.base().anim;
+        let time = clock(lua) as f64;
+        let dt = tick_interval(lua);
+
+        Ok(bank.sequence_cycle(&playback, time, dt) as f64)
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "set_cycle", move |lua, (raw, cycle): (u32, f64)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list
+            .get_mut(EntityHandle(raw))
+            .ok_or_else(|| invalid(raw))?;
+        let clips = entity.base().anim.clips;
+        let sequence = entity.base().anim.sequence;
+        let duration = bank.sequence_duration(clips, sequence).unwrap_or(0.0);
+        let loops = bank.sequence_loops(clips, sequence).unwrap_or(false);
+        let tick = clock(lua);
+        let dt = tick_interval(lua);
+        entity
+            .base_mut()
+            .anim
+            .set_cycle(duration, loops, cycle as f32, tick, dt);
+
+        Ok(())
+    });
+
+    let ents_access = access.clone();
+    add_native(lua, &native, "reset_sequence", move |lua, raw: u32| {
+        let list = entities(&ents_access)?;
+        let entity = list
+            .get_mut(EntityHandle(raw))
+            .ok_or_else(|| invalid(raw))?;
+        entity.base_mut().anim.reset_sequence(clock(lua));
+
+        Ok(())
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_model", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank.model_paths(&entity.base().anim).map(|(mesh, _)| mesh))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_clips", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank.model_paths(&entity.base().anim).map(|(_, clips)| clips))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "set_sequence_id", move |lua, (raw, id, rate): (u32, u16, f64)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list
+            .get_mut(EntityHandle(raw))
+            .ok_or_else(|| invalid(raw))?;
+        let clips = entity.base().anim.clips;
+
+        if bank.sequence_name(clips, id).is_none() {
+            return Err(Error::RuntimeError(format!("unknown sequence {id}")));
+        }
+
+        entity
+            .base_mut()
+            .anim
+            .set_sequence(id, clock(lua), rate as f32);
+
+        Ok(())
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "lookup_bone", move |_, (raw, name): (u32, String)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank.bone_id(entity.base().anim.mesh, &name))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_bone_count", move |_, raw: u32| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank.bone_count(entity.base().anim.mesh))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_bone_name", move |_, (raw, bone): (u32, u16)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank
+            .bone_name(entity.base().anim.mesh, bone)
+            .map(|name| name.to_string()))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_bone_parent", move |_, (raw, bone): (u32, u16)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+
+        Ok(bank.bone_parent(entity.base().anim.mesh, bone))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_bone_position", move |lua, (raw, bone): (u32, u16)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        let base = entity.base();
+        let playback = base.anim;
+        let position = [base.position.x as f32, base.position.y as f32, base.position.z as f32];
+        let pose = bank.bone_pose(
+            raw,
+            &playback,
+            bone,
+            position,
+            base.angles.p as f32,
+            base.angles.y as f32,
+            base.angles.r as f32,
+            clock(lua) as f64,
+            tick_interval(lua),
+        );
+
+        Ok(pose.map(|(pos, _)| Vector3::new(pos[0] as f64, pos[1] as f64, pos[2] as f64)))
+    });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "get_bone_angles", move |lua, (raw, bone): (u32, u16)| {
+        let list = entities(&ents_access)?;
+        let bank = anims(&anims_access)?;
+        let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+        let base = entity.base();
+        let playback = base.anim;
+        let position = [base.position.x as f32, base.position.y as f32, base.position.z as f32];
+        let pose = bank.bone_pose(
+            raw,
+            &playback,
+            bone,
+            position,
+            base.angles.p as f32,
+            base.angles.y as f32,
+            base.angles.r as f32,
+            clock(lua) as f64,
+            tick_interval(lua),
+        );
+
+        Ok(pose.map(|(_, angles)| Angle3::new(angles[0], angles[1], angles[2])))
+    });
+
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "manipulate_bone_position",
+        move |_, (raw, bone, x, y, z): (u32, u16, f64, f64, f64)| {
+            let bank = anims(&anims_access)?;
+            bank.manipulate_bone_position(raw, bone, [x as f32, y as f32, z as f32]);
+
+            Ok(())
+        },
+    );
+
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "manipulate_bone_angles",
+        move |_, (raw, bone, p, y, r): (u32, u16, f64, f64, f64)| {
+            let bank = anims(&anims_access)?;
+            bank.manipulate_bone_angles(raw, bone, [p as f32, y as f32, r as f32]);
+
+            Ok(())
+        },
+    );
+
+    let anims_access = anim_access.clone();
+    add_native(lua, &native, "clear_bone_manipulations", move |_, raw: u32| {
+        let bank = anims(&anims_access)?;
+        bank.clear_bone_manipulations(raw);
 
         Ok(())
     });

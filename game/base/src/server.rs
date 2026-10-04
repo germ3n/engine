@@ -2,7 +2,9 @@ use crate::demo::{self, DemoFrame, DemoPlayer, DemoSession, SlotEvent, SlotInput
 use crate::entities::context::FrameInfo;
 use crate::entities::{EntityHandle, Player};
 use crate::movement::{self, UserCommand};
-use crate::network::events::{EntityModel, EntityNetworked, EntityOwnership, EntitySnapshot};
+use crate::network::events::{
+    EntityBones, EntityModel, EntityNetworked, EntityOwnership, EntitySnapshot,
+};
 use crate::network::packet::STREAM_STATE;
 use crate::network::packet::{
     encoded_packet_count, owned_payload, unreliable_message_limit, BundlePart, CONNECTION_TIMEOUT,
@@ -382,6 +384,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             recording = None;
         }
         emit_anim_models(&mut game);
+        emit_anim_bones(&mut game);
         flush_sounds(&mut game);
 
         emit_scale_dirty(&mut game, &peers);
@@ -1688,6 +1691,15 @@ fn emit_snapshot(
                 mesh,
                 clips,
             });
+        let bones = {
+            let bones = game.anims.entity_bones(handle.0);
+
+            if bones.bones.is_empty() {
+                None
+            } else {
+                Some(bones)
+            }
+        };
         pending.push((
             EntitySnapshot {
                 handle,
@@ -1702,24 +1714,28 @@ fn emit_snapshot(
             states.remove(&handle),
             owner,
             model,
+            bones,
         ));
     }
 
-    pending.sort_by_key(|(_, _, owner, _)| owner.is_some());
+    pending.sort_by_key(|(_, _, owner, _, _)| owner.is_some());
 
     let mut batches = Vec::new();
     let mut batch = Vec::new();
     let mut networked = Vec::new();
     let mut owners = Vec::new();
     let mut models = Vec::new();
-    for (entity, state, owner, model) in pending {
+    let mut bones = Vec::new();
+    for (entity, state, owner, model, bone) in pending {
         let has_state = state.is_some();
         let has_owner = owner.is_some();
         let has_model = model.is_some();
+        let has_bones = bone.is_some();
         batch.push(entity);
         networked.extend(state);
         owners.extend(owner);
         models.extend(model);
+        bones.extend(bone);
         if snapshot_fits(
             generation,
             true,
@@ -1729,6 +1745,7 @@ fn emit_snapshot(
             &networked,
             &owners,
             &models,
+            &bones,
         ) {
             continue;
         }
@@ -1737,12 +1754,14 @@ fn emit_snapshot(
         let overflow_state = if has_state { networked.pop() } else { None };
         let overflow_owner = if has_owner { owners.pop() } else { None };
         let overflow_model = if has_model { models.pop() } else { None };
+        let overflow_bones = if has_bones { bones.pop() } else { None };
         if !batch.is_empty() {
             batches.push((
                 std::mem::take(&mut batch),
                 std::mem::take(&mut networked),
                 std::mem::take(&mut owners),
                 std::mem::take(&mut models),
+                std::mem::take(&mut bones),
             ));
         }
 
@@ -1750,6 +1769,7 @@ fn emit_snapshot(
         networked.extend(overflow_state);
         owners.extend(overflow_owner);
         models.extend(overflow_model);
+        bones.extend(overflow_bones);
         if !snapshot_fits(
             generation,
             true,
@@ -1759,27 +1779,29 @@ fn emit_snapshot(
             &networked,
             &owners,
             &models,
+            &bones,
         ) {
             log::warn!("[sv] snapshot entity too large");
             batch.clear();
             networked.clear();
             owners.clear();
             models.clear();
+            bones.clear();
         }
     }
 
     if !batch.is_empty() {
-        batches.push((batch, networked, owners, models));
+        batches.push((batch, networked, owners, models, bones));
     }
 
     if batches.is_empty() {
-        batches.push((Vec::new(), Vec::new(), Vec::new(), Vec::new()));
+        batches.push((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     }
 
     let part_count = batches.len() as u16;
-    for (idx, (entities, networked, owners, models)) in batches.into_iter().enumerate() {
+    for (idx, (entities, networked, owners, models, bones)) in batches.into_iter().enumerate() {
         log::info!(
-            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={} networked={} owners={} models={}",
+            "[sv] WorldSnapshot to {} gen={} reset={} part={}/{} ents={} networked={} owners={} models={} bones={}",
             addr,
             generation,
             idx == 0,
@@ -1788,7 +1810,8 @@ fn emit_snapshot(
             entities.len(),
             networked.len(),
             owners.len(),
-            models.len()
+            models.len(),
+            bones.len()
         );
         game.send_state_to(
             addr,
@@ -1801,6 +1824,7 @@ fn emit_snapshot(
                 networked,
                 owners,
                 models,
+                bones,
             },
         );
     }
@@ -1870,6 +1894,16 @@ fn emit_anim_models(game: &mut GameState<FromClient, ServerToClient>) {
             handle: model.handle,
             mesh: model.mesh,
             clips: model.clips,
+        });
+    }
+}
+
+#[cfg(feature = "server")]
+fn emit_anim_bones(game: &mut GameState<FromClient, ServerToClient>) {
+    for bones in game.take_anim_bones() {
+        game.send_reliable(ServerToClient::AnimBones {
+            handle: bones.handle,
+            bones: bones.bones,
         });
     }
 }
@@ -2091,6 +2125,7 @@ fn snapshot_fits(
     networked: &[EntityNetworked],
     owners: &[EntityOwnership],
     models: &[EntityModel],
+    bones: &[EntityBones],
 ) -> bool {
     let event = ServerToClient::WorldSnapshot {
         generation,
@@ -2101,6 +2136,7 @@ fn snapshot_fits(
         networked: networked.to_vec(),
         owners: owners.to_vec(),
         models: models.to_vec(),
+        bones: bones.to_vec(),
     };
     let payload = wincode::serialize(&event).unwrap();
 

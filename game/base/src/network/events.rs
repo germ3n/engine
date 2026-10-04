@@ -31,10 +31,11 @@ impl Default for AnimSnapshot {
     }
 }
 
-#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug)]
+#[derive(SchemaWrite, SchemaRead, Clone, Debug)]
 pub struct EntityAnimNet {
     pub handle: EntityHandle,
     pub anim: AnimSnapshot,
+    pub bones: Vec<BoneOverrideNet>,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
@@ -42,6 +43,33 @@ pub struct EntityModel {
     pub handle: EntityHandle,
     pub mesh: String,
     pub clips: String,
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug, PartialEq)]
+pub struct BoneOverrideNet {
+    pub bone: u16,
+    pub flags: u8,
+    pub pos: [f32; 3],
+    pub angles: [f32; 3],
+}
+
+impl BoneOverrideNet {
+    pub const HAS_POS: u8 = 1;
+    pub const HAS_ANGLES: u8 = 2;
+
+    pub fn has_pos(self) -> bool {
+        self.flags & Self::HAS_POS != 0
+    }
+
+    pub fn has_angles(self) -> bool {
+        self.flags & Self::HAS_ANGLES != 0
+    }
+}
+
+#[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]
+pub struct EntityBones {
+    pub handle: EntityHandle,
+    pub bones: Vec<BoneOverrideNet>,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug)]
@@ -172,6 +200,10 @@ pub enum ServerToClient {
         mesh: String,
         clips: String,
     },
+    AnimBones {
+        handle: EntityHandle,
+        bones: Vec<BoneOverrideNet>,
+    },
     FlagsChanged {
         handle: EntityHandle,
         flags: EntityFlags,
@@ -256,6 +288,7 @@ pub enum ServerToClient {
         networked: Vec<EntityNetworked>,
         owners: Vec<EntityOwnership>,
         models: Vec<EntityModel>,
+        bones: Vec<EntityBones>,
     },
     TickState {
         tick: u64,
@@ -510,6 +543,9 @@ impl ServerToClient {
             ServerToClient::AnimModel { handle, mesh, clips } => {
                 format!("AnimModel({handle:?} {mesh} {clips})")
             }
+            ServerToClient::AnimBones { handle, bones } => {
+                format!("AnimBones({handle:?} {} bones)", bones.len())
+            }
             ServerToClient::FlagsChanged { handle, flags } => {
                 format!("FlagsChanged({handle:?} {flags:?})")
             }
@@ -583,12 +619,14 @@ impl ServerToClient {
                 networked,
                 owners,
                 models,
+                bones,
             } => format!(
-                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={} models={})",
+                "WorldSnapshot(gen={generation} reset={reset} part={part}/{parts} ents={} networked={} owners={} models={} bones={})",
                 entities.len(),
                 networked.len(),
                 owners.len(),
-                models.len()
+                models.len(),
+                bones.len()
             ),
             ServerToClient::TickState {
                 tick,

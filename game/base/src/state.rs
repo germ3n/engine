@@ -4,7 +4,7 @@ use crate::entities::{EntityHandle, EntityList, Player};
 use crate::fs::Fs;
 use crate::input::{binds_path, load_or_defaults, Binds};
 use crate::movement::UserCommand;
-use crate::network::events::{EntityAnimNet, EntityNetworked, NetVar};
+use crate::network::events::{EntityAnimNet, EntityBones, EntityNetworked, NetVar};
 use crate::network::NetSend;
 use crate::network::NetWake;
 use crate::physics::{PhysicsScope, PhysicsWorld};
@@ -620,6 +620,7 @@ impl<In, Out> GameState<In, Out> {
                 base.anim.draw_tick as f64 + f64::from(base.anim.draw_frac)
             };
             inputs.push(crate::anim::DrawInput {
+                entity: handle.0,
                 mesh: base.anim.mesh,
                 clips: base.anim.clips,
                 playback: base.anim,
@@ -680,10 +681,19 @@ impl<In, Out> GameState<In, Out> {
             anims.push(EntityAnimNet {
                 handle,
                 anim: entity.base().anim.snapshot(),
+                bones: self.anims.entity_bones(handle.0).bones,
             });
         }
 
         anims
+    }
+
+    pub fn take_anim_bones(&mut self) -> Vec<EntityBones> {
+        self.anims.take_dirty_bones()
+    }
+
+    pub fn anim_bones_baseline(&self) -> Vec<EntityBones> {
+        self.anims.all_entity_bones()
     }
 
     pub fn take_anim_models(&mut self) -> Vec<crate::network::events::EntityModel> {
