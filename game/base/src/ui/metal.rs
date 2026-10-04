@@ -38,6 +38,7 @@ pub struct MetalWindow {
     text_pipeline: RenderPipelineState,
     skin_pipeline: RenderPipelineState,
     skin: MetalSkin,
+    skin_clear_depth: bool,
     depth_write: DepthStencilState,
     depth_off: DepthStencilState,
     depth: Option<Texture>,
@@ -204,6 +205,7 @@ impl MetalWindow {
             text_pipeline,
             skin_pipeline,
             skin: MetalSkin::default(),
+            skin_clear_depth: false,
             depth_write,
             depth_off,
             depth: None,
@@ -274,11 +276,23 @@ impl Window for MetalWindow {
         self.bound_color = None;
         self.bound_depth = None;
         self.draw_mesh = false;
+        self.skin.batch = SkinBatch::default();
+        self.skin.view_batch = SkinBatch::default();
+        self.skin_clear_depth = false;
     }
 
     fn draw_skinned(&mut self, batch: &SkinBatch, view: &SceneView) {
-        self.skin.batch = batch.clone();
         self.skin.view = metal_view_proj(view);
+
+        if self.skin_clear_depth {
+            self.skin.view_batch = batch.clone();
+        } else {
+            self.skin.batch = batch.clone();
+        }
+    }
+
+    fn clear_depth(&mut self) {
+        self.skin_clear_depth = true;
     }
 
     fn draw_colored_mesh(
@@ -502,7 +516,7 @@ impl Window for MetalWindow {
             let load_depth = load.depth_attachment().unwrap();
             load_depth.set_texture(Some(depth));
             load_depth.set_load_action(MTLLoadAction::Load);
-            load_depth.set_store_action(MTLStoreAction::DontCare);
+            load_depth.set_store_action(MTLStoreAction::Store);
             load.set_depth_attachment(Some(load_depth));
             let encoder = command.new_render_command_encoder(load);
 
@@ -510,13 +524,43 @@ impl Window for MetalWindow {
                 self.encode_mesh(&encoder, width as f32, height as f32, true);
             }
 
+            let view_matrix = self.skin.view;
             encode_skin(
-                &mut self.skin,
+                &mut self.skin.meshes,
+                &self.skin.batch.groups,
                 &self.device,
                 &encoder,
                 &self.skin_pipeline,
                 &self.depth_write,
                 &self.view_proj,
+            );
+            encoder.end_encoding();
+
+            let overlay = RenderPassDescriptor::new();
+            let overlay_color = overlay.color_attachments().object_at(0).unwrap();
+            overlay_color.set_texture(Some(color_texture));
+            overlay_color.set_load_action(MTLLoadAction::Load);
+            overlay_color.set_store_action(MTLStoreAction::Store);
+            let overlay_depth = overlay.depth_attachment().unwrap();
+            overlay_depth.set_texture(Some(depth));
+            overlay_depth.set_load_action(if self.skin.view_batch.groups.is_empty() {
+                MTLLoadAction::Load
+            } else {
+                MTLLoadAction::Clear
+            });
+            overlay_depth.set_store_action(MTLStoreAction::DontCare);
+            overlay_depth.set_clear_depth(1.0);
+            overlay.set_depth_attachment(Some(overlay_depth));
+            let encoder = command.new_render_command_encoder(overlay);
+
+            encode_skin(
+                &mut self.skin.meshes,
+                &self.skin.view_batch.groups,
+                &self.device,
+                &encoder,
+                &self.skin_pipeline,
+                &self.depth_write,
+                &view_matrix,
             );
             let mut span_idx = 0;
 
@@ -644,7 +688,8 @@ impl MetalWindow {
                 }
 
                 encode_skin(
-                    &mut self.skin,
+                    &mut self.skin.meshes,
+                    &self.skin.batch.groups,
                     &self.device,
                     &encoder,
                     &self.skin_pipeline,
@@ -652,6 +697,40 @@ impl MetalWindow {
                     &matrix,
                 );
                 encoder.end_encoding();
+
+                if !self.skin.view_batch.groups.is_empty() {
+                    let view_pass = RenderPassDescriptor::new();
+                    let view_color = view_pass.color_attachments().object_at(0).unwrap();
+                    view_color.set_texture(Some(&color[idx]));
+                    view_color.set_load_action(MTLLoadAction::Load);
+                    view_color.set_store_action(MTLStoreAction::Store);
+                    let view_depth = view_pass.depth_attachment().unwrap();
+                    view_depth.set_texture(Some(&depth[idx]));
+                    view_depth.set_load_action(MTLLoadAction::Clear);
+                    view_depth.set_store_action(MTLStoreAction::DontCare);
+                    view_depth.set_clear_depth(1.0);
+                    view_pass.set_depth_attachment(Some(view_depth));
+                    let encoder = command.new_render_command_encoder(view_pass);
+                    encoder.set_viewport(MTLViewport {
+                        originX: 0.0,
+                        originY: 0.0,
+                        width: width as f64,
+                        height: height as f64,
+                        znear: 0.0,
+                        zfar: 1.0,
+                    });
+                    encode_skin(
+                        &mut self.skin.meshes,
+                        &self.skin.view_batch.groups,
+                        &self.device,
+                        &encoder,
+                        &self.skin_pipeline,
+                        &self.depth_write,
+                        &matrix,
+                    );
+                    encoder.end_encoding();
+                }
+
                 idx += 1;
             }
         });
@@ -833,6 +912,7 @@ fn pipeline(
 #[derive(Default)]
 struct MetalSkin {
     batch: SkinBatch,
+    view_batch: SkinBatch,
     view: [f32; 16],
     meshes: std::collections::HashMap<u64, MetalSkinMesh>,
 }
@@ -849,14 +929,15 @@ struct MetalSkinMesh {
 }
 
 fn encode_skin(
-    skin: &mut MetalSkin,
+    meshes: &mut std::collections::HashMap<u64, MetalSkinMesh>,
+    groups: &[crate::ui::skin::SkinGroup],
     device: &Device,
     encoder: &RenderCommandEncoderRef,
     pipeline: &RenderPipelineState,
     depth: &DepthStencilState,
     matrix: &[f32; 16],
 ) {
-    if skin.batch.groups.is_empty() {
+    if groups.is_empty() {
         return;
     }
 
@@ -866,21 +947,20 @@ fn encode_skin(
     encoder.set_front_facing_winding(MTLWinding::CounterClockwise);
     let mut idx = 0;
 
-    while idx < skin.batch.groups.len() {
-        let group = &skin.batch.groups[idx];
+    while idx < groups.len() {
+        let group = &groups[idx];
         let key = group.key;
         let vertex_ptr = group.vertices.as_ptr() as usize;
-        let stale = skin
-            .meshes
+        let stale = meshes
             .get(&key)
             .map(|mesh| mesh.vertex_ptr != vertex_ptr)
             .unwrap_or(true);
 
         if stale {
-            skin.meshes.insert(key, upload_skin_mesh(device, group));
+            meshes.insert(key, upload_skin_mesh(device, group));
         }
 
-        let Some(mesh) = skin.meshes.get_mut(&key) else {
+        let Some(mesh) = meshes.get_mut(&key) else {
             idx += 1;
 
             continue;

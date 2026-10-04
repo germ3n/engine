@@ -20,6 +20,7 @@ pub trait Window {
         view: &SceneView,
     );
     fn draw_skinned(&mut self, _batch: &SkinBatch, _view: &SceneView) {}
+    fn clear_depth(&mut self) {}
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color);
     fn draw_outlined_rectangle(
         &mut self,

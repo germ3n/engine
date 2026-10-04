@@ -439,6 +439,29 @@ pub fn client_loop(
                     let aspect = width as f32 / height.max(1) as f32;
                     let world_revision = game.voxel_world.revision();
                     let brush_revision = game.brush_world.revision();
+                    let skin_alpha = if game.tick_interval > 0.0 {
+                        (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
+                    } else {
+                        1.0
+                    };
+
+                    if play.is_none()
+                        && !prediction.local.is_null()
+                        && game.entities.is_valid(prediction.local)
+                    {
+                        let origin = prediction
+                            .view_origin(skin_alpha)
+                            .or_else(|| body_origin(&game, prediction.local));
+
+                        if let Some(origin) = origin {
+                            place_camera(
+                                &mut camera,
+                                origin,
+                                prediction.look,
+                                movement::eye_height(prediction.previous()),
+                            );
+                        }
+                    }
 
                     let camera_moved = scene_anchor.drifted(camera.x, camera.y, camera.z);
 
@@ -537,11 +560,6 @@ pub fn client_loop(
                         shown_revision,
                         &scene,
                     );
-                    let skin_alpha = if game.tick_interval > 0.0 {
-                        (accumulated_time / game.tick_interval).clamp(0.0, 1.0)
-                    } else {
-                        1.0
-                    };
                     let local_time = if game.tick_count == 0 {
                         0.0
                     } else {
@@ -556,14 +574,22 @@ pub fn client_loop(
                         scene.aspect,
                         scene.far,
                     );
-                    let batch = game.skin_batch(
+                    let view_eye = movement::eye_height(prediction.previous());
+                    let (world_skin, view_skin) = game.skin_batch(
                         prediction.local,
                         prediction.view_origin(skin_alpha),
+                        Some(prediction.look),
+                        Some(view_eye),
                         local_time,
                         cull,
                         scene_anchor,
                     );
-                    client_window.draw_skinned(&batch, &scene);
+                    client_window.draw_skinned(&world_skin, &scene);
+
+                    if !view_skin.groups.is_empty() {
+                        client_window.clear_depth();
+                        client_window.draw_skinned(&view_skin, &scene);
+                    }
 
                     {
                         let (width, height) = host.size();
@@ -970,6 +996,7 @@ pub fn client_loop(
                                                 interval,
                                                 entity,
                                                 owner,
+                                                prediction.local,
                                                 &vars,
                                             );
                                         }
@@ -1925,6 +1952,7 @@ fn dispatch_frame(
                         game.tick_interval,
                         snapshot.clone(),
                         EntityHandle::NULL,
+                        prediction.local,
                         &[],
                     );
                     remotes.remove(&snapshot.handle);
@@ -1973,6 +2001,7 @@ fn apply_slot_event(
                         anim: Default::default(),
                     },
                     EntityHandle::NULL,
+                    prediction.local,
                     &[],
                 );
             }
@@ -2132,6 +2161,7 @@ fn apply_world_shot(
             game.tick_interval,
             entity.clone(),
             owner,
+            shot.local,
             vars,
         );
         idx += 1;
@@ -2631,6 +2661,21 @@ fn note_remote(
     movement::remember_pose(samples, pose, interval);
 }
 
+fn predicted_owned(
+    game: &GameState<FromServer, ClientToServer>,
+    handle: EntityHandle,
+    local: EntityHandle,
+) -> bool {
+    if local.is_null() || handle == local {
+        return false;
+    }
+
+    game.entities
+        .get(handle)
+        .map(|entity| entity.base().owner == local)
+        .unwrap_or(false)
+}
+
 fn present_remotes(
     game: &mut GameState<FromServer, ClientToServer>,
     remotes: &mut HashMap<EntityHandle, VecDeque<NetPose>>,
@@ -2643,7 +2688,7 @@ fn present_remotes(
     let mut visual = Vec::new();
 
     for (handle, samples) in remotes.iter_mut() {
-        if *handle == local {
+        if *handle == local || predicted_owned(game, *handle, local) {
             continue;
         }
 
@@ -2782,7 +2827,7 @@ fn apply_server_event(
             angles,
             velocity,
         } => {
-            if handle != prediction.local {
+            if handle != prediction.local && !predicted_owned(game, handle, prediction.local) {
                 if let Some(entity) = game.entities.get(handle) {
                     let base = entity.base();
                     let tick = remotes
@@ -2908,18 +2953,20 @@ fn apply_server_event(
                 return;
             }
 
-            note_remote(
-                remotes,
-                handle,
-                NetPose {
-                    tick: 0,
-                    time: now,
-                    position,
-                    angles,
-                    velocity: Vector3::new(0.0, 0.0, 0.0),
-                },
-                game.tick_interval,
-            );
+            if owner != prediction.local {
+                note_remote(
+                    remotes,
+                    handle,
+                    NetPose {
+                        tick: 0,
+                        time: now,
+                        position,
+                        angles,
+                        velocity: Vector3::new(0.0, 0.0, 0.0),
+                    },
+                    game.tick_interval,
+                );
+            }
         }
         ServerToClient::EntityDespawned { handle } => {
             game.sound.forget_entity(handle);
@@ -2944,10 +2991,17 @@ fn apply_server_event(
             if player.handle == prediction.local {
                 for anim in &anims {
                     if let Some(entity) = game.entities.get_mut(anim.handle) {
-                        entity.base_mut().anim.apply_remote(&anim.anim, player.ack);
+                        let cur = entity.base().anim;
+                        let snap = &anim.anim;
+
+                        if cur.sequence != snap.sequence || cur.gesture != snap.gesture {
+                            entity.base_mut().anim.apply_remote(snap, player.ack);
+                        }
                     }
 
-                    game.anims.apply_bone_net(anim.handle.0, &anim.bones);
+                    if !predicted_owned(game, anim.handle, prediction.local) {
+                        game.anims.apply_bone_net(anim.handle.0, &anim.bones);
+                    }
                 }
 
                 reconcile_player(game, prediction, &player, &entities);
@@ -2968,6 +3022,10 @@ fn apply_server_event(
             );
         }
         ServerToClient::AnimBones { handle, bones } => {
+            if predicted_owned(game, handle, prediction.local) {
+                return;
+            }
+
             apply_anim_bones(
                 game,
                 EntityBones {
@@ -2983,6 +3041,10 @@ fn apply_server_event(
 
             entity.base_mut().owner = owner;
             game.owner_changed(handle, owner);
+
+            if owner == prediction.local {
+                remotes.remove(&handle);
+            }
         }
         ServerToClient::TickState {
             tick,
@@ -2998,7 +3060,9 @@ fn apply_server_event(
                 );
 
                 for snapshot in entities {
-                    if snapshot.handle == prediction.local {
+                    if snapshot.handle == prediction.local
+                        || predicted_owned(game, snapshot.handle, prediction.local)
+                    {
                         continue;
                     }
 
@@ -3914,6 +3978,7 @@ fn apply_spawn(
     interval: f64,
     entity: EntitySnapshot,
     owner: EntityHandle,
+    local: EntityHandle,
     vars: &[NetVar],
 ) {
     if entity.class_hash == Player::CLASS_HASH {
@@ -3950,6 +4015,10 @@ fn apply_spawn(
 
     if let Some(spawned) = game.entities.get_mut(entity.handle) {
         spawned.base_mut().anim.apply_remote(&entity.anim, 0);
+    }
+
+    if entity.handle == local || (!local.is_null() && owner == local) {
+        return;
     }
 
     note_remote(

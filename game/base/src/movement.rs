@@ -137,6 +137,9 @@ impl Prediction {
             return;
         }
 
+        self.span_from.x += dx;
+        self.span_from.y += dy;
+        self.span_from.z += dz;
         self.span_to = position;
     }
 

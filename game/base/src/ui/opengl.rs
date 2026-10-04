@@ -270,6 +270,13 @@ impl Window for OpenGLWindow {
         self.skin.draw(&self.gl, batch, &matrix);
     }
 
+    fn clear_depth(&mut self) {
+        unsafe {
+            self.gl.depth_mask(true);
+            self.gl.clear(glow::DEPTH_BUFFER_BIT);
+        }
+    }
+
     fn draw_colored_mesh(
         &mut self,
         vertices: &[f32],
@@ -2627,6 +2634,7 @@ impl SkinCache {
         unsafe {
             gl.disable(glow::BLEND);
             gl.enable(glow::DEPTH_TEST);
+            gl.depth_mask(true);
             gl.depth_func(glow::LESS);
             gl.enable(glow::CULL_FACE);
             gl.cull_face(glow::BACK);

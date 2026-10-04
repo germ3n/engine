@@ -2,6 +2,9 @@ local band = bit.band;
 local IN_ATTACK = 1;
 local IN_RELOAD = 128;
 local IN_SPRINT = 8;
+local IN_DUCK = 32;
+local EYE_STAND = 1.45;
+local EYE_DUCK = 0.78;
 
 ENT.base = "base_entity";
 ENT.print_name = "Blaster";
@@ -24,14 +27,21 @@ function ENT:on_spawn()
     self._pose = "draw";
 end
 
-function ENT:follow_owner()
+function ENT:follow_owner(cmd)
     local owner = self:get_owner();
 
     if owner == nil or not owner:is_valid() then
         return;
     end
 
-    self:set_pos(owner:get_pos());
+    local pos = owner:get_pos();
+    local eye = EYE_STAND;
+
+    if cmd ~= nil and band(cmd.buttons, IN_DUCK) ~= 0 then
+        eye = EYE_DUCK;
+    end
+
+    self:set_pos(Vector3(pos.x, pos.y, pos.z + eye));
     self:set_angles(owner:get_angles());
 end
 
@@ -104,7 +114,7 @@ function ENT:predicted_think(cmd)
     local ammo = self:get_networked("ammo", self.clip_size);
     local next_fire = self:get_networked("next_fire", 0);
 
-    self:follow_owner();
+    self:follow_owner(cmd);
 
     if self:finish_pose() then
         return;

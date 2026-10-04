@@ -183,6 +183,10 @@ impl Window for GfxWindow {
         each_window!(self, |window| window.draw_skinned(batch, view))
     }
 
+    fn clear_depth(&mut self) {
+        each_window!(self, |window| window.clear_depth())
+    }
+
     fn draw_rectangle(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
         each_window!(self, |window| window.draw_rectangle(x, y, w, h, color))
     }

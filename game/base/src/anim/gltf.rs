@@ -100,7 +100,8 @@ pub fn load_bytes(
     let buffers = load_buffers(&gltf, read_uri)?;
     let mut nodes = read_nodes(&gltf)?;
     let scene = scene_mask(&gltf, &nodes);
-    let prims = read_prims(&gltf, &nodes, &scene, &buffers)?;
+    let has_skins = gltf.skins().len() > 0;
+    let prims = read_prims(&gltf, &nodes, &scene, &buffers, has_skins)?;
     let skins = read_skins(&gltf, &buffers)?;
     let anims = read_anims(&gltf, &buffers)?;
     let materials = read_materials(&gltf);
@@ -245,6 +246,7 @@ fn read_prims(
     nodes: &[NodeRec],
     scene: &[bool],
     buffers: &[Vec<u8>],
+    has_skins: bool,
 ) -> Result<Vec<PrimRec>, String> {
     let mut prims = Vec::new();
     let mut idx = 0;
@@ -256,6 +258,17 @@ fn read_prims(
                     .meshes()
                     .nth(mesh_index)
                     .ok_or_else(|| "gltf mesh".to_string())?;
+                let mesh_name = mesh.name().unwrap_or("");
+
+                if has_skins && nodes[idx].skin.is_none() {
+                    idx += 1;
+                    continue;
+                }
+
+                if helper_mesh(mesh_name) || helper_mesh(&nodes[idx].name) {
+                    idx += 1;
+                    continue;
+                }
 
                 for primitive in mesh.primitives() {
                     if let Some(prim) = read_prim(idx, nodes[idx].skin, &primitive, buffers)? {
@@ -273,6 +286,17 @@ fn read_prims(
     }
 
     Ok(prims)
+}
+
+fn helper_mesh(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+
+    lower.contains("environment")
+        || lower.contains("background")
+        || lower.contains("backdrop")
+        || lower.contains("skybox")
+        || lower.contains("aim_")
+        || lower.starts_with("aim")
 }
 
 fn read_prim(
@@ -2817,8 +2841,27 @@ mod tests {
             .loops());
         let (pos, rot) = bind_pose(&loaded.mesh);
         let point = skinned(&loaded.mesh, 0, &pos, &rot);
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        let mut vert = 0;
+
+        while vert * 16 + 2 < loaded.mesh.vertices.len() {
+            let mut axis = 0;
+
+            while axis < 3 {
+                let value = loaded.mesh.vertices[vert * 16 + axis];
+                min[axis] = min[axis].min(value);
+                max[axis] = max[axis].max(value);
+                axis += 1;
+            }
+
+            vert += 1;
+        }
 
         assert!(point.iter().all(|value| value.is_finite()));
+        assert!(max[0] - min[0] < 5.0);
+        assert!(max[1] - min[1] < 5.0);
+        assert!(max[2] - min[2] < 5.0);
     }
 
     #[test]

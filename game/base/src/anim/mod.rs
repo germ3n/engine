@@ -839,15 +839,14 @@ impl AnimAssets {
         names
     }
 
-    pub fn build_batch(&mut self, inputs: &[DrawInput], cull: &Cull, dt: f64) -> SkinBatch {
+    pub fn build_batch(&mut self, inputs: &[DrawInput], cull: Option<&Cull>, dt: f64) -> SkinBatch {
         let mut order: Vec<usize> = Vec::new();
         let mut idx = 0;
 
         while idx < inputs.len() {
             let input = inputs[idx];
-
-            if input.mesh != NONE_ASSET
-                && sees(
+            let visible = match cull {
+                Some(cull) => sees(
                     cull.eye,
                     cull.forward,
                     cull.right,
@@ -857,8 +856,11 @@ impl AnimAssets {
                     cull.far,
                     input.position,
                     2.0,
-                )
-            {
+                ),
+                None => true,
+            };
+
+            if input.mesh != NONE_ASSET && visible {
                 order.push(idx);
             }
 
@@ -1369,7 +1371,7 @@ mod tests {
             aspect: 1.0,
             far: 100.0,
         };
-        let batch = assets.build_batch(&[input], &cull, dt);
+        let batch = assets.build_batch(&[input], Some(&cull), dt);
         assert_eq!(batch.groups.len(), 1);
         assert_eq!(batch.groups[0].palette_h, 1);
         assert!(batch.groups[0].indices.len() > 30);

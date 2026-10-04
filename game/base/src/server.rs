@@ -96,6 +96,13 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
     let mut recording: Option<DemoSession> = None;
     let mut nav_feed = NavFeed::new();
     let mut next_slot: u16 = 0;
+
+    #[cfg(feature = "ai")]
+    match crate::ai::warm() {
+        Ok(()) => log::info!("[ai] warmed"),
+        Err(err) => log::warn!("[ai] warm failed: {err}"),
+    }
+
     let _: () = game.run_hook("Initialize", ());
     let _ = game.take_motion();
     game.begin_terrain();

@@ -586,12 +586,15 @@ impl<In, Out> GameState<In, Out> {
         &mut self,
         local: EntityHandle,
         local_pos: Option<crate::script::libs::vector3::Vector3>,
+        local_look: Option<crate::script::libs::angle3::Angle3>,
+        local_eye: Option<f64>,
         local_time: f64,
         cull: crate::anim::Cull,
         anchor: crate::anchor::Anchor,
-    ) -> crate::ui::skin::SkinBatch {
+    ) -> (crate::ui::skin::SkinBatch, crate::ui::skin::SkinBatch) {
         let dt = self.tick_interval;
-        let mut inputs = Vec::new();
+        let mut world = Vec::new();
+        let mut view = Vec::new();
 
         for (handle, entity) in self.entities.iter() {
             let base = entity.base();
@@ -601,38 +604,67 @@ impl<In, Out> GameState<In, Out> {
             }
 
             let class_hash = entity.class_hash();
+            let owned = !local.is_null() && base.owner == local;
             let position = if handle == local {
                 local_pos.unwrap_or(base.position)
+            } else if owned {
+                match (local_pos, local_eye) {
+                    (Some(origin), Some(eye)) => crate::script::libs::vector3::Vector3::new(
+                        origin.x,
+                        origin.y,
+                        origin.z + eye,
+                    ),
+                    (Some(origin), None) => origin,
+                    _ => base.position,
+                }
             } else {
                 base.position
             };
             let mut pitch = base.angles.p;
+            let mut yaw = base.angles.y;
             let mut roll = base.angles.r;
+
+            if owned {
+                if let Some(look) = local_look {
+                    pitch = look.p;
+                    yaw = look.y;
+                    roll = look.r;
+                }
+            }
 
             if class_hash == Player::CLASS_HASH {
                 pitch = 0.0;
                 roll = 0.0;
             }
 
-            let time = if handle == local {
+            let time = if handle == local || owned {
                 local_time
             } else {
                 base.anim.draw_tick as f64 + f64::from(base.anim.draw_frac)
             };
-            inputs.push(crate::anim::DrawInput {
+            let input = crate::anim::DrawInput {
                 entity: handle.0,
                 mesh: base.anim.mesh,
                 clips: base.anim.clips,
                 playback: base.anim,
                 position: anchor.relative(position.x, position.y, position.z),
                 pitch,
-                yaw: base.angles.y,
+                yaw,
                 roll,
                 time,
-            });
+            };
+
+            if owned {
+                view.push(input);
+            } else {
+                world.push(input);
+            }
         }
 
-        self.anims.build_batch(&inputs, &cull, dt)
+        let world = self.anims.build_batch(&world, Some(&cull), dt);
+        let view = self.anims.build_batch(&view, None, dt);
+
+        (world, view)
     }
 
     pub fn fire_anim_events(&mut self, events: Vec<(EntityHandle, String)>) {

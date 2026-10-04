@@ -432,7 +432,7 @@ pub fn pose_matrix(position: [f32; 3], pitch_deg: f32, yaw_deg: f32, roll_deg: f
     }
 
     let (sy, cy) = yaw_deg.to_radians().sin_cos();
-    let (sp, cp) = pitch_deg.to_radians().sin_cos();
+    let (sp, cp) = (-pitch_deg).to_radians().sin_cos();
     let (sr, cr) = roll_deg.to_radians().sin_cos();
     let r00 = cy * cp;
     let r10 = sy * cp;
@@ -470,7 +470,7 @@ pub fn angles_from_pose(mat: [f32; 16]) -> [f32; 3] {
     let r20 = mat[2];
     let r21 = mat[6];
     let r22 = mat[10];
-    let pitch = (-r20).clamp(-1.0, 1.0).asin();
+    let pitch = r20.clamp(-1.0, 1.0).asin();
     let (yaw, roll) = if r20.abs() < 0.9999 {
         (r10.atan2(r00), r21.atan2(r22))
     } else {

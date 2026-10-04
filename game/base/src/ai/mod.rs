@@ -9,6 +9,18 @@ pub struct Answer {
     pub confidence: f32,
 }
 
+pub fn warm() -> Result<(), String> {
+    #[cfg(feature = "ai")]
+    {
+        return infer::warm();
+    }
+
+    #[cfg(not(feature = "ai"))]
+    {
+        Ok(())
+    }
+}
+
 pub fn ask(situation: &str, questions: &[Question]) -> Result<Vec<Answer>, String> {
     if situation.is_empty() {
         return Err("situation is empty".to_string());
@@ -138,6 +150,10 @@ mod infer {
 
     pub fn score(situation: &str, questions: &[Question]) -> Result<Vec<Answer>, String> {
         with_engine(|engine| decode_questions(engine, situation, questions))
+    }
+
+    pub fn warm() -> Result<(), String> {
+        with_engine(|_| Ok(()))
     }
 
     fn with_engine<T>(body: impl FnOnce(&mut Engine) -> Result<T, String>) -> Result<T, String> {
