@@ -22,6 +22,7 @@ impl NetworkClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_socket(socket: UdpSocket) -> Self {
         socket.set_nonblocking(true).unwrap();
         Self {
@@ -69,6 +70,7 @@ impl NetworkClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_address(&self) -> SocketAddr {
         self.peer
     }

@@ -1187,52 +1187,10 @@ fn apply_command(
     handle: EntityHandle,
     cmd: &UserCommand,
     prev: InputButtons,
-    dt: f64,
-    gravity: f64,
+    _dt: f64,
+    _gravity: f64,
 ) -> bool {
-    let (mut position, mut velocity, mut angles, body) = {
-        let Some(entity) = game.entities.get(handle) else {
-            return false;
-        };
-
-        let base = entity.base();
-        let body = entity
-            .player_body()
-            .copied()
-            .unwrap_or_default();
-
-        (base.position, base.velocity, base.angles, body)
-    };
-    let root = game
-        .entities
-        .get(handle)
-        .map(|entity| entity.base().anim)
-        .and_then(|playback| game.anims.root_motion(&playback, angles.y, cmd.tick, dt));
-    movement::step(
-        &mut position,
-        &mut velocity,
-        &mut angles,
-        cmd,
-        prev,
-        dt,
-        gravity,
-        &game.brush_world,
-        &game.voxel_world,
-        root,
-        &body,
-    );
-
-    let Some(entity) = game.entities.get_mut(handle) else {
-        return false;
-    };
-
-    let base = entity.base_mut();
-    base.position = position;
-    base.velocity = velocity;
-    base.angles = angles;
-    game.run_predicted(handle, cmd, true);
-
-    true
+    game.simulate_move(handle, cmd, prev, true)
 }
 
 fn player_ack(players: &[RemotePlayer], handle: EntityHandle) -> u64 {
@@ -1361,6 +1319,7 @@ fn poll_nav_bake(
 }
 
 struct NavFeed {
+    #[allow(dead_code)]
     parts: Vec<Vec<u8>>,
     cursor: Vec<(SocketAddr, usize)>,
 }
@@ -1373,6 +1332,7 @@ impl NavFeed {
         }
     }
 
+    #[allow(dead_code)]
     fn set_parts(&mut self, parts: Vec<Vec<u8>>, peers: &[SocketAddr]) {
         self.parts = parts;
         self.cursor.clear();
@@ -1388,6 +1348,7 @@ impl NavFeed {
         }
     }
 
+    #[allow(dead_code)]
     fn add_peer(&mut self, addr: SocketAddr) {
         if self.parts.is_empty() {
             return;
@@ -1401,6 +1362,7 @@ impl NavFeed {
         self.cursor.retain(|item| item.0 != addr);
     }
 
+    #[allow(dead_code)]
     fn pump(&mut self, game: &GameState<FromClient, ServerToClient>) {
         let batch = 8usize;
         let mut idx = 0;
@@ -1444,6 +1406,7 @@ impl NavFeed {
     }
 }
 
+#[allow(dead_code)]
 fn nav_wire_parts(game: &GameState<FromClient, ServerToClient>) -> Vec<Vec<u8>> {
     if !game.nav.state.loaded || game.nav.state.file_bytes.is_empty() {
         return Vec::new();
@@ -1464,6 +1427,7 @@ fn nav_wire_parts(game: &GameState<FromClient, ServerToClient>) -> Vec<Vec<u8>> 
     parts
 }
 
+#[allow(dead_code)]
 fn emit_nav_to(
     game: &GameState<FromClient, ServerToClient>,
     addr: SocketAddr,
@@ -1505,6 +1469,7 @@ fn emit_nav_to(
     }
 }
 
+#[allow(dead_code)]
 fn emit_nav_show(game: &GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
     let mut idx = 0;
 
@@ -1519,6 +1484,7 @@ fn emit_nav_show(game: &GameState<FromClient, ServerToClient>, peers: &[SocketAd
     }
 }
 
+#[allow(dead_code)]
 fn emit_nav_path(
     game: &GameState<FromClient, ServerToClient>,
     peers: &[SocketAddr],

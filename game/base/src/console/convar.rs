@@ -13,9 +13,12 @@ type ChangeFn = Arc<dyn Fn(&ConVarValue) + Send + Sync>;
 
 pub struct ConVar {
     pub name: String,
+    #[allow(dead_code)]
     pub description: String,
     pub value: Mutex<ConVarValue>,
+    #[allow(dead_code)]
     pub default_value: ConVarValue,
+    #[allow(dead_code)]
     pub has_cheat_flag: bool,
     pub is_replicated_to_clients: bool,
     pub callbacks: Mutex<Vec<RegistryKey>>,

@@ -73,11 +73,7 @@ impl EntityList {
         }
 
         entity.base_mut().owner = owner;
-        let spawned = entity.is_spawned();
-
-        if spawned {
-            self.owner_changed.push(handle);
-        }
+        self.owner_changed.push(handle);
 
         true
     }
@@ -113,18 +109,22 @@ impl EntityList {
         self.count
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 
+    #[allow(dead_code)]
     pub fn think_count(&self) -> usize {
         self.think_list.len()
     }
 
+    #[allow(dead_code)]
     pub fn max_entities(&self) -> usize {
         self.max_entities
     }
 
+    #[allow(dead_code)]
     pub fn frame(&self) -> FrameInfo {
         self.frame
     }
@@ -133,6 +133,7 @@ impl EntityList {
         self.frame = frame;
     }
 
+    #[allow(dead_code)]
     pub fn queue(&mut self, command: EntityCommand) {
         self.commands.push(command);
     }

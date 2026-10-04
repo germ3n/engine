@@ -563,6 +563,7 @@ fn net_call() {}
             "ents.get_count",
             "Entity:index",
             "Entity:handle",
+            "Entity:get_handle",
             "Entity:get_class",
             "Entity:is_valid",
             "Entity:spawn",
@@ -628,6 +629,11 @@ fn net_call() {}
             "engine.frametime",
             "engine.tick_count",
             "engine.first_time_predicted",
+            "UserCmd.tick",
+            "UserCmd.buttons",
+            "UserCmd.wish",
+            "UserCmd.view",
+            "UserCmd.first_time_predicted",
         ];
 
         for id in expected {

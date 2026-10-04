@@ -30,10 +30,13 @@ pub const FLAG_BUMP2: u32 = 1024;
 pub enum PixelFormat {
     Rgba8,
     Bc1,
+    #[allow(dead_code)]
     Bc2,
     Bc3,
     Bc5,
+    #[allow(dead_code)]
     Bc7,
+    #[allow(dead_code)]
     Rgba16f,
 }
 
@@ -234,6 +237,7 @@ impl MapGraphics {
 }
 
 impl DrawMesh {
+    #[allow(dead_code)]
     pub fn empty() -> Self {
         Self {
             vertices: Vec::new(),
@@ -241,6 +245,7 @@ impl DrawMesh {
         }
     }
 
+    #[allow(dead_code)]
     pub fn colored(vertices: Vec<f32>) -> Self {
         let count = (vertices.len() / STRIDE) as u32;
         let ranges = if count == 0 {

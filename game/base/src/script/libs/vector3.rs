@@ -40,6 +40,7 @@ impl Vector3 {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn normalize(self) -> Self {
         let len = self.len();
         if len > 0.0 {

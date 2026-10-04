@@ -47,6 +47,7 @@ pub enum ReliableSendError {
 }
 
 pub struct NetworkServer {
+    #[allow(dead_code)]
     pub port: u16,
     pub max_clients: u32,
     pub clients: HashMap<SocketAddr, ConnectedClient>,
@@ -257,12 +258,14 @@ impl NetworkServer {
         true
     }
 
+    #[allow(dead_code)]
     pub fn remove_client(&mut self, addr: SocketAddr) {
         self.generations.remove(&addr);
         self.unreliable_parts.remove(&addr);
         self.clients.remove(&addr);
     }
 
+    #[allow(dead_code)]
     pub fn send_selective_ack(&self, addr: SocketAddr) {
         let Some(client) = self.clients.get(&addr) else {
             return;
@@ -307,6 +310,7 @@ impl NetworkServer {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn send_message(&self, message: &[u8]) -> Result<(), String> {
         let addrs: Vec<SocketAddr> = self.clients.keys().copied().collect();
         for addr in addrs {

@@ -44,6 +44,7 @@ function WEAPON:follow_owner(cmd)
 end
 
 function WEAPON:finish_pose()
+    print(SERVER and "SV" or "CL", engine.tick_count, self._pose, self:get_cycle(), engine.first_time_predicted);
     local pose = self._pose;
 
     if pose == nil or pose == "idle" or pose == "walk" or pose == "sprint" then
@@ -53,8 +54,9 @@ function WEAPON:finish_pose()
     if (self:get_cycle() or 0) < 0.99 then
         return true;
     end
-
-    self:set_sequence("wpn_val_idle");
+    if engine.first_time_predicted then
+        self:set_sequence("wpn_val_idle");
+    end
     self._pose = "idle";
 
     return false;
@@ -84,7 +86,9 @@ function WEAPON:update_locomotion(cmd)
     end
 
     if self._pose ~= next_pose then
-        self:set_sequence(next_sequence);
+        if engine.first_time_predicted then
+            self:set_sequence(next_sequence);
+        end
         self._pose = next_pose;
     end
 end
@@ -96,7 +100,9 @@ function WEAPON:play_reload(ammo)
         sequence = "wpn_val_reload_full";
     end
 
-    self:set_sequence(sequence);
+    if engine.first_time_predicted then
+        self:set_sequence(sequence);
+    end
     self._pose = sequence;
     local duration = self:sequence_duration(sequence);
 
@@ -137,9 +143,10 @@ function WEAPON:predicted_think(cmd)
     if band(cmd.buttons, IN_ATTACK) ~= 0 and ammo > 0 then
         self:set_networked("ammo", ammo - 1, true);
         self:set_networked("next_fire", tick + self.fire_ticks, true);
-        self:play_gesture("wpn_val_shoot");
 
+        print(SERVER, CLIENT, engine.first_time_predicted, self:handle(), self:get_owner())
         if engine.first_time_predicted then
+            self:play_gesture("wpn_val_shoot");
             self:log("tick " .. tick .. " fire, ammo " .. ammo .. " -> " .. (ammo - 1));
         end
 

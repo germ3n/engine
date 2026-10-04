@@ -745,10 +745,12 @@ pub fn cwd_nav_path(name: &str) -> Option<PathBuf> {
     Some(cwd.join("maps").join(format!("{stem}.nav")))
 }
 
+#[allow(dead_code)]
 pub fn compress_nav(bytes: &[u8]) -> Vec<u8> {
     zstd::bulk::compress(bytes, 3).unwrap_or_else(|_| bytes.to_vec())
 }
 
+#[allow(dead_code)]
 pub fn split_wire(bytes: &[u8], limit: usize) -> Vec<Vec<u8>> {
     let limit = limit.max(1);
     let mut out = Vec::new();
@@ -831,6 +833,7 @@ pub fn snapshot_world(brushes: &BrushMap, voxels: &VoxelWorld, input: NavInput) 
     }
 }
 
+#[allow(dead_code)]
 fn bake(snapshot: &NavSnapshot, params: NavParams) -> NavMesh {
     let tiles = plan_tiles(snapshot, params);
 
@@ -1832,6 +1835,7 @@ fn arc_z(z0: f64, z1: f64, t: f64, jump_height: f64) -> f64 {
     base + hop * 4.0 * t * (1.0 - t)
 }
 
+#[allow(dead_code)]
 fn body_blocked(solids: &[(f64, f64)], feet: f64, height: f64) -> bool {
     body_blocked_above(solids, feet, height, feet)
 }

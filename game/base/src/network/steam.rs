@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+#[allow(dead_code)]
 pub struct Start {
     pub lobby: Option<u64>,
     pub connect: Option<String>,
@@ -16,6 +17,7 @@ pub struct ClientTicket {
     pub ticket: Vec<u8>,
 }
 
+#[allow(dead_code)]
 pub enum AuthUpdate {
     Accepted { addr: SocketAddr, steam_id: u64 },
     Rejected { addr: SocketAddr },

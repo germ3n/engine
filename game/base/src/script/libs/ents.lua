@@ -72,10 +72,10 @@ kind = "hook",
 realm = "shared",
 summary = "Called on the server and during client prediction with the command being simulated.",
 params = {
-    cmd = { ty = "table", desc = "Fields: tick, buttons, wish (Vector3), view (Angle3)." },
+    cmd = { ty = "UserCmd", desc = "The command being simulated." },
 },
 returns = { ty = "nil", desc = "" },
-see_also = "engine.first_time_predicted",
+see_also = "UserCmd, engine.first_time_predicted, hook.PreMove, hook.Move, hook.PostMove",
 ]=]
 --[=[document
 parent = "Entity",
@@ -142,6 +142,7 @@ return function(native)
     local native_apply_impulse = native.apply_impulse;
     local native_set_owner = native.set_owner;
     local native_get_owner = native.get_owner;
+    local native_owned_by = native.owned_by;
     local native_set_model = native.set_model;
     local native_set_sequence = native.set_sequence;
     local native_set_sequence_id = native.set_sequence_id;
@@ -1082,8 +1083,21 @@ return function(native)
     realm = "shared",
     summary = "Returns the entity handle userdata.",
     returns = { ty = "EntityHandle", desc = "Handle with index, generation, raw, and is_null." },
+    see_also = "Entity:get_handle",
     ]=]
     function meta:handle()
+        return native_handle(self._handle);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_handle",
+    realm = "shared",
+    summary = "Returns the entity handle userdata.",
+    returns = { ty = "EntityHandle", desc = "Handle with index, generation, raw, and is_null." },
+    see_also = "Entity:handle",
+    ]=]
+    function meta:get_handle()
         return native_handle(self._handle);
     end
 
@@ -1127,6 +1141,12 @@ return function(native)
         end
 
         self._spawned = true;
+        local owner_raw = native_get_owner(self._handle);
+
+        if owner_raw ~= nil then
+            attach_owned(self, owner_raw);
+        end
+
         start(self);
     end
 
@@ -2367,32 +2387,51 @@ return function(native)
         end
     end
 
-    function exports.predicted(raw, tick, buttons, wish_x, wish_y, wish_z, view_p, view_y, view_r, first_time)
-        local ent = wrap(raw);
+    function exports.prepare_move(raw, cmd, first_time)
+        cmd.first_time_predicted = first_time and true or false;
+        engine.first_time_predicted = cmd.first_time_predicted;
+        local handle = native_handle(raw);
+        hook.call("PreMove", handle, cmd);
+        local suppress = hook.call("Move", handle, cmd);
 
-        if ent == nil then
+        return suppress == true;
+    end
+
+    local function each_owned(raw, callback)
+        local handles = native_owned_by(raw);
+
+        if handles == nil then
             return;
         end
 
-        local cmd = {
-            tick = tick,
-            buttons = buttons,
-            wish = vector_type(wish_x, wish_y, wish_z),
-            view = angle_type(view_p, view_y, view_r),
-        };
-        engine.first_time_predicted = first_time;
-        run_predicted(ent, cmd);
-        local owned = ent._owned;
+        for idx = 1, #handles do
+            local child = wrap(handles[idx]);
 
-        if owned ~= nil then
-            for idx = 1, #owned do
-                local child = owned[idx];
-
-                if child ~= nil then
-                    run_predicted(child, cmd);
+            if child ~= nil then
+                if child._owner ~= raw then
+                    attach_owned(child, raw);
                 end
+
+                callback(child);
             end
         end
+    end
+
+    function exports.finish_move(raw, cmd)
+        local handle = native_handle(raw);
+        hook.call("PostMove", handle, cmd);
+        local ent = wrap(raw);
+
+        if ent == nil then
+            engine.first_time_predicted = true;
+
+            return;
+        end
+
+        run_predicted(ent, cmd);
+        each_owned(raw, function(child)
+            run_predicted(child, cmd);
+        end);
 
         engine.first_time_predicted = true;
     end
@@ -2410,17 +2449,11 @@ return function(native)
             write_pairs(ent._handle, ent._predicted, ent._networked);
         end
 
-        local owned = ent._owned;
-
-        if owned ~= nil then
-            for idx = 1, #owned do
-                local child = owned[idx];
-
-                if child ~= nil and child._predicted ~= nil then
-                    write_pairs(child._handle, child._predicted, child._networked);
-                end
+        each_owned(raw, function(child)
+            if child._predicted ~= nil then
+                write_pairs(child._handle, child._predicted, child._networked);
             end
-        end
+        end);
 
         return take_blob();
     end

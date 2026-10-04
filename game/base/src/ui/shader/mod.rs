@@ -250,6 +250,7 @@ fn bind_target(register: u32) -> back::hlsl::BindTarget {
     }
 }
 
+#[allow(dead_code)]
 fn fixup_hlsl(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
 
@@ -300,6 +301,7 @@ pub fn spirv(source: &str, stage: ShaderStage, entry: &str) -> Result<Vec<u32>, 
     back::spv::write_vec(&module, &info, &options, Some(&pipeline)).map_err(|err| err.to_string())
 }
 
+#[allow(dead_code)]
 pub fn hlsl(source: &str) -> Result<String, String> {
     let (module, info) = parse(source)?;
     let mut options = back::hlsl::Options::default();

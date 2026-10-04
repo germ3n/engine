@@ -142,6 +142,48 @@ see_also = "surface.draw_rect",
 ]=]
 --[=[document
 parent = "hook",
+name = "PreMove",
+kind = "hook",
+realm = "shared",
+summary = "Called before engine locomotion for a player command. Return true to stop later PreMove callbacks. There is no engine PreMove work to suppress today.",
+params = {
+    ply = { ty = "EntityHandle", desc = "The player. ents.get accepts it." },
+    cmd = { ty = "UserCmd", desc = "The command being simulated. Mutating it affects Move and later steps." },
+},
+returns = { ty = "boolean", desc = "True stops later PreMove callbacks." },
+example = "hook.add(\"PreMove\", \"mod\", function(ply, cmd)\nend)",
+see_also = "hook.Move, hook.PostMove, UserCmd, engine.first_time_predicted",
+]=]
+--[=[document
+parent = "hook",
+name = "Move",
+kind = "hook",
+realm = "shared",
+summary = "Called before engine locomotion. Return true to skip engine locomotion for this command.",
+params = {
+    ply = { ty = "EntityHandle", desc = "The player. ents.get accepts it." },
+    cmd = { ty = "UserCmd", desc = "The command being simulated. Mutating it affects the engine step when not suppressed." },
+},
+returns = { ty = "boolean", desc = "True skips engine locomotion for this command." },
+example = "hook.add(\"Move\", \"custom\", function(ply, cmd)\n    return true\nend)",
+see_also = "hook.PreMove, hook.PostMove, UserCmd",
+]=]
+--[=[document
+parent = "hook",
+name = "PostMove",
+kind = "hook",
+realm = "shared",
+summary = "Called after engine locomotion (or a suppressed Move) and before predicted_think. Return true to stop later PostMove callbacks. There is no engine PostMove work to suppress today.",
+params = {
+    ply = { ty = "EntityHandle", desc = "The player. ents.get accepts it." },
+    cmd = { ty = "UserCmd", desc = "The command being simulated." },
+},
+returns = { ty = "boolean", desc = "True stops later PostMove callbacks." },
+example = "hook.add(\"PostMove\", \"mod\", function(ply, cmd)\nend)",
+see_also = "hook.PreMove, hook.Move, UserCmd, Entity:predicted_think",
+]=]
+--[=[document
+parent = "hook",
 name = "GuiMousePressed",
 kind = "hook",
 realm = "client",

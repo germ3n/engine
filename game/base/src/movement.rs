@@ -102,6 +102,7 @@ const STOP_SPEED: f64 = 1.5;
 const JUMP_HEIGHT: f64 = 1.15;
 const MAX_HISTORY: usize = 128;
 
+#[repr(C)]
 #[derive(SchemaWrite, SchemaRead, Clone, Copy, Debug)]
 pub struct UserCommand {
     pub tick: u64,
@@ -281,6 +282,7 @@ impl Prediction {
         true
     }
 
+    #[allow(dead_code)]
     pub fn replay(
         &self,
         position: &mut Vector3,

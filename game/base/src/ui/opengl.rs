@@ -559,6 +559,7 @@ struct ColoredMesh {
     unlit_slot: i32,
     view_vs: [Option<glow::UniformLocation>; 3],
     view_fs: [Option<glow::UniformLocation>; 3],
+    #[allow(dead_code)]
     samplers: Vec<(glow::UniformLocation, i32)>,
     white: glow::Texture,
     flat: glow::Texture,
@@ -2597,6 +2598,7 @@ struct SkinGpu {
     palette: glow::Texture,
     index_count: i32,
     vertices: usize,
+    #[allow(dead_code)]
     albedo_size: (u32, u32),
     palette_size: (i32, i32),
 }

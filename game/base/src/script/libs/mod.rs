@@ -15,6 +15,7 @@ pub mod pad;
 pub mod scripted_ents;
 pub mod sound;
 pub mod surface;
+pub mod usercmd;
 pub mod vector3;
 pub mod webview;
 
@@ -34,5 +35,6 @@ pub use pad::register_pad_lib;
 pub use scripted_ents::register_scripted_ents_lib;
 pub use sound::register_sound_lib;
 pub use surface::register_surface_lib;
+pub use usercmd::register_usercmd_lib;
 pub use vector3::register_vector3_lib;
 pub use webview::register_webview_lib;

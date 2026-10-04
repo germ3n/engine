@@ -1,7 +1,6 @@
 use crate::console::ConVar;
 use crate::entities::EntityHandle;
 use crate::input::Binds;
-use crate::movement::UserCommand;
 use crate::network::events::{networked_summary, vars_summary, EntityNetworked, NetVar};
 use crate::physics::PhysicsAccess;
 use crate::platform::PadCache;
@@ -12,7 +11,8 @@ use crate::script::libs::{
     register_nav_lib,
     register_convar_lib, register_demo_lib, register_engine_lib, register_ents_lib,
     register_input_lib, register_net_lib, register_noise_lib, register_pad_lib,
-    register_scripted_ents_lib,     register_sound_lib, register_surface_lib, register_vector3_lib, register_webview_lib,
+    register_scripted_ents_lib, register_sound_lib, register_surface_lib,
+    register_usercmd_lib, register_vector3_lib, register_webview_lib,
 };
 use crate::sound::SoundAccess;
 use crate::ui::Color;
@@ -158,6 +158,7 @@ pub struct ScriptEngine {
     pub realm: Realm,
     pub hook_caller: RegistryKey,
     pub net_caller: RegistryKey,
+    #[allow(dead_code)]
     pub tick_interval: f64,
     pub render_queue: RenderQueue,
     pub entity_access: EntityAccess,
@@ -211,6 +212,7 @@ impl ScriptEngine {
             register_pad_lib(&lua, pads);
             register_vector3_lib(&lua);
             register_angle3_lib(&lua);
+            register_usercmd_lib(&lua);
         }
 
         let render_queue = Arc::new(Mutex::new(RenderState {
@@ -357,6 +359,7 @@ impl ScriptEngine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn webview_debug_message(&self, id: i64, text: &str) {
         let Some(webviews) = &self.webviews else {
             return;
@@ -526,20 +529,39 @@ impl ScriptEngine {
         }
     }
 
-    pub fn run_predicted(&self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {
+    pub fn prepare_move(
+        &self,
+        handle: EntityHandle,
+        cmd: mlua::Value,
+        first_time: bool,
+    ) -> Option<bool> {
+        if !self.has_ents() {
+            return None;
+        }
+
+        log::trace!(
+            "[{} netvar] prepare_move {:?} first_time={}",
+            self.tag(),
+            handle,
+            first_time
+        );
+
+        match crate::script::libs::ents::prepare_move(&self.lua, handle, cmd, first_time) {
+            Ok(value) => Some(value),
+            Err(err) => {
+                log::error!("[LUA ENTS ERROR]: {}", err);
+
+                None
+            }
+        }
+    }
+
+    pub fn finish_move(&self, handle: EntityHandle, cmd: mlua::Value) {
         if !self.has_ents() {
             return;
         }
 
-        log::trace!(
-            "[{} netvar] predicted {:?} tick={} first_time={}",
-            self.tag(),
-            handle,
-            cmd.tick,
-            first_time
-        );
-
-        if let Err(err) = crate::script::libs::ents::predicted(&self.lua, handle, cmd, first_time) {
+        if let Err(err) = crate::script::libs::ents::finish_move(&self.lua, handle, cmd) {
             log::error!("[LUA ENTS ERROR]: {}", err);
         }
     }

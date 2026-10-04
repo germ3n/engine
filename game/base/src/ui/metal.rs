@@ -1711,6 +1711,7 @@ struct MtlUser {
     depth: bool,
     constants: [f32; 16],
     constant_len: u64,
+    #[allow(dead_code)]
     stride: u64,
     target_color: Option<Texture>,
     target_depth: Option<Texture>,

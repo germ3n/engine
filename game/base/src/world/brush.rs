@@ -161,7 +161,9 @@ struct Poly {
     shift_v: f64,
     scale_u: f64,
     scale_v: f64,
+    #[allow(dead_code)]
     width: f64,
+    #[allow(dead_code)]
     height: f64,
 }
 
@@ -481,6 +483,7 @@ impl BrushMap {
         self.touch();
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.brushes.len()
     }
@@ -495,6 +498,7 @@ impl BrushMap {
         Some((aabb.min, aabb.max))
     }
 
+    #[allow(dead_code)]
     pub fn hulls(&self) -> Vec<Vec<Vector3>> {
         let mut out = Vec::with_capacity(self.brushes.len());
         let mut idx = 0;
@@ -563,6 +567,7 @@ impl BrushMap {
         out
     }
 
+    #[allow(dead_code)]
     pub fn add_box(&mut self, min: Vector3, max: Vector3, material: u16) -> bool {
         self.add_box_index(min, max, material).is_some()
     }
@@ -586,6 +591,7 @@ impl BrushMap {
         self.push(brush)
     }
 
+    #[allow(dead_code)]
     pub fn add_convex(&mut self, planes: Vec<BrushPlane>, material: u16) -> bool {
         self.add_convex_index(planes, material).is_some()
     }
@@ -837,6 +843,7 @@ impl BrushMap {
         self.draw_at(origin).vertices
     }
 
+    #[allow(dead_code)]
     pub fn mesh_highlight(&self, selected: usize) -> Vec<f32> {
         self.mesh_highlight_at(selected, Vector3::new(0.0, 0.0, 0.0))
     }
@@ -2560,6 +2567,7 @@ fn parse_source(text: &str) -> Result<Vec<SourceEntity>, String> {
     Ok(entities)
 }
 
+#[allow(dead_code)]
 fn parse_map(text: &str) -> Result<BrushMap, String> {
     let entities = parse_source(text)?;
 

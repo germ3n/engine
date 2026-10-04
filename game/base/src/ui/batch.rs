@@ -1,10 +1,7 @@
 use glyph_brush::ab_glyph::FontArc;
 use glyph_brush::{BrushAction, BrushError, Extra, GlyphBrush, GlyphBrushBuilder, Section, Text};
 
-pub fn bytes_of(values: &[f32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, values.len() * 4) }
-}
-
+#[allow(dead_code)]
 pub fn push_rect(verts: &mut Vec<f32>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     let corners = [
         [x, y],
@@ -101,6 +98,7 @@ pub fn note_span(
     });
 }
 
+#[allow(dead_code)]
 pub fn push_outline(
     verts: &mut Vec<f32>,
     x: f32,
@@ -130,6 +128,7 @@ pub fn push_outline(
     );
 }
 
+#[allow(dead_code)]
 pub fn grow(current: u32, needed: u32) -> u32 {
     let mut size = current.max(256);
 
@@ -140,6 +139,7 @@ pub fn grow(current: u32, needed: u32) -> u32 {
     size
 }
 
+#[allow(dead_code)]
 pub fn grow64(current: u64, needed: u64) -> u64 {
     let mut size = current.max(256);
 
@@ -156,11 +156,16 @@ struct GlyphQuad {
 }
 
 pub struct TextFrame {
+    #[allow(dead_code)]
     glyphs: GlyphBrush<GlyphQuad>,
     once: GlyphBrush<GlyphQuad>,
+    #[allow(dead_code)]
     pub verts: Vec<f32>,
+    #[allow(dead_code)]
     pub pixels: Vec<u8>,
+    #[allow(dead_code)]
     pub size: (u32, u32),
+    #[allow(dead_code)]
     pub dirty: bool,
     once_pixels: Vec<u8>,
     once_size: (u32, u32),
@@ -264,6 +269,7 @@ impl TextFrame {
         self.once_dirty = false;
     }
 
+    #[allow(dead_code)]
     pub fn queue(&mut self, text: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {
         self.glyphs.queue(
             Section::default()
@@ -272,6 +278,7 @@ impl TextFrame {
         );
     }
 
+    #[allow(dead_code)]
     pub fn build(&mut self) {
         for _attempt in 0..4 {
             let result = self.glyphs.process_queued(

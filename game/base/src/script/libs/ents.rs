@@ -1,5 +1,4 @@
 use crate::entities::{EntityHandle, EntityList, Player, ScriptedEntity};
-use crate::movement::UserCommand;
 use crate::network::events::{EntityNetworked, NetValue, NetVar};
 use crate::physics::{box_from_bounds, fallback_box, PhysicsAccess, PhysicsWorld};
 use crate::script::libs::angle3::Angle3;
@@ -27,8 +26,9 @@ pub const ENTS_COLLECT_NETWORKED: &str = "EntsCollectNetworked";
 pub const ENTS_APPLY_NETWORKED: &str = "EntsApplyNetworked";
 pub const ENTS_PRESENT: &str = "EntsPresent";
 pub const ENTS_NETWORKED_STATE: &str = "EntsNetworkedState";
-pub const ENTS_PREDICTED: &str = "EntsPredicted";
 pub const ENTS_PREDICTED_STATE: &str = "EntsPredictedState";
+pub const ENTS_PREPARE_MOVE: &str = "EntsPrepareMove";
+pub const ENTS_FINISH_MOVE: &str = "EntsFinishMove";
 pub const ENTS_BEGIN_RECONCILE: &str = "EntsBeginReconcile";
 pub const ENTS_END_RECONCILE: &str = "EntsEndReconcile";
 pub const ENTS_OWNER_CHANGED: &str = "EntsOwnerChanged";
@@ -276,6 +276,23 @@ fn build_native(
         }
 
         Ok(Some(owner.0))
+    });
+
+    let shared = access.clone();
+    add_native(lua, &native, "owned_by", move |lua, raw: u32| {
+        let list = entities(&shared)?;
+        let owner = EntityHandle(raw);
+        let out = lua.create_table()?;
+        let mut idx = 1;
+
+        for (handle, entity) in list.iter() {
+            if entity.base().owner == owner && handle != owner {
+                out.raw_set(idx, handle.0)?;
+                idx += 1;
+            }
+        }
+
+        Ok(out)
     });
 
     let shared = access.clone();
@@ -1016,8 +1033,9 @@ pub fn register_ents_lib(
         ("apply_networked", ENTS_APPLY_NETWORKED),
         ("present_interpolated", ENTS_PRESENT),
         ("networked_state", ENTS_NETWORKED_STATE),
-        ("predicted", ENTS_PREDICTED),
         ("predicted_state", ENTS_PREDICTED_STATE),
+        ("prepare_move", ENTS_PREPARE_MOVE),
+        ("finish_move", ENTS_FINISH_MOVE),
         ("begin_reconcile", ENTS_BEGIN_RECONCILE),
         ("end_reconcile", ENTS_END_RECONCILE),
         ("owner_changed", ENTS_OWNER_CHANGED),
@@ -1321,26 +1339,21 @@ pub fn present_interpolated(lua: &Lua, time: f64) -> Result<()> {
     function.call(time)
 }
 
-pub fn predicted(
+pub fn prepare_move(
     lua: &Lua,
     handle: EntityHandle,
-    cmd: &UserCommand,
+    cmd: Value,
     first_time: bool,
-) -> Result<()> {
-    let function: Function = lua.named_registry_value(ENTS_PREDICTED)?;
+) -> Result<bool> {
+    let function: Function = lua.named_registry_value(ENTS_PREPARE_MOVE)?;
 
-    function.call((
-        handle.0,
-        cmd.tick as f64,
-        cmd.buttons.0 as f64,
-        cmd.wish.x,
-        cmd.wish.y,
-        cmd.wish.z,
-        cmd.view.p,
-        cmd.view.y,
-        cmd.view.r,
-        first_time,
-    ))
+    function.call((handle.0, cmd, first_time))
+}
+
+pub fn finish_move(lua: &Lua, handle: EntityHandle, cmd: Value) -> Result<()> {
+    let function: Function = lua.named_registry_value(ENTS_FINISH_MOVE)?;
+
+    function.call((handle.0, cmd))
 }
 
 pub fn predicted_state(lua: &Lua, handle: EntityHandle) -> Result<Vec<EntityNetworked>> {

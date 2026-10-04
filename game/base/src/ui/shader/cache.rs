@@ -42,6 +42,7 @@ impl Registry {
         Ok(words)
     }
 
+    #[allow(dead_code)]
     pub fn hlsl(&self, source: &str) -> Result<String, String> {
         let digest = hash(&[VERSION, "hlsl", source]);
 
@@ -123,6 +124,7 @@ pub fn id_from_u64(value: u64) -> String {
     format!("{value:016x}")
 }
 
+#[allow(dead_code)]
 pub fn id_from_luid(low: u32, high: i32) -> String {
     format!("{high:08x}{low:08x}")
 }

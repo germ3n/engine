@@ -184,6 +184,7 @@ impl Bank {
         }
     }
 
+    #[allow(dead_code)]
     pub fn debug_message(&mut self, id: u64, text: &str) {
         if self.views.contains_key(&id) {
             self.host.debug_message(id, text);

@@ -22,11 +22,13 @@ impl InputButtons {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub const fn has_buttons(self, other: Self) -> bool {
         self.contains(other)
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub const fn intersects(self, other: Self) -> bool {
         (self.0 & other.0) != 0
     }
@@ -36,6 +38,7 @@ impl InputButtons {
 #[derive(SchemaRead, SchemaWrite, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct EntityFlags(pub u64);
 
+#[allow(dead_code)]
 impl EntityFlags {
     pub const NONE: Self = Self(0);
     pub const FL_ONGROUND: Self = Self(1 << 0);

@@ -269,6 +269,7 @@ pub fn client_loop(
     let mut captured = false;
     let mut keys = HashSet::new();
     let mut mouse = HashSet::new();
+    let mut prev_pad = crate::input::PadButtons::NONE;
     let mut touches = Vec::new();
     let mut recorder: Option<DemoSession> = None;
     let mut play: Option<DemoPlay> = None;
@@ -357,6 +358,13 @@ pub fn client_loop(
                                 host.set_cursor_grabbed(false);
                             } else if pressed {
                                 keys.insert(code);
+
+                                if !input.repeat {
+                                    binds
+                                        .lock()
+                                        .unwrap()
+                                        .note_press(crate::input::Binding::Key(code));
+                                }
                             } else {
                                 keys.remove(&code);
                             }
@@ -408,6 +416,10 @@ pub fn client_loop(
                         if handled != Some(true) {
                             if captured {
                                 mouse.insert(button);
+                                binds
+                                    .lock()
+                                    .unwrap()
+                                    .note_press(crate::input::Binding::Mouse(button));
                             }
 
                             if button == MouseButton::Left {
@@ -1101,10 +1113,12 @@ pub fn client_loop(
 
                     cache.get(0)
                 };
-                let (mut forward, mut right, up, buttons) = {
-                    let binds = binds.lock().unwrap();
+                let (mut forward, mut right, up, held_buttons) = {
+                    let mut binds = binds.lock().unwrap();
+                    binds.note_pad_edges(prev_pad, pad.buttons);
+                    prev_pad = pad.buttons;
                     let (axis_forward, axis_right) = binds.axis_held(&keys, &mouse, pad.buttons);
-                    let buttons = binds.buttons_held(&keys, &mouse, pad.buttons);
+                    let held_buttons = binds.buttons_held(&keys, &mouse, pad.buttons);
                     let up = binds.action_held(Action::Jump, &keys, &mouse, pad.buttons) as i32
                         as f32
                         - binds.action_held(Action::Sprint, &keys, &mouse, pad.buttons) as i32
@@ -1114,7 +1128,7 @@ pub fn client_loop(
                         axis_forward + touch_forward,
                         axis_right + touch_right,
                         up,
-                        buttons,
+                        held_buttons,
                     )
                 };
                 let vr = client_window.vr_input();
@@ -1195,6 +1209,8 @@ pub fn client_loop(
 
                     accumulated_time += dt;
 
+                    let mut consume_impulse = possessed;
+
                     while accumulated_time >= game.tick_interval {
                         accumulated_time -= game.tick_interval;
                         game.cur_time += game.tick_interval;
@@ -1209,6 +1225,13 @@ pub fn client_loop(
                         game.think_entities();
 
                         if possessed {
+                            let buttons = if consume_impulse {
+                                consume_impulse = false;
+                                held_buttons | binds.lock().unwrap().take_impulse()
+                            } else {
+                                held_buttons
+                            };
+
                             predict_tick(
                                 &mut game,
                                 &mut recorder,
@@ -1268,7 +1291,7 @@ pub fn client_loop(
 
                         if let Some(origin) = origin {
                             let body = player_body(&game, prediction.local);
-                            let eye = if buttons.contains(InputButtons::IN_DUCK) {
+                            let eye = if held_buttons.contains(InputButtons::IN_DUCK) {
                                 body.view_offset_ducked.z
                             } else {
                                 body.view_offset.z
@@ -1320,7 +1343,7 @@ fn replay_command(
     let from = body_origin(game, prediction.local).unwrap_or(Vector3::new(0.0, 0.0, 0.0));
     let prev = prediction.previous();
 
-    if !step_player(game, prediction.local, &cmd, prev) {
+    if !game.simulate_move(prediction.local, &cmd, prev, true) {
         return;
     }
 
@@ -1331,8 +1354,6 @@ fn replay_command(
     if apply_look {
         prediction.look = cmd.view;
     }
-
-    game.run_predicted(prediction.local, &cmd, true);
 }
 
 fn step_player(
@@ -2588,51 +2609,32 @@ fn reconcile_player(
     let mut position = snapshot.position;
     let mut velocity = snapshot.velocity;
     let mut angles = snapshot.angles;
-    let dt = game.tick_interval;
-    let gravity = movement::gravity(&game.cvars);
     let pending = prediction.pending();
     let handle = snapshot.handle;
     let mut prev = prediction.base_buttons();
+
+    if let Some(entity) = game.entities.get_mut(handle) {
+        let base = entity.base_mut();
+        base.position = position;
+        base.velocity = velocity;
+        base.angles = angles;
+    }
+
     game.begin_reconcile(predicted);
 
     for cmd in prediction.commands() {
-        let (root, body) = {
-            let Some(entity) = game.entities.get(handle) else {
-                break;
-            };
-            let body = entity
-                .player_body()
-                .copied()
-                .unwrap_or_default();
-            let root = game
-                .anims
-                .root_motion(&entity.base().anim, angles.y, cmd.tick, dt);
-
-            (root, body)
-        };
-        movement::step(
-            &mut position,
-            &mut velocity,
-            &mut angles,
-            &cmd,
-            prev,
-            dt,
-            gravity,
-            &game.brush_world,
-            &game.voxel_world,
-            root,
-            &body,
-        );
-        prev = cmd.buttons;
-
-        if let Some(entity) = game.entities.get_mut(handle) {
-            let base = entity.base_mut();
-            base.position = position;
-            base.velocity = velocity;
-            base.angles = angles;
+        if !game.simulate_move(handle, &cmd, prev, false) {
+            break;
         }
 
-        game.run_predicted(handle, &cmd, false);
+        prev = cmd.buttons;
+
+        if let Some(entity) = game.entities.get(handle) {
+            let base = entity.base();
+            position = base.position;
+            velocity = base.velocity;
+            angles = base.angles;
+        }
     }
 
     let dx = predicted_pos.x - position.x;
@@ -3007,6 +3009,10 @@ fn apply_server_event(
                 &networked,
             ) {
                 return;
+            }
+
+            if !owner.is_null() {
+                game.owner_changed(handle, owner);
             }
 
             if owner != prediction.local {
@@ -4072,6 +4078,10 @@ fn apply_spawn(
         vars,
     ) {
         return;
+    }
+
+    if !owner.is_null() {
+        game.owner_changed(entity.handle, owner);
     }
 
     if let Some(spawned) = game.entities.get_mut(entity.handle) {

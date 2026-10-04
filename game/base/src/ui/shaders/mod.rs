@@ -23,12 +23,14 @@ pub enum Program {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub enum Stage {
     Vertex,
     Fragment,
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub enum Target {
     Spirv,
     Msl,
@@ -37,12 +39,14 @@ pub enum Target {
     GlslEs300,
 }
 
+#[allow(dead_code)]
 pub enum Compiled {
     Spirv(Vec<u32>),
     Source(String),
 }
 
 impl Compiled {
+    #[allow(dead_code)]
     pub fn source(&self) -> &str {
         match self {
             Compiled::Source(text) => text,
@@ -50,6 +54,7 @@ impl Compiled {
         }
     }
 
+    #[allow(dead_code)]
     pub fn spirv(&self) -> &[u32] {
         match self {
             Compiled::Spirv(words) => words,
@@ -103,6 +108,7 @@ impl Program {
 }
 
 impl Stage {
+    #[allow(dead_code)]
     fn entry(self) -> &'static str {
         match self {
             Stage::Vertex => "vs_main",
@@ -110,6 +116,7 @@ impl Stage {
         }
     }
 
+    #[allow(dead_code)]
     fn naga(self) -> naga::ShaderStage {
         match self {
             Stage::Vertex => naga::ShaderStage::Vertex,
@@ -118,6 +125,7 @@ impl Stage {
     }
 }
 
+#[allow(dead_code)]
 pub fn compile(program: Program, stage: Stage, target: Target) -> Result<Compiled, String> {
     let source = program.wgsl();
     let module = naga::front::wgsl::parse_str(&source).map_err(|err| format!("wgsl: {err}"))?;
@@ -235,6 +243,7 @@ pub fn compile(program: Program, stage: Stage, target: Target) -> Result<Compile
     }
 }
 
+#[allow(dead_code)]
 pub fn spirv(program: Program, stage: Stage) -> Result<Vec<u32>, String> {
     match compile(program, stage, Target::Spirv)? {
         Compiled::Spirv(words) => Ok(words),
@@ -242,6 +251,7 @@ pub fn spirv(program: Program, stage: Stage) -> Result<Vec<u32>, String> {
     }
 }
 
+#[allow(dead_code)]
 pub fn source(program: Program, stage: Stage, target: Target) -> Result<String, String> {
     match compile(program, stage, target)? {
         Compiled::Source(text) => Ok(text),
@@ -249,6 +259,7 @@ pub fn source(program: Program, stage: Stage, target: Target) -> Result<String, 
     }
 }
 
+#[allow(dead_code)]
 pub fn msl_library(program: Program) -> Result<String, String> {
     let wgsl = program.wgsl();
     let module = naga::front::wgsl::parse_str(&wgsl).map_err(|err| format!("wgsl: {err}"))?;
@@ -302,6 +313,7 @@ pub fn msl_library(program: Program) -> Result<String, String> {
     Ok(source)
 }
 
+#[allow(dead_code)]
 pub fn hlsl(program: Program) -> Result<String, String> {
     source(program, Stage::Vertex, Target::Hlsl)
 }

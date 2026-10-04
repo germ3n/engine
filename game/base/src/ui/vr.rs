@@ -1,9 +1,11 @@
 use crate::ui::voxel::SceneView;
 use std::ffi::c_void;
 
+#[allow(dead_code)]
 const TEX_D3D11: i32 = 0;
 const TEX_GL: i32 = 1;
 const TEX_VULKAN: i32 = 2;
+#[allow(dead_code)]
 const TEX_SHARED: i32 = 5;
 const TEX_METAL: i32 = 6;
 const ROLE_LEFT: i32 = 1;
@@ -668,6 +670,7 @@ extern "C" {
     fn vr_set_tracking_space(func: *mut c_void, origin: i32);
     fn vr_wait_hmd(func: *mut c_void, matrix: *mut f32, valid: *mut i32) -> i32;
     fn vr_submit(func: *mut c_void, eye: i32, handle: *mut c_void, kind: i32) -> i32;
+    #[allow(dead_code)]
     fn vr_submit_d3d12(
         func: *mut c_void,
         eye: i32,

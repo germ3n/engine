@@ -47,6 +47,7 @@ extern "C" {
         text: *mut *mut c_char,
     ) -> i32;
     fn engine_web_free_text(text: *mut c_char);
+    #[allow(dead_code)]
     fn engine_web_debug_message(host: *mut std::ffi::c_void, view_id: u64, text: *const c_char);
 }
 

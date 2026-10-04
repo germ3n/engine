@@ -99,6 +99,32 @@ pub enum PadButton {
 }
 
 impl PadButton {
+    pub const ALL: [Self; 23] = [
+        Self::South,
+        Self::East,
+        Self::West,
+        Self::North,
+        Self::LeftTrigger,
+        Self::LeftTrigger2,
+        Self::RightTrigger,
+        Self::RightTrigger2,
+        Self::LeftThumb,
+        Self::RightThumb,
+        Self::Select,
+        Self::Start,
+        Self::DPadUp,
+        Self::DPadDown,
+        Self::DPadLeft,
+        Self::DPadRight,
+        Self::PedalGas,
+        Self::PedalBrake,
+        Self::PedalClutch,
+        Self::Paddle1,
+        Self::Paddle2,
+        Self::Paddle3,
+        Self::Paddle4,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::South => "pad_a",
@@ -244,12 +270,14 @@ impl fmt::Display for Binding {
 #[derive(Clone, Debug, Default)]
 pub struct Binds {
     map: HashMap<Binding, Action>,
+    impulse: InputButtons,
 }
 
 impl Binds {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
+            impulse: InputButtons::NONE,
         }
     }
 
@@ -295,6 +323,7 @@ impl Binds {
         self.map.clear();
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, binding: Binding) -> Option<Action> {
         self.map.get(&binding).copied()
     }
@@ -351,6 +380,48 @@ impl Binds {
         }
 
         buttons
+    }
+
+    pub fn note_press(&mut self, binding: Binding) {
+        let Some(action) = self.map.get(&binding).copied() else {
+            return;
+        };
+
+        let Some(flag) = action.to_button() else {
+            return;
+        };
+
+        self.impulse |= flag;
+    }
+
+    pub fn note_pad_edges(&mut self, previous: PadButtons, current: PadButtons) {
+        let mut idx = 0;
+
+        while idx < PadButton::ALL.len() {
+            let button = PadButton::ALL[idx];
+
+            if current.contains(button) && !previous.contains(button) {
+                self.note_press(Binding::Pad(button));
+            }
+
+            idx += 1;
+        }
+    }
+
+    pub fn take_impulse(&mut self) -> InputButtons {
+        let latched = self.impulse;
+        self.impulse = InputButtons::NONE;
+
+        latched
+    }
+
+    pub fn buttons_cmd(
+        &mut self,
+        keys: &HashSet<KeyCode>,
+        mouse: &HashSet<MouseButton>,
+        pad: PadButtons,
+    ) -> InputButtons {
+        self.buttons_held(keys, mouse, pad) | self.take_impulse()
     }
 
     pub fn axis_held(
@@ -704,6 +775,18 @@ mod tests {
         keys.insert(KeyCode::Space);
         let buttons = binds.buttons_held(&keys, &mouse, PadButtons::NONE);
         assert!(buttons.contains(InputButtons::IN_JUMP));
+    }
+
+    #[test]
+    fn press_impulse_survives_release_until_cmd() {
+        let mut binds = Binds::defaults();
+        binds.note_press(Binding::Mouse(MouseButton::Left));
+
+        let buttons = binds.buttons_cmd(&HashSet::new(), &HashSet::new(), PadButtons::NONE);
+        assert!(buttons.contains(InputButtons::IN_ATTACK));
+
+        let buttons = binds.buttons_cmd(&HashSet::new(), &HashSet::new(), PadButtons::NONE);
+        assert!(!buttons.contains(InputButtons::IN_ATTACK));
     }
 
     #[test]

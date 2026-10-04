@@ -56,9 +56,9 @@ fn engine_tick_count() {}
     name = "first_time_predicted",
     kind = "field",
     realm = "shared",
-    summary = "True during the first prediction of a command, and whenever the server runs predicted_think.",
+    summary = "True during the first prediction of a command, and whenever the server runs move simulation. Not networked; set for the active UserCmd only.",
     returns = { ty = "boolean", desc = "False while the client replays a saved command." },
-    see_also = "Entity:predicted_think",
+    see_also = "Entity:predicted_think, UserCmd",
 )]
 fn engine_first_time_predicted() {}
 

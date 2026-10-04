@@ -1169,6 +1169,7 @@ pub fn sky_paths(name: &str) -> [String; 6] {
     paths
 }
 
+#[allow(dead_code)]
 pub fn read_all(reader: &mut dyn Read) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
 

@@ -1,9 +1,3 @@
-use crate::ui::voxel::SceneView;
-
-pub fn view_proj(view: &SceneView) -> [f32; 16] {
-    crate::ui::vr::view_proj(view, true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

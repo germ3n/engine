@@ -143,6 +143,7 @@ impl ReliableChannel {
         self.generation = generation;
     }
 
+    #[allow(dead_code)]
     pub fn enqueue(&mut self, payload: &[u8]) -> EnqueueStatus {
         self.enqueue_bytes(payload.to_vec())
     }

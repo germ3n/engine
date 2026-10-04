@@ -3,17 +3,20 @@ use crate::console::{ConVar, ConVarValue};
 use crate::entities::{EntityHandle, EntityList, Player};
 use crate::fs::Fs;
 use crate::input::{binds_path, load_or_defaults, Binds};
-use crate::movement::UserCommand;
+use crate::movement::{self, UserCommand};
 use crate::network::events::{EntityAnimNet, EntityBones, EntityNetworked, NetVar};
 use crate::network::NetSend;
 use crate::network::NetWake;
 use crate::physics::{PhysicsScope, PhysicsWorld};
 use crate::platform::PadCache;
+use crate::r#enum::InputButtons;
 use crate::script::libs::engine::{publish_clock, WorldScope};
 use crate::script::libs::ents::{AnimScope, EntityScope};
 use crate::script::libs::nav::NavScope;
+use crate::script::libs::usercmd;
 use crate::script::libs::vector3::Vector3;
 use crate::script::{Realm, ScriptEngine};
+use mlua::IntoLua;
 use crate::sound::{Buses, SoundScope, SoundWorld};
 use crate::world::gen::{ChunkHandle, VoxelGen};
 use crate::world::nav::NavHost;
@@ -38,6 +41,7 @@ pub struct GameState<In, Out> {
     pub network_receiver: Receiver<In>,
     pub network_sender: SyncSender<NetSend<Out>>,
     pub script_engine: ScriptEngine,
+    #[allow(dead_code)]
     pub fs: Arc<Fs>,
     pub cur_time: f64,
     pub frame_time: f64,
@@ -401,12 +405,22 @@ impl<In, Out> GameState<In, Out> {
         self.with_entities(|engine| engine.present_networked(time));
     }
 
-    pub fn run_predicted(&mut self, handle: EntityHandle, cmd: &UserCommand, first_time: bool) {
+    pub fn simulate_move(
+        &mut self,
+        handle: EntityHandle,
+        cmd: &UserCommand,
+        prev: InputButtons,
+        first_time: bool,
+    ) -> bool {
+        if !self.entities.is_valid(handle) {
+            return false;
+        }
+
         let (cur_time, frame_time, tick_count) = (self.cur_time, self.frame_time, self.tick_count);
         let events = self.advance_predicted_anim(handle, cmd.tick);
         self.sound.set_command_tick(cmd.tick);
 
-        self.with_entities(|engine| {
+        let prepared = self.with_entities(|engine| {
             publish_clock(&engine.lua, cur_time, frame_time, tick_count);
 
             if first_time {
@@ -418,9 +432,98 @@ impl<In, Out> GameState<In, Out> {
                 }
             }
 
-            engine.run_predicted(handle, cmd, first_time);
+            match (*cmd).into_lua(&engine.lua) {
+                Ok(lua_cmd) => engine
+                    .prepare_move(handle, lua_cmd.clone(), first_time)
+                    .map(|suppress| (suppress, lua_cmd)),
+                Err(err) => {
+                    log::error!("[LUA ENTS ERROR]: {}", err);
+
+                    None
+                }
+            }
+        });
+
+        let Some((suppress_move, lua_cmd)) = prepared else {
+            self.sound.set_command_tick(0);
+
+            return false;
+        };
+
+        if !suppress_move {
+            let cmd = match usercmd::pull(&lua_cmd) {
+                Ok(value) => value,
+                Err(err) => {
+                    log::error!("[LUA ENTS ERROR]: {}", err);
+                    self.with_entities(|engine| {
+                        let _ = usercmd::set_first_time_predicted(&engine.lua, true);
+                    });
+                    self.sound.set_command_tick(0);
+
+                    return false;
+                }
+            };
+
+            if !self.step_move(handle, &cmd, prev) {
+                self.with_entities(|engine| {
+                    let _ = usercmd::set_first_time_predicted(&engine.lua, true);
+                });
+                self.sound.set_command_tick(0);
+
+                return false;
+            }
+        }
+
+        self.with_entities(|engine| {
+            engine.finish_move(handle, lua_cmd);
         });
         self.sound.set_command_tick(0);
+
+        true
+    }
+
+    fn step_move(&mut self, handle: EntityHandle, cmd: &UserCommand, prev: InputButtons) -> bool {
+        let (mut position, mut velocity, mut angles, body) = {
+            let Some(entity) = self.entities.get(handle) else {
+                return false;
+            };
+
+            let base = entity.base();
+            let body = entity.player_body().copied().unwrap_or_default();
+
+            (base.position, base.velocity, base.angles, body)
+        };
+        let dt = self.tick_interval;
+        let gravity = movement::gravity(&self.cvars);
+        let root = self
+            .entities
+            .get(handle)
+            .map(|entity| entity.base().anim)
+            .and_then(|playback| self.anims.root_motion(&playback, angles.y, cmd.tick, dt));
+        movement::step(
+            &mut position,
+            &mut velocity,
+            &mut angles,
+            cmd,
+            prev,
+            dt,
+            gravity,
+            &self.brush_world,
+            &self.voxel_world,
+            root,
+            &body,
+        );
+
+        let Some(entity) = self.entities.get_mut(handle) else {
+            return false;
+        };
+
+        let base = entity.base_mut();
+        base.position = position;
+        base.velocity = velocity;
+        base.angles = angles;
+
+        true
     }
 
     pub fn update_sound(&mut self, x: f64, y: f64, z: f64, yaw: f32, pitch: f32, dt: f32) {
@@ -724,6 +827,7 @@ impl<In, Out> GameState<In, Out> {
         self.anims.take_dirty_bones()
     }
 
+    #[allow(dead_code)]
     pub fn anim_bones_baseline(&self) -> Vec<EntityBones> {
         self.anims.all_entity_bones()
     }
@@ -776,6 +880,7 @@ impl<In, Out> GameState<In, Out> {
         self.enqueue(NetSend::StateTo(addr, event));
     }
 
+    #[allow(dead_code)]
     pub fn try_send_state_to(&self, addr: SocketAddr, event: Out) -> bool {
         match self.network_sender.try_send(NetSend::StateTo(addr, event)) {
             Ok(()) => {

@@ -428,6 +428,7 @@ impl VoxelGen {
         }
     }
 
+    #[allow(dead_code)]
     pub fn submit(&mut self, pos: ChunkPos) -> bool {
         let config = self.settings.lock().expect("gen settings").snapshot();
 

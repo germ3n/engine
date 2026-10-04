@@ -46,6 +46,7 @@ impl Drop for PhysicsScope<'_> {
 #[derive(Clone, Copy)]
 struct Link {
     body: RigidBodyHandle,
+    #[allow(dead_code)]
     collider: ColliderHandle,
     kinematic: bool,
 }

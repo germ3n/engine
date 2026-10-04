@@ -169,6 +169,7 @@ impl Book {
         book
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         let mut kind = 0;
 
@@ -587,6 +588,7 @@ pub struct GlMesh;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[derive(Clone)]
 pub struct MtlShader {
+    #[allow(dead_code)]
     pub library: metal::Library,
     pub vs: metal::Function,
     pub fs: metal::Function,
@@ -932,6 +934,7 @@ pub struct Slot<T> {
     pub owned: bool,
     pub builtin: bool,
     pub screen: bool,
+    #[allow(dead_code)]
     pub stride: u8,
     pub material: Option<String>,
     pub item: T,
