@@ -822,6 +822,10 @@ pub fn capture_world<In, Out>(
             velocity: base.velocity,
             ack: 0,
             anim: base.anim.snapshot(),
+            noclip: entity
+                .player_body()
+                .map(|body| body.noclip)
+                .unwrap_or(false),
         });
 
         if !base.owner.is_null() {
@@ -899,6 +903,7 @@ pub fn capture_props<In, Out>(game: &GameState<In, Out>) -> Vec<EntitySnapshot> 
             velocity: base.velocity,
             ack: 0,
             anim: base.anim.snapshot(),
+            noclip: false,
         });
     }
 
@@ -1054,6 +1059,7 @@ mod tests {
                 velocity: Vector3::new(0.0, 0.0, 0.0),
                 ack: 0,
                 anim: Default::default(),
+                noclip: false,
             }],
             networked: Vec::new(),
             owners: Vec::new(),
@@ -1308,6 +1314,7 @@ mod tests {
                 gesture_rate: 1.0,
                 gesture_weight: 1.0,
             },
+            noclip: false,
         };
         let mut writer = DemoWriter::create_at(&file, &index, &header()).unwrap();
         writer

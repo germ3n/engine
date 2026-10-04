@@ -42,9 +42,9 @@ fn console_autocomplete() {}
     name = "submit",
     kind = "function",
     realm = "shared",
-    summary = "Runs a line on the server, then on the client if the server does not know it. Used by the in-game console.",
+    summary = "Runs a line on the server, then on the client if the server does not know it. Prefix with server/client (or sv/cl) to force one realm. Used by the in-game console.",
     params = {
-        line = { ty = "string", desc = "Command line. Semicolons split commands." },
+        line = { ty = "string", desc = "Command line. Semicolons split commands. Optional server/client prefix selects the realm." },
     },
     returns = { ty = "table", desc = "Rows with side, text, detail, and error." },
 )]

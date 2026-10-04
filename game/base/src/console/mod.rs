@@ -6,7 +6,7 @@ pub use convar::{ConVar, ConVarValue};
 
 mod terminal;
 
-pub use terminal::{bind_sides, poll_autocomplete, spawn_terminal, ConsoleSide};
+pub use terminal::{bind_sides, forced_realm, poll_autocomplete, spawn_terminal, ConsoleSide};
 pub(crate) use terminal::{complete_shared, submit_shared, Outcome};
 
 pub(crate) const AUTOCOMPLETE_KEY: &str = "console_autocomplete";
@@ -184,6 +184,7 @@ pub fn exec_line(line: &str, binds: &mut Binds) -> Result<(), String> {
         "nav_build" | "nav_show" | "nav_path" => crate::world::nav::console_line(&tokens),
         "record" | "stop" | "playdemo" | "demo_pause" | "demo_timescale" | "demo_seek"
         | "demo_loop" | "demo_cam" | "demo_view" => crate::demo::console_line(&tokens),
+        "noclip" | "noclip_all" => crate::movement::console_line(&tokens),
         other => Err(format!("unknown command '{other}'")),
     }
 }

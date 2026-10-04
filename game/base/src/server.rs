@@ -117,6 +117,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         crate::console::poll_autocomplete(Realm::Server, &game.script_engine.lua);
         poll_demo(&mut game, &players, &mut recording);
         poll_nav_commands(&mut game, &peers);
+        poll_noclip(&mut game, &players);
         joined.clear();
         let mut ticked = false;
         while accumulated_time >= game.tick_interval {
@@ -1248,6 +1249,68 @@ fn player_ack(players: &[RemotePlayer], handle: EntityHandle) -> u64 {
     0
 }
 
+fn poll_noclip(
+    game: &mut GameState<FromClient, ServerToClient>,
+    players: &[RemotePlayer],
+) {
+    let all = movement::take_server_noclip_all();
+    let local = movement::take_server_noclip();
+
+    if !all && !local {
+        return;
+    }
+
+    if players.is_empty() {
+        log::warn!("[sv] noclip: no players");
+
+        return;
+    }
+
+    let mut idx = 0;
+    let mut loopback = false;
+
+    if !all {
+        while idx < players.len() {
+            if players[idx].addr.ip().is_loopback() {
+                loopback = true;
+
+                break;
+            }
+
+            idx += 1;
+        }
+    }
+
+    idx = 0;
+
+    while idx < players.len() {
+        let target = if all {
+            true
+        } else if loopback {
+            players[idx].addr.ip().is_loopback()
+        } else {
+            idx == 0
+        };
+
+        if !target {
+            idx += 1;
+
+            continue;
+        }
+
+        let handle = players[idx].player;
+
+        if let Some(entity) = game.entities.get_mut(handle) {
+            if let Some(body) = entity.player_body_mut() {
+                body.noclip = !body.noclip;
+                log::info!("[sv] noclip={} {:?}", body.noclip, handle);
+            }
+        }
+
+        idx += 1;
+    }
+}
+
 //send nav
 fn poll_nav_commands(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
     let _ = peers;
@@ -1722,6 +1785,10 @@ fn emit_snapshot(
                 velocity: base.velocity,
                 ack: 0,
                 anim: base.anim.snapshot(),
+                noclip: entity
+                    .player_body()
+                    .map(|body| body.noclip)
+                    .unwrap_or(false),
             },
             states.remove(&handle),
             owner,
@@ -1864,6 +1931,10 @@ fn emit_predicted_state(
                 velocity: base.velocity,
                 ack: players[idx].ack,
                 anim: base.anim.snapshot(),
+                noclip: entity
+                    .player_body()
+                    .map(|body| body.noclip)
+                    .unwrap_or(false),
             }
         }) else {
             idx += 1;
@@ -2061,6 +2132,10 @@ fn emit_tick_state(game: &GameState<FromClient, ServerToClient>, players: &[Remo
             velocity: base.velocity,
             ack: player_ack(players, handle),
             anim: base.anim.snapshot(),
+            noclip: entity
+                .player_body()
+                .map(|body| body.noclip)
+                .unwrap_or(false),
         });
     }
 

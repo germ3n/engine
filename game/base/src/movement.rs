@@ -10,6 +10,7 @@ use std::sync::Arc;
 use wincode::{SchemaRead, SchemaWrite};
 
 static NOCLIP_SERVER: AtomicBool = AtomicBool::new(false);
+static NOCLIP_ALL_SERVER: AtomicBool = AtomicBool::new(false);
 static NOCLIP_CLIENT: AtomicBool = AtomicBool::new(false);
 
 pub(crate) const STAND_MINS: Vector3 = Vector3::new(-0.28, -0.28, 0.0);
@@ -26,6 +27,7 @@ pub struct PlayerBody {
     pub duck_maxs: Vector3,
     pub view_offset: Vector3,
     pub view_offset_ducked: Vector3,
+    pub noclip: bool,
 }
 
 impl Default for PlayerBody {
@@ -37,9 +39,55 @@ impl Default for PlayerBody {
             duck_maxs: DUCK_MAXS,
             view_offset: VIEW_OFFSET,
             view_offset_ducked: VIEW_OFFSET_DUCKED,
+            noclip: false,
         }
     }
 }
+
+pub fn console_line(tokens: &[String]) -> Result<(), String> {
+    if tokens.len() != 1 {
+        return Err(format!("usage: {}", tokens.first().map(String::as_str).unwrap_or("noclip")));
+    }
+
+    let all = tokens[0] == "noclip_all";
+
+    match crate::console::forced_realm() {
+        Some(crate::script::Realm::Server) => {
+            if all {
+                NOCLIP_ALL_SERVER.store(true, Ordering::SeqCst);
+            } else {
+                NOCLIP_SERVER.store(true, Ordering::SeqCst);
+            }
+        }
+        Some(crate::script::Realm::Client) => {
+            NOCLIP_CLIENT.store(true, Ordering::SeqCst);
+        }
+        Some(crate::script::Realm::Menu) | None => {
+            if all {
+                NOCLIP_ALL_SERVER.store(true, Ordering::SeqCst);
+            } else {
+                NOCLIP_SERVER.store(true, Ordering::SeqCst);
+            }
+
+            NOCLIP_CLIENT.store(true, Ordering::SeqCst);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn take_server_noclip() -> bool {
+    NOCLIP_SERVER.swap(false, Ordering::SeqCst)
+}
+
+pub fn take_server_noclip_all() -> bool {
+    NOCLIP_ALL_SERVER.swap(false, Ordering::SeqCst)
+}
+
+pub fn take_client_noclip() -> bool {
+    NOCLIP_CLIENT.swap(false, Ordering::SeqCst)
+}
+
 const SKIN: f64 = 0.002;
 const STEP_HEIGHT: f64 = 0.45;
 const GROUND_PROBE: f64 = 0.12;
@@ -436,8 +484,17 @@ pub fn step(
 
     let mut cmd = *cmd;
     sanitize(&mut cmd);
-    let root_yaw = root.map(|step| angles.y + step.dyaw as f32);
     *angles = cmd.view;
+
+    if body.noclip {
+        noclip_move(position, velocity, &cmd, dt);
+        repair(position);
+        repair(velocity);
+
+        return;
+    }
+
+    let root_yaw = root.map(|step| angles.y + step.dyaw as f32);
 
     if let Some(yaw) = root_yaw {
         angles.y = yaw;
@@ -603,6 +660,53 @@ fn yaw_basis(yaw_deg: f32) -> (Vector3, Vector3) {
     let right = Vector3::new(yaw.sin(), -yaw.cos(), 0.0);
 
     (forward, right)
+}
+
+fn view_basis(view: Angle3) -> (Vector3, Vector3, Vector3) {
+    let yaw = (view.y as f64).to_radians();
+    let pitch = (view.p as f64).to_radians();
+    let cp = pitch.cos();
+    let sp = pitch.sin();
+    let cy = yaw.cos();
+    let sy = yaw.sin();
+    let forward = Vector3::new(cp * cy, cp * sy, -sp);
+    let right = Vector3::new(sy, -cy, 0.0);
+    let up = Vector3::new(sp * cy, sp * sy, cp);
+
+    (forward, right, up)
+}
+
+fn noclip_move(position: &mut Vector3, velocity: &mut Vector3, cmd: &UserCommand, dt: f64) {
+    let (forward, right, _) = view_basis(cmd.view);
+    let mut wish = Vector3::new(
+        forward.x * cmd.wish.x + right.x * cmd.wish.y,
+        forward.y * cmd.wish.x + right.y * cmd.wish.y,
+        forward.z * cmd.wish.x + right.z * cmd.wish.y,
+    );
+
+    if cmd.buttons.contains(InputButtons::IN_JUMP) {
+        wish.z += 1.0;
+    }
+
+    if cmd.buttons.contains(InputButtons::IN_DUCK) {
+        wish.z -= 1.0;
+    }
+
+    let len = wish.len();
+
+    if len > 1e-6 {
+        let scale = SPRINT_SPEED * 1.5 / len;
+        wish.x *= scale;
+        wish.y *= scale;
+        wish.z *= scale;
+        *velocity = wish;
+    } else {
+        *velocity = Vector3::new(0.0, 0.0, 0.0);
+    }
+
+    position.x += velocity.x * dt;
+    position.y += velocity.y * dt;
+    position.z += velocity.z * dt;
 }
 
 fn accelerate(velocity: &mut Vector3, cmd: &UserCommand, on_ground: bool, dt: f64) {

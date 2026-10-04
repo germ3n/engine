@@ -82,6 +82,7 @@ pub struct EntitySnapshot {
     pub velocity: Vector3,
     pub ack: u64,
     pub anim: AnimSnapshot,
+    pub noclip: bool,
 }
 
 #[derive(SchemaWrite, SchemaRead, Clone, Debug, PartialEq)]

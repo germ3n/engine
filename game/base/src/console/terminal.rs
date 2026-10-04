@@ -2,12 +2,25 @@ use super::{exec_line, strip_comment, tokenize, ConVar, ConVarValue, AUTOCOMPLET
 use crate::demo;
 use crate::input::Binds;
 use crate::script::Realm;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+thread_local! {
+    static FORCED_REALM: Cell<Option<Realm>> = const { Cell::new(None) };
+}
+
+pub fn forced_realm() -> Option<Realm> {
+    FORCED_REALM.with(|cell| cell.get())
+}
+
+fn set_forced_realm(realm: Option<Realm>) {
+    FORCED_REALM.with(|cell| cell.set(realm));
+}
 
 #[derive(Clone)]
 pub struct ConsoleSide {
@@ -100,6 +113,10 @@ const COMMANDS: &[&str] = &[
     "nav_build",
     "nav_show",
     "nav_path",
+    "noclip",
+    "noclip_all",
+    "server",
+    "client",
     "quit",
     "exit",
 ];
@@ -475,6 +492,12 @@ fn suggest(
 ) -> Vec<String> {
     let span = completion_span(line);
     let mut found = Vec::new();
+    let names_for = |side: Option<&ConsoleSide>| -> Vec<String> {
+        match side {
+            Some(side) => builtin_names(side),
+            None => COMMANDS.iter().map(|name| (*name).to_string()).collect(),
+        }
+    };
 
     if span.command {
         if let Some(server) = server {
@@ -488,7 +511,25 @@ fn suggest(
                 push_matching(&mut found, &builtin_names(client), &span.prefix);
             }
         }
-    } else if let Some((command, index)) = command_arg(line) {
+    } else if directed_command(&span) {
+        let names = if server.is_some() {
+            let mut names = names_for(server);
+
+            if let Some(client) = client {
+                for name in builtin_names(client) {
+                    if !names.iter().any(|have| have == &name) {
+                        names.push(name);
+                    }
+                }
+            }
+
+            names
+        } else {
+            names_for(client)
+        };
+
+        push_matching(&mut found, &names, &span.prefix);
+    } else if let Some((command, index)) = directed_command_arg(&span) {
         push_matching(
             &mut found,
             &builtin_args(&command, index, server, client),
@@ -501,6 +542,65 @@ fn suggest(
     found.dedup();
 
     found
+}
+
+fn realm_token(name: &str) -> Option<&'static str> {
+    match name {
+        "server" | "sv" => Some("server"),
+        "client" | "cl" => Some("client"),
+        _ => None,
+    }
+}
+
+fn directed_command(span: &Span) -> bool {
+    if span.command {
+        return false;
+    }
+
+    let tokens = tokenize(span.segment.trim());
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+
+    if realm_token(first).is_none() {
+        return false;
+    }
+
+    tokens.len() == 1 || (tokens.len() == 2 && !span.prefix.is_empty())
+}
+
+fn directed_command_arg(span: &Span) -> Option<(String, usize)> {
+    if span.command {
+        return None;
+    }
+
+    let tokens = tokenize(span.segment.trim());
+
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let start = if realm_token(&tokens[0]).is_some() {
+        1
+    } else {
+        0
+    };
+
+    if start >= tokens.len() {
+        return None;
+    }
+
+    let command = tokens[start].clone();
+    let args = tokens.len() - start - 1;
+    let index = if span.prefix.is_empty() {
+        args
+    } else if args >= 1 {
+        args - 1
+    } else {
+        return None;
+    };
+
+    Some((command, index))
 }
 
 fn builtin_names(side: &ConsoleSide) -> Vec<String> {
@@ -519,36 +619,16 @@ fn builtin_names(side: &ConsoleSide) -> Vec<String> {
     names
 }
 
-fn command_arg(line: &str) -> Option<(String, usize)> {
-    let span = completion_span(line);
-
-    if span.command {
-        return None;
-    }
-
-    let tokens = tokenize(span.segment.trim());
-
-    if tokens.is_empty() {
-        return None;
-    }
-
-    let index = if span.prefix.is_empty() {
-        tokens.len() - 1
-    } else if tokens.len() >= 2 {
-        tokens.len() - 2
-    } else {
-        return None;
-    };
-
-    Some((tokens[0].clone(), index))
-}
-
 fn builtin_args(
     command: &str,
     index: usize,
     server: Option<&ConsoleSide>,
     client: Option<&ConsoleSide>,
 ) -> Vec<String> {
+    if matches!(command, "server" | "client" | "sv" | "cl") {
+        return Vec::new();
+    }
+
     if index == 0 {
         if let Some(values) = cvar_values(command, server, client) {
             return values;
@@ -945,6 +1025,18 @@ fn run_part_realm(
     server: Option<&ConsoleSide>,
     client: Option<&ConsoleSide>,
 ) -> Outcome {
+    if let Some((target, command)) = split_realm_target(part) {
+        if command.is_empty() {
+            return done(
+                target,
+                part,
+                Err(format!("usage: {target} <command>")),
+            );
+        }
+
+        return run_forced(target, command, server, client);
+    }
+
     if let Some(server) = server {
         demo::bind_realm(Realm::Server);
 
@@ -970,6 +1062,65 @@ fn run_part_realm(
     }
 
     unknown("server", part)
+}
+
+fn split_realm_target(part: &str) -> Option<(&'static str, &str)> {
+    let trimmed = part.trim();
+    let (word, rest) = split_first_word(trimmed);
+    let target = realm_token(word)?;
+
+    Some((target, rest.trim_start()))
+}
+
+fn split_first_word(line: &str) -> (&str, &str) {
+    let mut end = 0;
+
+    for (idx, ch) in line.char_indices() {
+        if ch.is_whitespace() {
+            break;
+        }
+
+        end = idx + ch.len_utf8();
+    }
+
+    if end == 0 {
+        return ("", line);
+    }
+
+    (&line[..end], &line[end..])
+}
+
+fn run_forced(
+    target: &'static str,
+    command: &str,
+    server: Option<&ConsoleSide>,
+    client: Option<&ConsoleSide>,
+) -> Outcome {
+    let (side, realm) = match target {
+        "server" => (server, Realm::Server),
+        "client" => (client, Realm::Client),
+        _ => return unknown(target, command),
+    };
+
+    let Some(side) = side else {
+        return done(
+            target,
+            command,
+            Err(format!("{target} realm is not available")),
+        );
+    };
+
+    set_forced_realm(Some(realm));
+    demo::bind_realm(realm);
+    let outcome = match try_side(side, command) {
+        Hit::Done(result) => done(target, command, result),
+        Hit::Local => done(target, command, assign_line(side, command)),
+        Hit::Quit => quit_outcome(target, command),
+        Hit::Miss => unknown(target, command),
+    };
+    set_forced_realm(None);
+
+    outcome
 }
 
 fn try_side(side: &ConsoleSide, line: &str) -> Hit {
@@ -1377,6 +1528,95 @@ mod tests {
     }
 
     #[test]
+    fn client_prefix_forces_the_client_realm() {
+        let server = side(Vec::new());
+        let client = side(Vec::new());
+        let outcomes = dispatch("client bind e use", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "client");
+        assert!(outcomes[0].error.is_none());
+        assert_eq!(
+            client
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
+            Some(Action::Use)
+        );
+        assert_eq!(
+            server
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
+            None
+        );
+    }
+
+    #[test]
+    fn server_prefix_keeps_commands_on_the_server() {
+        let server = side(Vec::new());
+        let client = side(Vec::new());
+        let outcomes = dispatch("server bind e use", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "server");
+        assert!(outcomes[0].error.is_none());
+        assert_eq!(
+            server
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
+            Some(Action::Use)
+        );
+        assert_eq!(
+            client
+                .binds
+                .lock()
+                .unwrap()
+                .get(Binding::Key(KeyCode::KeyE)),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_forced_realm_errors() {
+        let server = side(Vec::new());
+        let outcomes = dispatch("client bind e use", Some(&server), None);
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].side, "client");
+        assert_eq!(
+            outcomes[0].error.as_deref(),
+            Some("client realm is not available")
+        );
+    }
+
+    #[test]
+    fn realm_prefix_without_command_errors() {
+        let server = side(Vec::new());
+        let client = side(Vec::new());
+        let outcomes = dispatch("server", Some(&server), Some(&client));
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0].error.as_deref(),
+            Some("usage: server <command>")
+        );
+    }
+
+    #[test]
+    fn directed_completion_suggests_commands_after_client() {
+        let server = side(Vec::new());
+        let client = side(Vec::new());
+        let matches = suggest("client no", Some(&server), Some(&client), &[]);
+
+        assert!(matches.iter().any(|name| name == "noclip"));
+    }
+
+    #[test]
     fn quit_stops_the_rest_of_the_line() {
         let server = side(Vec::new());
         let client = side(Vec::new());
@@ -1441,8 +1681,8 @@ mod tests {
     fn tab_completes_a_client_only_cvar() {
         let server = side(Vec::new());
         let client = side(vec![("cl_only", ConVarValue::Float(1.0))]);
-        let matches = suggest("cl", Some(&server), Some(&client), &[]);
-        let applied = apply_completion("cl", &matches, &mut None);
+        let matches = suggest("cl_o", Some(&server), Some(&client), &[]);
+        let applied = apply_completion("cl_o", &matches, &mut None);
 
         assert_eq!(applied.line, "cl_only ");
     }

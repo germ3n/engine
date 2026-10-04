@@ -880,6 +880,7 @@ pub fn client_loop(
                 let frame_dt = (dt as f32).min(0.1);
 
                 crate::console::poll_autocomplete(Realm::Client, &game.script_engine.lua);
+                poll_client_noclip(&mut game, &prediction);
                 poll_client_demo(
                     &mut game,
                     &mut recorder,
@@ -1384,6 +1385,32 @@ fn step_player(
     base.angles = angles;
 
     true
+}
+
+fn poll_client_noclip(
+    game: &mut GameState<FromServer, ClientToServer>,
+    prediction: &Prediction,
+) {
+    if !movement::take_client_noclip() {
+        return;
+    }
+
+    let handle = prediction.local;
+
+    if handle.is_null() {
+        return;
+    }
+
+    let Some(entity) = game.entities.get_mut(handle) else {
+        return;
+    };
+
+    let Some(body) = entity.player_body_mut() else {
+        return;
+    };
+
+    body.noclip = !body.noclip;
+    log::info!("[cl] noclip={}", body.noclip);
 }
 
 fn poll_client_demo(
@@ -2008,6 +2035,7 @@ fn apply_slot_event(
                         velocity: Vector3::new(0.0, 0.0, 0.0),
                         ack: 0,
                         anim: Default::default(),
+                        noclip: false,
                     },
                     EntityHandle::NULL,
                     prediction.local,
@@ -2542,6 +2570,10 @@ fn reconcile_player(
             .base_mut()
             .anim
             .apply_remote(&snapshot.anim, snapshot.ack);
+
+        if let Some(body) = entity.player_body_mut() {
+            body.noclip = snapshot.noclip;
+        }
     }
 
     let (predicted_pos, predicted_vel) = match game.entities.get(snapshot.handle) {
@@ -3094,6 +3126,10 @@ fn apply_server_event(
                         entity.base_mut().anim.apply_remote(&snapshot.anim, tick);
                         entity.base_mut().anim.draw_tick = tick;
                         entity.base_mut().anim.draw_frac = 0.0;
+
+                        if let Some(body) = entity.player_body_mut() {
+                            body.noclip = snapshot.noclip;
+                        }
                     }
 
                     note_remote(
@@ -4012,6 +4048,7 @@ fn apply_spawn(
         player.base.angles = entity.angles;
         player.base.velocity = entity.velocity;
         player.base.owner = owner;
+        player.body.noclip = entity.noclip;
         game.entities.insert_at(entity.handle, Box::new(player));
 
         if !vars.is_empty() {
