@@ -5,6 +5,7 @@ use super::surface::{
     STRIDE,
 };
 use super::DrawMesh;
+use super::{HitAll, TraceFilter};
 use crate::script::libs::vector3::Vector3;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -926,6 +927,15 @@ impl BrushMap {
     }
 
     pub fn trace(&self, start: Vector3, end: Vector3) -> Option<BrushHit> {
+        self.trace_filtered(start, end, &HitAll)
+    }
+
+    pub fn trace_filtered(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        filter: &dyn TraceFilter,
+    ) -> Option<BrushHit> {
         if !finite(start) || !finite(end) {
             return None;
         }
@@ -937,6 +947,10 @@ impl BrushMap {
 
         if max_dist == 0.0 {
             for idx in candidates {
+                if !filter.should_hit_brush(idx) {
+                    continue;
+                }
+
                 if contains(&self.brushes[idx].planes, start) {
                     return Some(BrushHit {
                         brush: idx,
@@ -955,6 +969,10 @@ impl BrushMap {
         let mut best: Option<BrushHit> = None;
 
         for idx in candidates {
+            if !filter.should_hit_brush(idx) {
+                continue;
+            }
+
             let Some((distance, normal)) = hit_brush(&self.brushes[idx], start, dir, max_dist)
             else {
                 continue;
@@ -988,6 +1006,17 @@ impl BrushMap {
         mins: Vector3,
         maxs: Vector3,
     ) -> Option<BrushHit> {
+        self.sweep_filtered(start, end, mins, maxs, &HitAll)
+    }
+
+    pub fn sweep_filtered(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        mins: Vector3,
+        maxs: Vector3,
+        filter: &dyn TraceFilter,
+    ) -> Option<BrushHit> {
         if !finite(start) || !finite(end) || !finite(mins) || !finite(maxs) {
             return None;
         }
@@ -1004,6 +1033,10 @@ impl BrushMap {
 
         if max_dist == 0.0 {
             for idx in candidates {
+                if !filter.should_hit_brush(idx) {
+                    continue;
+                }
+
                 let expanded = expand_brush(&self.brushes[idx], mins, maxs);
 
                 if contains(&expanded, start) {
@@ -1023,6 +1056,10 @@ impl BrushMap {
         let dir = Vector3::new(delta.x * inv, delta.y * inv, delta.z * inv);
 
         for idx in candidates {
+            if !filter.should_hit_brush(idx) {
+                continue;
+            }
+
             let expanded = expand_brush(&self.brushes[idx], mins, maxs);
             let Some((distance, normal)) = hit_planes(&expanded, start, dir, max_dist) else {
                 continue;

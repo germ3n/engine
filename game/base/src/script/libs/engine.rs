@@ -3,8 +3,11 @@ use crate::script::libs::ents::EntityAccess;
 use crate::script::libs::vector3::Vector3;
 use crate::script::Realm;
 use crate::world::gen::{seed_from_f64, GenSettings};
-use crate::world::{cwd_vmap_path, Block, BrushMap, BrushPlane, Face, VoxelWorld};
-use mlua::{Lua, Table};
+use crate::world::{
+    cwd_vmap_path, Block, BlockPos, BrushMap, BrushPlane, Face, HitAll, TraceFilter, VoxelWorld,
+};
+use mlua::{Function, Lua, Table, Value};
+use std::cell::RefCell;
 use r#macro::document;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
@@ -267,8 +270,10 @@ fn engine_voxel_clear() {}
     params = {
         start = { ty = "Vector3", desc = "Start of the line in world units." },
         end_pos = { ty = "Vector3", desc = "End of the line in world units." },
+        filter = { ty = "function", desc = "Called as filter(pos, block) for each solid block on the line, where pos is the block coordinate Vector3. Return false or nil to pass through that block.", optional = true },
     },
     returns = { ty = "table", desc = "Nil on a miss. Otherwise pos, block, face, distance, and position." },
+    panics = "Rethrows the first error raised by the filter.",
 )]
 fn engine_voxel_trace() {}
 
@@ -433,8 +438,10 @@ fn engine_brush_clear() {}
     params = {
         start = { ty = "Vector3", desc = "Start of the line in world units." },
         end_pos = { ty = "Vector3", desc = "End of the line in world units." },
+        filter = { ty = "function", desc = "Called as filter(brush) with each candidate brush index. Return false or nil to pass through that brush.", optional = true },
     },
     returns = { ty = "table", desc = "Nil on a miss. Otherwise brush, distance, position, and normal." },
+    panics = "Rethrows the first error raised by the filter.",
 )]
 fn engine_brush_trace() {}
 
@@ -601,9 +608,11 @@ pub fn register_engine_lib(
     engine_table
         .set(
             "voxel_trace",
-            lua.create_function(move |lua, (start, end): (Vector3, Vector3)| {
-                voxel_trace(lua, &voxels, start, end)
-            })
+            lua.create_function(
+                move |lua, (start, end, filter): (Vector3, Vector3, Option<Function>)| {
+                    voxel_trace(lua, &voxels, start, end, filter)
+                },
+            )
             .expect("[engine] Failed to create voxel_trace"),
         )
         .expect("[engine] Failed setting voxel_trace");
@@ -780,9 +789,11 @@ pub fn register_engine_lib(
     engine_table
         .set(
             "brush_trace",
-            lua.create_function(move |lua, (start, end): (Vector3, Vector3)| {
-                brush_trace(lua, &brushes, start, end)
-            })
+            lua.create_function(
+                move |lua, (start, end, filter): (Vector3, Vector3, Option<Function>)| {
+                    brush_trace(lua, &brushes, start, end, filter)
+                },
+            )
             .expect("[engine] Failed to create brush_trace"),
         )
         .expect("[engine] Failed setting brush_trace");
@@ -958,17 +969,79 @@ fn brush_clear(access: &BrushAccess) -> bool {
     true
 }
 
+/// Runs a Lua predicate as a trace filter. The first error stops further calls and is
+/// handed back by `finish`.
+struct LuaTraceFilter {
+    predicate: Function,
+    error: RefCell<Option<mlua::Error>>,
+}
+
+impl LuaTraceFilter {
+    fn new(predicate: Function) -> Self {
+        Self {
+            predicate,
+            error: RefCell::new(None),
+        }
+    }
+
+    fn ask(&self, args: impl mlua::IntoLuaMulti) -> bool {
+        if self.error.borrow().is_some() {
+            return false;
+        }
+
+        match self.predicate.call::<Value>(args) {
+            Ok(value) => !matches!(value, Value::Nil | Value::Boolean(false)),
+            Err(err) => {
+                *self.error.borrow_mut() = Some(err);
+
+                false
+            }
+        }
+    }
+
+    fn finish(self) -> mlua::Result<()> {
+        match self.error.into_inner() {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+}
+
+impl TraceFilter for LuaTraceFilter {
+    fn should_hit_brush(&self, brush: usize) -> bool {
+        self.ask(brush as f64)
+    }
+
+    fn should_hit_voxel(&self, pos: BlockPos, block: Block) -> bool {
+        self.ask((
+            Vector3::new(pos.x as f64, pos.y as f64, pos.z as f64),
+            block.0 as f64,
+        ))
+    }
+}
+
 fn brush_trace(
     lua: &Lua,
     access: &BrushAccess,
     start: Vector3,
     end: Vector3,
+    filter: Option<Function>,
 ) -> mlua::Result<Option<Table>> {
     let map = unsafe { access.load(Ordering::Relaxed).as_ref() };
     let Some(map) = map else {
         return Ok(None);
     };
-    let Some(hit) = map.trace(start, end) else {
+    let hit = match filter {
+        Some(predicate) => {
+            let filter = LuaTraceFilter::new(predicate);
+            let hit = map.trace_filtered(start, end, &filter);
+            filter.finish()?;
+
+            hit
+        }
+        None => map.trace_filtered(start, end, &HitAll),
+    };
+    let Some(hit) = hit else {
         return Ok(None);
     };
     let table = lua.create_table()?;
@@ -1101,12 +1174,23 @@ fn voxel_trace(
     access: &VoxelAccess,
     start: Vector3,
     end: Vector3,
+    filter: Option<Function>,
 ) -> mlua::Result<Option<Table>> {
     let world = unsafe { access.load(Ordering::Relaxed).as_ref() };
     let Some(world) = world else {
         return Ok(None);
     };
-    let Some(hit) = world.trace(start, end) else {
+    let hit = match filter {
+        Some(predicate) => {
+            let filter = LuaTraceFilter::new(predicate);
+            let hit = world.trace_filtered(start, end, &filter);
+            filter.finish()?;
+
+            hit
+        }
+        None => world.trace_filtered(start, end, &HitAll),
+    };
+    let Some(hit) = hit else {
         return Ok(None);
     };
     let table = lua.create_table()?;

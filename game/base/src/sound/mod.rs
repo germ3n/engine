@@ -5,7 +5,7 @@ use crate::entities::{EntityHandle, EntityList};
 use crate::network::usermessage::hash_usermessage_name;
 use crate::script::libs::vector3::Vector3;
 use crate::script::Realm;
-use crate::world::{BrushMap, VoxelWorld};
+use crate::world::{BrushMap, HitAll, TraceFilter, VoxelWorld};
 use clip::{ClipBody, Pcm, StreamInfo};
 use mix::{MixSnapshot, Mixer, VoiceMix, STREAMS, VOICES};
 use std::collections::{HashMap, VecDeque};
@@ -1526,6 +1526,16 @@ fn voice_match(voice: &LogicalVoice, entity: EntityHandle, def_hash: u32, sound_
 }
 
 fn trace_blocked(start: Vector3, end: Vector3, brushes: &BrushMap, voxels: &VoxelWorld) -> bool {
+    trace_blocked_filtered(start, end, brushes, voxels, &HitAll)
+}
+
+fn trace_blocked_filtered(
+    start: Vector3,
+    end: Vector3,
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+    filter: &dyn TraceFilter,
+) -> bool {
     let delta = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
     let dist = delta.len();
 
@@ -1533,13 +1543,13 @@ fn trace_blocked(start: Vector3, end: Vector3, brushes: &BrushMap, voxels: &Voxe
         return false;
     }
 
-    if let Some(hit) = brushes.trace(start, end) {
+    if let Some(hit) = brushes.trace_filtered(start, end, filter) {
         if hit.distance > 0.05 && hit.distance < dist - 0.05 {
             return true;
         }
     }
 
-    if let Some(hit) = voxels.trace(start, end) {
+    if let Some(hit) = voxels.trace_filtered(start, end, filter) {
         if hit.distance > 0.05 && hit.distance < dist - 0.05 {
             return true;
         }

@@ -3,7 +3,7 @@ use crate::entities::EntityHandle;
 use crate::r#enum::InputButtons;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
-use crate::world::{BrushHit, BrushMap, Face, TraceHit, VoxelWorld};
+use crate::world::{BrushHit, BrushMap, Face, HitAll, TraceFilter, TraceHit, VoxelWorld};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1083,8 +1083,24 @@ fn sweep(
     mins: Vector3,
     maxs: Vector3,
 ) -> Option<SweepHit> {
-    let brush = brushes.sweep(start, end, mins, maxs).map(sweep_from_brush);
-    let voxel = voxels.sweep(start, end, mins, maxs).map(sweep_from_voxel);
+    sweep_filtered(brushes, voxels, start, end, mins, maxs, &HitAll)
+}
+
+fn sweep_filtered(
+    brushes: &BrushMap,
+    voxels: &VoxelWorld,
+    start: Vector3,
+    end: Vector3,
+    mins: Vector3,
+    maxs: Vector3,
+    filter: &dyn TraceFilter,
+) -> Option<SweepHit> {
+    let brush = brushes
+        .sweep_filtered(start, end, mins, maxs, filter)
+        .map(sweep_from_brush);
+    let voxel = voxels
+        .sweep_filtered(start, end, mins, maxs, filter)
+        .map(sweep_from_voxel);
 
     match (brush, voxel) {
         (Some(left), Some(right)) => {

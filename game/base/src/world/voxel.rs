@@ -1,3 +1,4 @@
+use super::{HitAll, TraceFilter};
 use crate::script::libs::vector3::Vector3;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -939,6 +940,15 @@ impl VoxelWorld {
     }
 
     pub fn trace(&self, start: Vector3, end: Vector3) -> Option<TraceHit> {
+        self.trace_filtered(start, end, &HitAll)
+    }
+
+    pub fn trace_filtered(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        filter: &dyn TraceFilter,
+    ) -> Option<TraceHit> {
         if !is_finite(start) || !is_finite(end) {
             return None;
         }
@@ -947,6 +957,7 @@ impl VoxelWorld {
         let hit = self.trace_grid(
             Vector3::new(start.x / scale, start.y / scale, start.z / scale),
             Vector3::new(end.x / scale, end.y / scale, end.z / scale),
+            filter,
         )?;
 
         Some(TraceHit {
@@ -967,6 +978,17 @@ impl VoxelWorld {
         end: Vector3,
         mins: Vector3,
         maxs: Vector3,
+    ) -> Option<TraceHit> {
+        self.sweep_filtered(start, end, mins, maxs, &HitAll)
+    }
+
+    pub fn sweep_filtered(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        mins: Vector3,
+        maxs: Vector3,
+        filter: &dyn TraceFilter,
     ) -> Option<TraceHit> {
         if !is_finite(start) || !is_finite(end) || !is_finite(mins) || !is_finite(maxs) {
             return None;
@@ -1040,7 +1062,7 @@ impl VoxelWorld {
                 while x <= x1 {
                     let pos = BlockPos { x, y, z };
 
-                    if self.is_solid(pos) {
+                    if self.is_hittable(pos, filter) {
                         let cell_min =
                             Vector3::new(x as f64 * scale, y as f64 * scale, z as f64 * scale);
                         let cell_max = Vector3::new(
@@ -1090,7 +1112,16 @@ impl VoxelWorld {
         best
     }
 
-    fn trace_grid(&self, start: Vector3, end: Vector3) -> Option<TraceHit> {
+    fn is_hittable(&self, pos: BlockPos, filter: &dyn TraceFilter) -> bool {
+        self.is_solid(pos) && filter.should_hit_voxel(pos, self.get(pos))
+    }
+
+    fn trace_grid(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        filter: &dyn TraceFilter,
+    ) -> Option<TraceHit> {
         if !is_finite(start) || !is_finite(end) {
             return None;
         }
@@ -1103,7 +1134,7 @@ impl VoxelWorld {
         if max_dist == 0.0 {
             let block = BlockPos::from_world(start);
 
-            if !self.is_solid(block) {
+            if !self.is_hittable(block, filter) {
                 return None;
             }
 
@@ -1128,7 +1159,7 @@ impl VoxelWorld {
             z: z.cell,
         };
 
-        if self.is_solid(origin) {
+        if self.is_hittable(origin, filter) {
             return Some(TraceHit {
                 block: origin,
                 face: None,
@@ -1177,7 +1208,7 @@ impl VoxelWorld {
                 z: z.cell,
             };
 
-            if self.is_solid(block) {
+            if self.is_hittable(block, filter) {
                 return Some(TraceHit {
                     block,
                     face: Some(face),

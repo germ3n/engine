@@ -4,6 +4,7 @@ pub mod gen;
 mod material;
 pub mod nav;
 pub mod surface;
+mod trace;
 mod voxel;
 
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ pub use surface::{
     push_shaded_tri, DrawMesh, MapGraphics, SurfaceRange, CUBEMAP_NONE, MATERIAL_NONE, PASS_OPAQUE,
     STRIDE,
 };
+pub use trace::{HitAll, TraceFilter};
 pub use voxel::{
     block_rgb, cwd_vmap_path, find_voxel_file, Block, BlockPos, ChunkPos, ChunkUpdate, Face,
     TraceHit, VoxelWorld, CHUNK_EDGE,
