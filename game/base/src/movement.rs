@@ -5,12 +5,41 @@ use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::world::{BrushHit, BrushMap, Face, TraceHit, VoxelWorld};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use wincode::{SchemaRead, SchemaWrite};
 
+static NOCLIP_SERVER: AtomicBool = AtomicBool::new(false);
+static NOCLIP_CLIENT: AtomicBool = AtomicBool::new(false);
+
 pub(crate) const STAND_MINS: Vector3 = Vector3::new(-0.28, -0.28, 0.0);
 pub(crate) const STAND_MAXS: Vector3 = Vector3::new(0.28, 0.28, 1.65);
-const DUCK_MAXS: Vector3 = Vector3::new(0.28, 0.28, 0.9);
+pub(crate) const DUCK_MAXS: Vector3 = Vector3::new(0.28, 0.28, 0.9);
+pub(crate) const VIEW_OFFSET: Vector3 = Vector3::new(0.0, 0.0, 1.45);
+pub(crate) const VIEW_OFFSET_DUCKED: Vector3 = Vector3::new(0.0, 0.0, 0.78);
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerBody {
+    pub mins: Vector3,
+    pub maxs: Vector3,
+    pub duck_mins: Vector3,
+    pub duck_maxs: Vector3,
+    pub view_offset: Vector3,
+    pub view_offset_ducked: Vector3,
+}
+
+impl Default for PlayerBody {
+    fn default() -> Self {
+        Self {
+            mins: STAND_MINS,
+            maxs: STAND_MAXS,
+            duck_mins: STAND_MINS,
+            duck_maxs: DUCK_MAXS,
+            view_offset: VIEW_OFFSET,
+            view_offset_ducked: VIEW_OFFSET_DUCKED,
+        }
+    }
+}
 const SKIN: f64 = 0.002;
 const STEP_HEIGHT: f64 = 0.45;
 const GROUND_PROBE: f64 = 0.12;
@@ -216,9 +245,21 @@ impl Prediction {
     ) {
         let mut prev = self.prev_buttons;
 
+        let body = PlayerBody::default();
+
         for cmd in &self.cmds {
             step(
-                position, velocity, angles, cmd, prev, dt, gravity, brushes, voxels, None,
+                position,
+                velocity,
+                angles,
+                cmd,
+                prev,
+                dt,
+                gravity,
+                brushes,
+                voxels,
+                None,
+                &body,
             );
             prev = cmd.buttons;
         }
@@ -356,14 +397,6 @@ pub fn blend_poses(samples: &VecDeque<NetPose>, time: f64, extra_limit: f64) -> 
     })
 }
 
-pub fn eye_height(buttons: InputButtons) -> f64 {
-    if buttons.contains(InputButtons::IN_DUCK) {
-        0.78
-    } else {
-        1.45
-    }
-}
-
 pub fn sanitize(cmd: &mut UserCommand) {
     cmd.wish.x = finite_axis(cmd.wish.x);
     cmd.wish.y = finite_axis(cmd.wish.y);
@@ -395,6 +428,7 @@ pub fn step(
     brushes: &BrushMap,
     voxels: &VoxelWorld,
     root: Option<RootStep>,
+    body: &PlayerBody,
 ) {
     if dt <= 0.0 {
         return;
@@ -411,9 +445,9 @@ pub fn step(
     }
 
     repair(velocity);
-    *position = unstuck(*position, cmd.buttons, brushes, voxels);
+    *position = unstuck(*position, cmd.buttons, brushes, voxels, body);
 
-    let (mins, maxs) = hull_for(cmd.buttons, *position, brushes, voxels);
+    let (mins, maxs) = hull_for(cmd.buttons, *position, brushes, voxels, body);
     let mut on_ground = grounded(*position, *velocity, mins, maxs, brushes, voxels);
 
     if root.is_none() && on_ground {
@@ -478,9 +512,10 @@ pub fn root_move(
     angles.y += step.dyaw as f32;
     *angles = angles.normalize();
     repair(velocity);
-    *position = unstuck(*position, InputButtons::NONE, brushes, voxels);
-    let mins = STAND_MINS;
-    let maxs = STAND_MAXS;
+    let body = PlayerBody::default();
+    *position = unstuck(*position, InputButtons::NONE, brushes, voxels, &body);
+    let mins = body.mins;
+    let maxs = body.maxs;
     let on_ground = grounded(*position, *velocity, mins, maxs, brushes, voxels);
     velocity.x = step.dx / dt;
     velocity.y = step.dy / dt;
@@ -551,14 +586,15 @@ fn hull_for(
     position: Vector3,
     brushes: &BrushMap,
     voxels: &VoxelWorld,
+    body: &PlayerBody,
 ) -> (Vector3, Vector3) {
     if buttons.contains(InputButtons::IN_DUCK)
-        || overlapping(position, STAND_MINS, STAND_MAXS, brushes, voxels)
+        || overlapping(position, body.mins, body.maxs, brushes, voxels)
     {
-        return (STAND_MINS, DUCK_MAXS);
+        return (body.duck_mins, body.duck_maxs);
     }
 
-    (STAND_MINS, STAND_MAXS)
+    (body.mins, body.maxs)
 }
 
 fn yaw_basis(yaw_deg: f32) -> (Vector3, Vector3) {
@@ -733,8 +769,9 @@ fn unstuck(
     buttons: InputButtons,
     brushes: &BrushMap,
     voxels: &VoxelWorld,
+    body: &PlayerBody,
 ) -> Vector3 {
-    let (mins, maxs) = hull_for(buttons, position, brushes, voxels);
+    let (mins, maxs) = hull_for(buttons, position, brushes, voxels, body);
 
     if !overlapping(position, mins, maxs, brushes, voxels) {
         return position;
@@ -1016,6 +1053,8 @@ mod tests {
         let mut angles = Angle3::new(0.0, 0.0, 0.0);
         let mut prev = InputButtons::NONE;
 
+        let body = PlayerBody::default();
+
         for cmd in cmds {
             step(
                 &mut position,
@@ -1028,6 +1067,7 @@ mod tests {
                 brushes,
                 voxels,
                 None,
+                &body,
             );
             prev = cmd.buttons;
         }
@@ -1109,6 +1149,7 @@ mod tests {
                 &brushes,
                 &voxels,
                 None,
+                &PlayerBody::default(),
             );
             prev = cmd.buttons;
 
@@ -1161,6 +1202,7 @@ mod tests {
                 &brushes,
                 &voxels,
                 None,
+                &PlayerBody::default(),
             );
             predicted.push(cmds[idx]);
             idx += 1;

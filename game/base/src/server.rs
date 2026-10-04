@@ -1189,14 +1189,18 @@ fn apply_command(
     dt: f64,
     gravity: f64,
 ) -> bool {
-    let (mut position, mut velocity, mut angles) = {
+    let (mut position, mut velocity, mut angles, body) = {
         let Some(entity) = game.entities.get(handle) else {
             return false;
         };
 
         let base = entity.base();
+        let body = entity
+            .player_body()
+            .copied()
+            .unwrap_or_default();
 
-        (base.position, base.velocity, base.angles)
+        (base.position, base.velocity, base.angles, body)
     };
     let root = game
         .entities
@@ -1214,6 +1218,7 @@ fn apply_command(
         &game.brush_world,
         &game.voxel_world,
         root,
+        &body,
     );
 
     let Some(entity) = game.entities.get_mut(handle) else {

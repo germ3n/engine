@@ -33,6 +33,12 @@ realm = "shared",
 summary = "A scripted or native entity. Call methods with a colon. Hooks are functions on the entity table.",
 ]=]
 --[=[document
+kind = "class",
+name = "Player",
+realm = "shared",
+summary = "Native player entity. Shares Entity methods and adds hull and view-offset get/set.",
+]=]
+--[=[document
 parent = "Entity",
 name = "initialize",
 kind = "hook",
@@ -162,6 +168,14 @@ return function(native)
     local native_manipulate_bone_position = native.manipulate_bone_position;
     local native_manipulate_bone_angles = native.manipulate_bone_angles;
     local native_clear_bone_manipulations = native.clear_bone_manipulations;
+    local native_get_hull = native.get_hull;
+    local native_set_hull = native.set_hull;
+    local native_get_hull_duck = native.get_hull_duck;
+    local native_set_hull_duck = native.set_hull_duck;
+    local native_get_view_offset = native.get_view_offset;
+    local native_set_view_offset = native.set_view_offset;
+    local native_get_view_offset_ducked = native.get_view_offset_ducked;
+    local native_set_view_offset_ducked = native.set_view_offset_ducked;
     local attach_owned;
 
     local function report(ent, name, err)
@@ -1821,6 +1835,134 @@ return function(native)
     ]=]
     function meta:stop_gesture()
         native_stop_gesture(self._handle);
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "get_hull",
+    realm = "shared",
+    summary = "Standing collision mins and maxs.",
+    returns = {
+        { ty = "Vector3", desc = "Mins." },
+        { ty = "Vector3", desc = "Maxs." },
+    },
+    example = "local mins, maxs = ply:get_hull()",
+    see_also = "Player:set_hull, Player:get_hull_duck",
+    ]=]
+    function meta:get_hull()
+        local min_x, min_y, min_z, max_x, max_y, max_z = native_get_hull(self._handle);
+
+        return vector_type(min_x, min_y, min_z), vector_type(max_x, max_y, max_z);
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "set_hull",
+    realm = "shared",
+    summary = "Sets standing collision mins and maxs.",
+    params = {
+        mins = { ty = "Vector3", desc = "Mins relative to origin." },
+        maxs = { ty = "Vector3", desc = "Maxs relative to origin." },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ply:set_hull(Vector3(-0.28, -0.28, 0), Vector3(0.28, 0.28, 1.65))",
+    see_also = "Player:get_hull, Player:set_hull_duck",
+    ]=]
+    function meta:set_hull(mins, maxs)
+        native_set_hull(self._handle, mins.x, mins.y, mins.z, maxs.x, maxs.y, maxs.z);
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "get_hull_duck",
+    realm = "shared",
+    summary = "Ducked collision mins and maxs.",
+    returns = {
+        { ty = "Vector3", desc = "Mins." },
+        { ty = "Vector3", desc = "Maxs." },
+    },
+    example = "local mins, maxs = ply:get_hull_duck()",
+    see_also = "Player:set_hull_duck, Player:get_hull",
+    ]=]
+    function meta:get_hull_duck()
+        local min_x, min_y, min_z, max_x, max_y, max_z = native_get_hull_duck(self._handle);
+
+        return vector_type(min_x, min_y, min_z), vector_type(max_x, max_y, max_z);
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "set_hull_duck",
+    realm = "shared",
+    summary = "Sets ducked collision mins and maxs.",
+    params = {
+        mins = { ty = "Vector3", desc = "Mins relative to origin." },
+        maxs = { ty = "Vector3", desc = "Maxs relative to origin." },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ply:set_hull_duck(Vector3(-0.28, -0.28, 0), Vector3(0.28, 0.28, 0.9))",
+    see_also = "Player:get_hull_duck, Player:set_hull",
+    ]=]
+    function meta:set_hull_duck(mins, maxs)
+        native_set_hull_duck(self._handle, mins.x, mins.y, mins.z, maxs.x, maxs.y, maxs.z);
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "get_view_offset",
+    realm = "shared",
+    summary = "Eye offset from origin while standing.",
+    returns = { ty = "Vector3", desc = "View offset." },
+    example = "local offset = ply:get_view_offset()",
+    see_also = "Player:set_view_offset, Player:get_view_offset_ducked",
+    ]=]
+    function meta:get_view_offset()
+        return vector_type(native_get_view_offset(self._handle));
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "set_view_offset",
+    realm = "shared",
+    summary = "Sets the standing eye offset from origin.",
+    params = {
+        offset = { ty = "Vector3", desc = "View offset." },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ply:set_view_offset(Vector3(0, 0, 1.45))",
+    see_also = "Player:get_view_offset, Player:set_view_offset_ducked",
+    ]=]
+    function meta:set_view_offset(offset)
+        native_set_view_offset(self._handle, offset.x, offset.y, offset.z);
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "get_view_offset_ducked",
+    realm = "shared",
+    summary = "Eye offset from origin while ducked.",
+    returns = { ty = "Vector3", desc = "View offset." },
+    example = "local offset = ply:get_view_offset_ducked()",
+    see_also = "Player:set_view_offset_ducked, Player:get_view_offset",
+    ]=]
+    function meta:get_view_offset_ducked()
+        return vector_type(native_get_view_offset_ducked(self._handle));
+    end
+
+    --[=[document
+    parent = "Player",
+    name = "set_view_offset_ducked",
+    realm = "shared",
+    summary = "Sets the ducked eye offset from origin.",
+    params = {
+        offset = { ty = "Vector3", desc = "View offset." },
+    },
+    returns = { ty = "nil", desc = "" },
+    example = "ply:set_view_offset_ducked(Vector3(0, 0, 0.78))",
+    see_also = "Player:get_view_offset_ducked, Player:set_view_offset",
+    ]=]
+    function meta:set_view_offset_ducked(offset)
+        native_set_view_offset_ducked(self._handle, offset.x, offset.y, offset.z);
     end
 
     --[=[document

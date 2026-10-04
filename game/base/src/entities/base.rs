@@ -1,6 +1,7 @@
 use crate::anim::AnimPlayback;
 use crate::entities::context::TickContext;
 use crate::entities::handle::EntityHandle;
+use crate::movement::PlayerBody;
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 
@@ -65,4 +66,12 @@ pub trait BaseEntity: Networkable {
     }
 
     fn set_spawned(&mut self, _spawned: bool) {}
+
+    fn player_body(&self) -> Option<&PlayerBody> {
+        None
+    }
+
+    fn player_body_mut(&mut self) -> Option<&mut PlayerBody> {
+        None
+    }
 }

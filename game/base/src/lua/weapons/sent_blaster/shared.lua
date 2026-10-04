@@ -3,8 +3,6 @@ local IN_ATTACK = 1;
 local IN_RELOAD = 128;
 local IN_SPRINT = 8;
 local IN_DUCK = 32;
-local EYE_STAND = 1.45;
-local EYE_DUCK = 0.78;
 
 WEAPON.base = "base_weapon";
 WEAPON.print_name = "Blaster";
@@ -35,13 +33,13 @@ function WEAPON:follow_owner(cmd)
     end
 
     local pos = owner:get_pos();
-    local eye = EYE_STAND;
+    local offset = owner:get_view_offset();
 
     if cmd ~= nil and band(cmd.buttons, IN_DUCK) ~= 0 then
-        eye = EYE_DUCK;
+        offset = owner:get_view_offset_ducked();
     end
 
-    self:set_pos(Vector3(pos.x, pos.y, pos.z + eye));
+    self:set_pos(Vector3(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z));
     self:set_angles(owner:get_angles());
 end
 

@@ -454,12 +454,14 @@ pub fn client_loop(
                             .or_else(|| body_origin(&game, prediction.local));
 
                         if let Some(origin) = origin {
-                            place_camera(
-                                &mut camera,
-                                origin,
-                                prediction.look,
-                                movement::eye_height(prediction.previous()),
-                            );
+                            let body = player_body(&game, prediction.local);
+                            let eye = if prediction.previous().contains(InputButtons::IN_DUCK)
+                            {
+                                body.view_offset_ducked.z
+                            } else {
+                                body.view_offset.z
+                            };
+                            place_camera(&mut camera, origin, prediction.look, eye);
                         }
                     }
 
@@ -560,11 +562,7 @@ pub fn client_loop(
                         shown_revision,
                         &scene,
                     );
-                    let local_time = if game.tick_count == 0 {
-                        0.0
-                    } else {
-                        (game.tick_count - 1) as f64 + skin_alpha
-                    };
+                    let local_time = game.tick_count as f64 + skin_alpha;
                     let (forward, up) = (scene.forward, scene.up);
                     let cull = crate::anim::cull_from(
                         scene.eye,
@@ -574,7 +572,12 @@ pub fn client_loop(
                         scene.aspect,
                         scene.far,
                     );
-                    let view_eye = movement::eye_height(prediction.previous());
+                    let body = player_body(&game, prediction.local);
+                    let view_eye = if prediction.previous().contains(InputButtons::IN_DUCK) {
+                        body.view_offset_ducked.z
+                    } else {
+                        body.view_offset.z
+                    };
                     let (world_skin, view_skin) = game.skin_batch(
                         prediction.local,
                         prediction.view_origin(skin_alpha),
@@ -1263,12 +1266,13 @@ pub fn client_loop(
                             .or_else(|| body_origin(&game, prediction.local));
 
                         if let Some(origin) = origin {
-                            place_camera(
-                                &mut camera,
-                                origin,
-                                prediction.look,
-                                movement::eye_height(buttons),
-                            );
+                            let body = player_body(&game, prediction.local);
+                            let eye = if buttons.contains(InputButtons::IN_DUCK) {
+                                body.view_offset_ducked.z
+                            } else {
+                                body.view_offset.z
+                            };
+                            place_camera(&mut camera, origin, prediction.look, eye);
                         }
                     }
                 }
@@ -1336,14 +1340,18 @@ fn step_player(
     cmd: &UserCommand,
     prev: InputButtons,
 ) -> bool {
-    let (mut position, mut velocity, mut angles) = {
+    let (mut position, mut velocity, mut angles, body) = {
         let Some(entity) = game.entities.get(handle) else {
             return false;
         };
 
         let base = entity.base();
+        let body = entity
+            .player_body()
+            .copied()
+            .unwrap_or_default();
 
-        (base.position, base.velocity, base.angles)
+        (base.position, base.velocity, base.angles, body)
     };
     let dt = game.tick_interval;
     let gravity = movement::gravity(&game.cvars);
@@ -1363,6 +1371,7 @@ fn step_player(
         &game.brush_world,
         &game.voxel_world,
         root,
+        &body,
     );
 
     let Some(entity) = game.entities.get_mut(handle) else {
@@ -2236,30 +2245,25 @@ fn place_demo_camera(
         1.0
     };
     let client_local = play.kind() == demo::KIND_CLIENT && handle == prediction.local;
+    let body = player_body(game, handle);
     let (origin, look, eye) = if client_local {
         if let Some(origin) = prediction.view_origin(alpha) {
-            (
-                origin,
-                prediction.look,
-                movement::eye_height(prediction.previous()),
-            )
+            let eye = if prediction.previous().contains(InputButtons::IN_DUCK) {
+                body.view_offset_ducked.z
+            } else {
+                body.view_offset.z
+            };
+
+            (origin, prediction.look, eye)
         } else if let Some(origin) = body_origin(game, handle) {
-            (
-                origin,
-                prediction.look,
-                movement::eye_height(InputButtons::NONE),
-            )
+            (origin, prediction.look, body.view_offset.z)
         } else {
             return;
         }
     } else if let Some(entity) = game.entities.get(handle) {
         let base = entity.base();
 
-        (
-            base.position,
-            base.angles,
-            movement::eye_height(InputButtons::NONE),
-        )
+        (base.position, base.angles, body.view_offset.z)
     } else {
         return;
     };
@@ -2424,6 +2428,16 @@ fn body_origin(
         .map(|entity| entity.base().position)
 }
 
+fn player_body(
+    game: &GameState<FromServer, ClientToServer>,
+    handle: EntityHandle,
+) -> movement::PlayerBody {
+    game.entities
+        .get(handle)
+        .and_then(|entity| entity.player_body().copied())
+        .unwrap_or_default()
+}
+
 fn scale_view(
     game: &mut GameState<FromServer, ClientToServer>,
     camera: &mut FlyCamera,
@@ -2550,11 +2564,20 @@ fn reconcile_player(
     game.begin_reconcile(predicted);
 
     for cmd in prediction.commands() {
-        let root = game
-            .entities
-            .get(handle)
-            .map(|entity| entity.base().anim)
-            .and_then(|playback| game.anims.root_motion(&playback, angles.y, cmd.tick, dt));
+        let (root, body) = {
+            let Some(entity) = game.entities.get(handle) else {
+                break;
+            };
+            let body = entity
+                .player_body()
+                .copied()
+                .unwrap_or_default();
+            let root = game
+                .anims
+                .root_motion(&entity.base().anim, angles.y, cmd.tick, dt);
+
+            (root, body)
+        };
         movement::step(
             &mut position,
             &mut velocity,
@@ -2566,6 +2589,7 @@ fn reconcile_player(
             &game.brush_world,
             &game.voxel_world,
             root,
+            &body,
         );
         prev = cmd.buttons;
 

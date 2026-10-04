@@ -1,6 +1,7 @@
 use crate::entities::context::TickContext;
 use crate::entities::EntityHandle;
 use crate::entities::{base::BaseEntity, base::BaseEntityData, base::Networkable};
+use crate::movement::PlayerBody;
 use r#macro::Networkable;
 
 #[Networkable]
@@ -8,6 +9,7 @@ pub struct Player {
     pub base: BaseEntityData,
     #[Networked]
     pub health: i32,
+    pub body: PlayerBody,
 }
 
 impl Default for Player {
@@ -15,6 +17,7 @@ impl Default for Player {
         Self {
             base: BaseEntityData::default(),
             health: 100,
+            body: PlayerBody::default(),
         }
     }
 }
@@ -62,5 +65,13 @@ impl BaseEntity for Player {
 
     fn net_health(&self) -> i32 {
         self.health
+    }
+
+    fn player_body(&self) -> Option<&PlayerBody> {
+        Some(&self.body)
+    }
+
+    fn player_body_mut(&mut self) -> Option<&mut PlayerBody> {
+        Some(&mut self.body)
     }
 }

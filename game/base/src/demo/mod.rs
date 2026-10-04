@@ -1106,6 +1106,7 @@ mod tests {
             brushes,
             voxels,
             None,
+            &movement::PlayerBody::default(),
         );
         *prev = cmd.buttons;
     }

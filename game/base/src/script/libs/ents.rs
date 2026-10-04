@@ -126,6 +126,27 @@ fn invalid(raw: u32) -> Error {
     Error::RuntimeError(format!("invalid entity {raw}"))
 }
 
+fn not_player(raw: u32) -> Error {
+    Error::RuntimeError(format!("entity {raw} is not a Player"))
+}
+
+fn player_body_mut(
+    list: &mut EntityList,
+    raw: u32,
+) -> Result<&mut crate::movement::PlayerBody> {
+    let handle = EntityHandle(raw);
+    let entity = list.get_mut(handle).ok_or_else(|| invalid(raw))?;
+
+    entity.player_body_mut().ok_or_else(|| not_player(raw))
+}
+
+fn player_body_ref(list: &EntityList, raw: u32) -> Result<&crate::movement::PlayerBody> {
+    let handle = EntityHandle(raw);
+    let entity = list.get(handle).ok_or_else(|| invalid(raw))?;
+
+    entity.player_body().ok_or_else(|| not_player(raw))
+}
+
 fn add_native<F, A, R>(lua: &Lua, native: &Table, name: &str, func: F)
 where
     F: Fn(&Lua, A) -> Result<R> + mlua::MaybeSend + 'static,
@@ -855,6 +876,112 @@ fn build_native(
 
         Ok(())
     });
+
+    let shared = access.clone();
+    add_native(lua, &native, "get_hull", move |_, raw: u32| {
+        let list = entities(&shared)?;
+        let body = player_body_ref(list, raw)?;
+
+        Ok((
+            body.mins.x,
+            body.mins.y,
+            body.mins.z,
+            body.maxs.x,
+            body.maxs.y,
+            body.maxs.z,
+        ))
+    });
+
+    let shared = access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_hull",
+        move |_, (raw, min_x, min_y, min_z, max_x, max_y, max_z): (u32, f64, f64, f64, f64, f64, f64)| {
+            let list = entities(&shared)?;
+            let body = player_body_mut(list, raw)?;
+            body.mins = Vector3::new(min_x, min_y, min_z);
+            body.maxs = Vector3::new(max_x, max_y, max_z);
+
+            Ok(())
+        },
+    );
+
+    let shared = access.clone();
+    add_native(lua, &native, "get_hull_duck", move |_, raw: u32| {
+        let list = entities(&shared)?;
+        let body = player_body_ref(list, raw)?;
+
+        Ok((
+            body.duck_mins.x,
+            body.duck_mins.y,
+            body.duck_mins.z,
+            body.duck_maxs.x,
+            body.duck_maxs.y,
+            body.duck_maxs.z,
+        ))
+    });
+
+    let shared = access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_hull_duck",
+        move |_, (raw, min_x, min_y, min_z, max_x, max_y, max_z): (u32, f64, f64, f64, f64, f64, f64)| {
+            let list = entities(&shared)?;
+            let body = player_body_mut(list, raw)?;
+            body.duck_mins = Vector3::new(min_x, min_y, min_z);
+            body.duck_maxs = Vector3::new(max_x, max_y, max_z);
+
+            Ok(())
+        },
+    );
+
+    let shared = access.clone();
+    add_native(lua, &native, "get_view_offset", move |_, raw: u32| {
+        let list = entities(&shared)?;
+        let body = player_body_ref(list, raw)?;
+        let offset = body.view_offset;
+
+        Ok((offset.x, offset.y, offset.z))
+    });
+
+    let shared = access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_view_offset",
+        move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
+            let list = entities(&shared)?;
+            let body = player_body_mut(list, raw)?;
+            body.view_offset = Vector3::new(x, y, z);
+
+            Ok(())
+        },
+    );
+
+    let shared = access.clone();
+    add_native(lua, &native, "get_view_offset_ducked", move |_, raw: u32| {
+        let list = entities(&shared)?;
+        let body = player_body_ref(list, raw)?;
+        let offset = body.view_offset_ducked;
+
+        Ok((offset.x, offset.y, offset.z))
+    });
+
+    let shared = access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_view_offset_ducked",
+        move |_, (raw, x, y, z): (u32, f64, f64, f64)| {
+            let list = entities(&shared)?;
+            let body = player_body_mut(list, raw)?;
+            body.view_offset_ducked = Vector3::new(x, y, z);
+
+            Ok(())
+        },
+    );
 
     let classes = lua
         .create_table()
