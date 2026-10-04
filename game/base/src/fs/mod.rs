@@ -129,6 +129,8 @@ impl Fs {
             }
         }
 
+        vpk::mount_env();
+
         return Ok(fs);
     }
 

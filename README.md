@@ -64,6 +64,14 @@ Set `ENGINE_HOST` to pick the window/event-loop host. Default is `winit`. `sdl2`
 ENGINE_HOST=winit ENGINE_GFX=metal cargo run -p base
 ```
 
+## VPK archives
+
+Set `ENGINE_VPK_DIR` to a folder and every `_dir.vpk` under it (up to 3 levels deep) is mounted at startup for materials and textures. Separate several folders like `PATH`. From Lua, `vpk.mount(path)` and `vpk.unmount(path)` do the same at runtime.
+
+```sh
+ENGINE_VPK_DIR=~/tf cargo run -p base
+```
+
 ## Maps
 
 `hall` is included. A text `.map` compiles to `.cmap`:
