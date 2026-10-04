@@ -74,6 +74,16 @@ impl<In, Out> GameState<In, Out> {
                 Some(true),
             )),
         );
+        cvars.insert(
+            "cl_interpolate".to_string(),
+            Arc::new(ConVar::new(
+                "cl_interpolate",
+                ConVarValue::Integer(1),
+                "Interpolate remote entities (1) or snap to the latest snapshot (0)",
+                Some(false),
+                Some(false),
+            )),
+        );
         register_net_sim_cvars(&mut cvars);
         register_sound_cvars(&mut cvars);
 

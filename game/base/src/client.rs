@@ -2742,8 +2742,13 @@ fn present_remotes(
     now: f64,
     interval: f64,
 ) {
+    let interpolate = crate::console::float_cvar(&game.cvars, "cl_interpolate", 1.0) != 0.0;
     let delay = interval.max(0.0) * 2.0;
-    let render_time = now - delay;
+    let (render_time, extra_limit) = if interpolate {
+        (now - delay, interval)
+    } else {
+        (f64::MAX, 0.0)
+    };
     let mut visual = Vec::new();
 
     for (handle, samples) in remotes.iter_mut() {
@@ -2751,7 +2756,7 @@ fn present_remotes(
             continue;
         }
 
-        if let Some(pose) = movement::blend_poses(samples, render_time, interval) {
+        if let Some(pose) = movement::blend_poses(samples, render_time, extra_limit) {
             let clock = movement::sample_clock(samples, render_time).unwrap_or((pose.tick, 0.0));
             visual.push((*handle, pose, clock.0, clock.1));
         }
