@@ -1,0 +1,7 @@
+// Localization strings. One `Token = text` per line.
+// Use #Token in text. Arguments are {:1}, {:2}, ... (1 is the first argument).
+// \n is a newline, \\ is a backslash.
+
+Hello_World = Hello, world!
+Player_Joined = {:1} joined the game
+Player_Score = {:1} has {:2} points

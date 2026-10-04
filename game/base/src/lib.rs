@@ -10,6 +10,7 @@ mod entities;
 mod r#enum;
 pub mod fs;
 mod input;
+mod localize;
 mod movement;
 mod network;
 mod physics;

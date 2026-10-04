@@ -64,7 +64,7 @@ fn surface_draw_outlined_rect() {}
     name = "draw_text",
     kind = "function",
     realm = "client",
-    summary = "Draws a string. Unknown font names use the built-in face.",
+    summary = "Draws a string. Unknown font names use the built-in face. A string starting with # is resolved as a localize token first, without arguments.",
     params = {
         font = { ty = "string", desc = "Font name. default is the built-in face." },
         text = { ty = "string", desc = "The string." },
@@ -492,7 +492,7 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
         .set(
             "draw_text",
             lua.create_function(
-                move |_,
+                move |lua,
                       (font, text, x, y, scale, r, g, b, a, texture, pipeline, sampler): (
                     mlua::LuaString,
                     mlua::LuaString,
@@ -514,6 +514,13 @@ pub fn register_surface_lib(lua: &Lua, render_queue: RenderQueue) {
                     if !ids_live(&render_queue_, &[texture, pipeline, sampler]) {
                         return Ok(());
                     }
+
+                    let text = if text.as_bytes().starts_with(b"#") {
+                        let resolved = crate::localize::get(&text.to_string_lossy(), &[]);
+                        lua.create_string(&resolved)?
+                    } else {
+                        text
+                    };
 
                     render_queue_
                         .lock()

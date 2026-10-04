@@ -209,6 +209,7 @@ impl ScriptEngine {
 
             register_convar_lib(&lua, cvars);
             register_console_lib(&lua, binds, realm);
+            crate::script::libs::register_localize_lib(&lua);
             register_pad_lib(&lua, pads);
             register_vector3_lib(&lua);
             register_angle3_lib(&lua);

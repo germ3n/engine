@@ -391,6 +391,7 @@ fn write_base_pak() {
         ("models/test.bin", "models/test.bin"),
         ("models/test.png", "models/test.png"),
         ("sound/mannequin/wave.wav", "sound/mannequin/wave.wav"),
+        ("lang/english.txt", "lang/english.txt"),
     ];
     let lua = [
         ("lua/libs/hook.luac", "hook.luac"),
