@@ -25,10 +25,11 @@ use crate::world::ChunkPos;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 const MAX_TICK_CMDS: usize = 8;
+const HOST_GRACE: f64 = 0.25;
 
 struct RemotePlayer {
     addr: SocketAddr,
@@ -88,10 +89,14 @@ impl RemotePlayer {
 }
 
 #[cfg(feature = "server")]
-pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
+pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool) {
     demo::bind_realm(Realm::Server);
     let mut last_time = Instant::now();
     let mut accumulated_time = 0.0;
+    let mut held: Option<FromClient> = None;
+    let mut host_seen: Option<Instant> = None;
+    let mut host_tick: u64 = 0;
+    let mut host_due: u64 = 0;
     let mut peers = Vec::new();
     let mut joined = Vec::new();
     let mut players: Vec<RemotePlayer> = Vec::new();
@@ -122,8 +127,23 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
         poll_noclip(&mut game, &players);
         joined.clear();
         let mut ticked = false;
-        while accumulated_time >= game.tick_interval {
-            accumulated_time -= game.tick_interval;
+        let driven = listen
+            && host_seen.is_some_and(|seen| seen.elapsed().as_secs_f64() < HOST_GRACE);
+        let mut due = 0;
+
+        if driven {
+            accumulated_time = 0.0;
+            due = std::mem::take(&mut host_due);
+        } else {
+            host_due = 0;
+        }
+
+        while due > 0 || accumulated_time >= game.tick_interval {
+            if due > 0 {
+                due -= 1;
+            } else {
+                accumulated_time -= game.tick_interval;
+            }
 
             game.cur_time += game.tick_interval;
             game.frame_time = game.tick_interval;
@@ -189,7 +209,10 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             game.send_reliable(ServerToClient::UserMessage { hash, data });
         }
 
-        while let Ok(net_event) = game.network_receiver.try_recv() {
+        'drain: while let Some(net_event) = held
+            .take()
+            .or_else(|| game.network_receiver.try_recv().ok())
+        {
             match net_event {
                 FromClient::Connected {
                     addr,
@@ -367,6 +390,22 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
 
                                 idx += 1;
                             }
+
+                            if listen && host_addr(&players) == Some(addr) {
+                                let step = if host_tick == 0 || tick + 64 < host_tick {
+                                    host_tick = tick;
+
+                                    1
+                                } else {
+                                    tick.saturating_sub(host_tick).min(MAX_TICK_CMDS as u64)
+                                };
+
+                                host_tick = host_tick.max(tick);
+                                host_due += step;
+                                host_seen = Some(Instant::now());
+
+                                break 'drain;
+                            }
                         }
                         _ => {}
                     }
@@ -411,13 +450,51 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>) {
             emit_voxel_dirty(&mut game, &peers);
         }
 
-        if !ticked {
-            let remaining = game.tick_interval - accumulated_time;
+        if !ticked && host_due == 0 {
+            let remaining = if driven {
+                game.tick_interval
+            } else {
+                game.tick_interval - accumulated_time
+            };
+
             if remaining > 0.0 {
-                std::thread::sleep(Duration::from_secs_f64(remaining));
+                let wait = Duration::from_secs_f64(remaining);
+
+                if listen {
+                    match game.network_receiver.recv_timeout(wait) {
+                        Ok(net_event) => held = Some(net_event),
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => std::thread::sleep(wait),
+                    }
+                } else {
+                    std::thread::sleep(wait);
+                }
             }
         }
     }
+}
+
+fn is_local(addr: SocketAddr) -> bool {
+    match addr.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback(),
+        std::net::IpAddr::V6(ip) => {
+            ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+        }
+    }
+}
+
+fn host_addr(players: &[RemotePlayer]) -> Option<SocketAddr> {
+    let mut idx = 0;
+
+    while idx < players.len() {
+        if is_local(players[idx].addr) {
+            return Some(players[idx].addr);
+        }
+
+        idx += 1;
+    }
+
+    None
 }
 
 #[cfg(feature = "server")]

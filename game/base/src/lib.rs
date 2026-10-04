@@ -141,9 +141,11 @@ pub fn run() {
             binds: Arc::clone(&server_game.binds),
         };
 
+        let listen = cfg!(feature = "client") && !cmdargs.dedicated;
+
         std::thread::spawn(move || {
             log::info!("Starting Server loop");
-            server::server_loop(server_game);
+            server::server_loop(server_game, listen);
         });
 
         Some(side)
