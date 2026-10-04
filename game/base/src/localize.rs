@@ -7,6 +7,7 @@ struct State {
     language: String,
     current: HashMap<String, String>,
     fallback: HashMap<String, String>,
+    custom: HashMap<String, HashMap<String, String>>,
 }
 
 fn state() -> &'static RwLock<State> {
@@ -19,6 +20,7 @@ fn state() -> &'static RwLock<State> {
             language: DEFAULT_LANGUAGE.to_string(),
             current: fallback.clone(),
             fallback,
+            custom: HashMap::new(),
         })
     })
 }
@@ -127,10 +129,33 @@ pub fn get(text: &str, args: &[String]) -> String {
     };
     let state = state().read().unwrap();
 
-    match state.current.get(token).or_else(|| state.fallback.get(token)) {
+    let custom = |language: &str| state.custom.get(language).and_then(|table| table.get(token));
+    let found = custom(&state.language)
+        .or_else(|| state.current.get(token))
+        .or_else(|| custom(DEFAULT_LANGUAGE))
+        .or_else(|| state.fallback.get(token));
+
+    match found {
         Some(template) => format(template, args),
         None => text.to_string(),
     }
+}
+
+/// Registers a string for `language`. It replaces a lang file string with the same token.
+pub fn add(language: &str, token: &str, text: &str) {
+    let token = token.trim_start_matches('#');
+
+    if token.is_empty() {
+        return;
+    }
+
+    state()
+        .write()
+        .unwrap()
+        .custom
+        .entry(language.to_string())
+        .or_default()
+        .insert(token.to_string(), text.to_string());
 }
 
 pub fn set_language(language: &str) {
@@ -166,6 +191,18 @@ mod tests {
     #[test]
     fn format_keeps_unmatched_placeholders() {
         assert_eq!(format("{:3} {:0} {:} {:x", &args(&["a"])), "{:3} {:0} {:} {:x");
+    }
+
+    #[test]
+    fn custom_strings_override_files_and_fall_back_to_english() {
+        add("english", "#Custom_Hi", "Hi {:1}");
+        add("klingon", "Custom_Hi", "nuqneH {:1}");
+        assert_eq!(get("#Custom_Hi", &args(&["a"])), "Hi a");
+        set_language("klingon");
+        assert_eq!(get("#Custom_Hi", &args(&["a"])), "nuqneH a");
+        add("english", "Only_English", "yes");
+        assert_eq!(get("#Only_English", &[]), "yes");
+        set_language("english");
     }
 
     #[test]

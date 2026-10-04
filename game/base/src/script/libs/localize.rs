@@ -26,6 +26,21 @@ fn localize_get() {}
 
 #[document(
     parent = "localize",
+    name = "add",
+    kind = "function",
+    realm = "shared",
+    summary = "Registers a custom string. It replaces a lang file string with the same token, survives set_language, and is used for its language before the english fallback. The text is used as written, so \\n is not an escape here.",
+    params = {
+        token = { ty = "string", desc = "Token name, with or without the leading #." },
+        text = { ty = "string", desc = "The text. May contain {:1}, {:2}, ... placeholders." },
+        language = { ty = "string", desc = "Language the string belongs to. Defaults to english.", optional = true },
+    },
+    example = "localize.add(\"#Round_Won\", \"{:1} won the round\")",
+)]
+fn localize_add() {}
+
+#[document(
+    parent = "localize",
     name = "set_language",
     kind = "function",
     realm = "shared",
@@ -70,6 +85,21 @@ pub fn register_localize_lib(lua: &Lua) {
             .expect("[localize] Failed to create get"),
         )
         .expect("[localize] Failed setting get");
+
+    table
+        .set(
+            "add",
+            lua.create_function(
+                |_, (token, text, language): (String, mlua::LuaString, Option<String>)| {
+                    let language = language.unwrap_or_else(|| "english".to_string());
+                    crate::localize::add(&language, &token, &text.to_string_lossy());
+
+                    Ok(())
+                },
+            )
+            .expect("[localize] Failed to create add"),
+        )
+        .expect("[localize] Failed setting add");
 
     table
         .set(
