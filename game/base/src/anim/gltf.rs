@@ -1670,6 +1670,16 @@ fn append_prim(
         vert_idx += 1;
     }
 
+    let mut winding = Vec::with_capacity(prim.indices.len());
+    let mut index_idx = 0;
+
+    while index_idx + 2 < prim.indices.len() {
+        winding.push(prim.indices[index_idx]);
+        winding.push(prim.indices[index_idx + 2]);
+        winding.push(prim.indices[index_idx + 1]);
+        index_idx += 3;
+    }
+
     let mut normals = match &prim.normals {
         Some(normals) => {
             let mut converted = Vec::with_capacity(normals.len());
@@ -1686,7 +1696,7 @@ fn append_prim(
     };
 
     if normals.len() != positions.len() {
-        normals = generate_normals(&positions, &prim.indices);
+        normals = generate_normals(&positions, &winding);
     }
 
     let influences = if prim.skin.is_some() {
@@ -1710,10 +1720,10 @@ fn append_prim(
         vert_idx += 1;
     }
 
-    let mut index_idx = 0;
+    index_idx = 0;
 
-    while index_idx < prim.indices.len() {
-        indices_out.push(prim.indices[index_idx] + base as u32);
+    while index_idx < winding.len() {
+        indices_out.push(winding[index_idx] + base as u32);
         index_idx += 1;
     }
 

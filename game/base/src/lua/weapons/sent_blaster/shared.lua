@@ -6,19 +6,19 @@ local IN_DUCK = 32;
 local EYE_STAND = 1.45;
 local EYE_DUCK = 0.78;
 
-ENT.base = "base_entity";
-ENT.print_name = "Blaster";
-ENT.clip_size = 10;
-ENT.fire_ticks = 12;
-ENT.reload_ticks = 90;
-ENT.model = "models/uzi.glb";
+WEAPON.base = "base_weapon";
+WEAPON.print_name = "Blaster";
+WEAPON.clip_size = 10;
+WEAPON.fire_ticks = 12;
+WEAPON.reload_ticks = 90;
+WEAPON.model = "models/uzi.glb";
 
-function ENT:log(message)
+function WEAPON:log(message)
     local realm = SERVER and "SERVER" or "CLIENT";
     --print("[" .. realm .. "] " .. self:get_class() .. " #" .. self:index() .. ": " .. message);
 end
 
-function ENT:on_spawn()
+function WEAPON:on_spawn()
     local owner = self:get_owner();
     local owner_name = owner and ("#" .. owner:index()) or "none";
     self:log("spawned, owner=" .. owner_name .. " ammo=" .. self:get_networked("ammo", 0));
@@ -27,7 +27,7 @@ function ENT:on_spawn()
     self._pose = "draw";
 end
 
-function ENT:follow_owner(cmd)
+function WEAPON:follow_owner(cmd)
     local owner = self:get_owner();
 
     if owner == nil or not owner:is_valid() then
@@ -45,7 +45,7 @@ function ENT:follow_owner(cmd)
     self:set_angles(owner:get_angles());
 end
 
-function ENT:finish_pose()
+function WEAPON:finish_pose()
     local pose = self._pose;
 
     if pose == nil or pose == "idle" or pose == "walk" or pose == "sprint" then
@@ -62,7 +62,7 @@ function ENT:finish_pose()
     return false;
 end
 
-function ENT:update_locomotion(cmd)
+function WEAPON:update_locomotion(cmd)
     local owner = self:get_owner();
 
     if owner == nil or not owner:is_valid() then
@@ -91,7 +91,7 @@ function ENT:update_locomotion(cmd)
     end
 end
 
-function ENT:play_reload(ammo)
+function WEAPON:play_reload(ammo)
     local sequence = "wpn_val_reload";
 
     if ammo <= 0 then
@@ -109,7 +109,7 @@ function ENT:play_reload(ammo)
     return self.reload_ticks;
 end
 
-function ENT:predicted_think(cmd)
+function WEAPON:predicted_think(cmd)
     local tick = cmd.tick;
     local ammo = self:get_networked("ammo", self.clip_size);
     local next_fire = self:get_networked("next_fire", 0);

@@ -308,7 +308,7 @@ fn compile_bundled_lua() {
     }
 }
 
-const CONTENT_DIRS: [&str; 2] = ["autorun", "entities"];
+const CONTENT_DIRS: [&str; 3] = ["autorun", "entities", "weapons"];
 
 fn content_scripts(manifest_dir: &std::path::Path) -> Vec<String> {
     let mut out = Vec::new();

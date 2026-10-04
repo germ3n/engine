@@ -2,7 +2,7 @@
 kind = "library",
 name = "scripted_ents",
 realm = "shared",
-summary = "Registers entity class tables and resolves inheritance. Every class except base_entity sets ENT.base.",
+summary = "Registers entity class tables and resolves inheritance. Every class except base_entity and base_weapon sets a base.",
 ]=]
 scripted_ents = {};
 scripted_ents._storage = scripted_ents._storage or {};
@@ -97,8 +97,8 @@ name = "register",
 realm = "shared",
 summary = "Stores an entity class table. The class is flattened, including its base, when something asks for it.",
 params = {
-    ENT = { ty = "table", desc = "Class table. Set ENT.base to the parent class name." },
-    class = { ty = "string", desc = "Class name. base_entity is the root and has no base." },
+    ENT = { ty = "table", desc = "Class table. Set ENT.base or WEAPON.base to the parent class name." },
+    class = { ty = "string", desc = "Class name. base_entity and base_weapon are roots and have no base." },
 },
 returns = { ty = "nil", desc = "" },
 example = "scripted_ents.register({\n    base = \"base_entity\",\n    initialize = function(self) end,\n}, \"sent_box\")",
@@ -120,7 +120,7 @@ function scripted_ents.register(ENT, class)
         error("scripted_ents.register: class hash for '" .. class .. "' collides", 2);
     end
 
-    if class ~= "base_entity" then
+    if class ~= "base_entity" and class ~= "base_weapon" then
         if type(ENT.base) ~= "string" or ENT.base == "" then
             error("scripted_ents.register: '" .. class .. "' is missing base", 2);
         end
@@ -247,7 +247,7 @@ function scripted_ents.get_list()
 end
 
 local function base_problem(class)
-    if class == "base_entity" then
+    if class == "base_entity" or class == "base_weapon" then
         return nil;
     end
 

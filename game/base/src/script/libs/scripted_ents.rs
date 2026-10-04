@@ -3,6 +3,7 @@ use mlua::{Function, Lua, Table, Value};
 use std::collections::BTreeMap;
 
 const ENTITIES_PREFIX: &str = "lua/entities/";
+const WEAPONS_PREFIX: &str = "lua/weapons/";
 
 pub fn register_scripted_ents_lib(lua: &Lua) {
     crate::script::exec(lua, "scripted_ents.lua", "lua/libs/scripted_ents.luac");
@@ -18,10 +19,16 @@ fn pick(files: &[String], stem: &str) -> Option<String> {
         .cloned()
 }
 
-fn load_class(lua: &Lua, class: &str, files: &[String], realm: Realm) -> Result<(), String> {
+fn load_class(
+    lua: &Lua,
+    class: &str,
+    files: &[String],
+    realm: Realm,
+    global: &str,
+) -> Result<(), String> {
     let globals = lua.globals();
-    let ent = lua.create_table().map_err(|err| err.to_string())?;
-    globals.set("ENT", ent).map_err(|err| err.to_string())?;
+    let table = lua.create_table().map_err(|err| err.to_string())?;
+    globals.set(global, table).map_err(|err| err.to_string())?;
 
     let realm_stem = match realm {
         Realm::Server => "init",
@@ -35,13 +42,13 @@ fn load_class(lua: &Lua, class: &str, files: &[String], realm: Realm) -> Result<
         }
     }
 
-    let ent: Value = globals.get("ENT").map_err(|err| err.to_string())?;
+    let table: Value = globals.get(global).map_err(|err| err.to_string())?;
     globals
-        .set("ENT", Value::Nil)
+        .set(global, Value::Nil)
         .map_err(|err| err.to_string())?;
 
-    let Value::Table(ent) = ent else {
-        return Err("ENT is not a table".to_string());
+    let Value::Table(table) = table else {
+        return Err(format!("{global} is not a table"));
     };
 
     let scripted_ents: Table = globals
@@ -52,19 +59,18 @@ fn load_class(lua: &Lua, class: &str, files: &[String], realm: Realm) -> Result<
         .map_err(|err| err.to_string())?;
 
     register
-        .call::<()>((ent, class))
+        .call::<()>((table, class))
         .map_err(|err| err.to_string())
 }
 
-pub fn load_entities(lua: &Lua, realm: Realm) {
+fn collect_classes(prefix: &str) -> BTreeMap<String, Vec<String>> {
+    let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let Some(fs) = crate::fs::try_global() else {
-        return;
+        return classes;
     };
 
-    let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
-    for path in fs.list_prefix(ENTITIES_PREFIX) {
-        let Some(rest) = path.strip_prefix(ENTITIES_PREFIX) else {
+    for path in fs.list_prefix(prefix) {
+        let Some(rest) = path.strip_prefix(prefix) else {
             continue;
         };
 
@@ -79,6 +85,37 @@ pub fn load_entities(lua: &Lua, realm: Realm) {
             .push(path.clone());
     }
 
+    classes
+}
+
+fn load_folder(lua: &Lua, realm: Realm, prefix: &str, global: &str, tag: &str) {
+    let Some(fs) = crate::fs::try_global() else {
+        return;
+    };
+
+    let classes = collect_classes(prefix);
+
+    for (class, files) in &classes {
+        let files = pick_scripts(&fs, files);
+
+        match load_class(lua, class, &files, realm, global) {
+            Ok(()) => log::info!("[{tag}] loaded {class}"),
+            Err(err) => log::error!("[{tag}] {class}: {err}"),
+        }
+
+        let _ = lua.globals().set(global, Value::Nil);
+    }
+}
+
+pub fn load_entities(lua: &Lua, realm: Realm) {
+    load_folder(lua, realm, ENTITIES_PREFIX, "ENT", "scripted_ents");
+}
+
+pub fn load_weapons(lua: &Lua, realm: Realm) {
+    load_folder(lua, realm, WEAPONS_PREFIX, "WEAPON", "scripted_weapons");
+}
+
+pub fn load_scripted(lua: &Lua, realm: Realm) {
     let scripted_ents: Table = lua
         .globals()
         .get("scripted_ents")
@@ -87,16 +124,8 @@ pub fn load_entities(lua: &Lua, realm: Realm) {
         .set("_loading", true)
         .expect("[scripted_ents] Failed setting _loading");
 
-    for (class, files) in &classes {
-        let files = pick_scripts(&fs, files);
-
-        match load_class(lua, class, &files, realm) {
-            Ok(()) => log::info!("[scripted_ents] loaded {class}"),
-            Err(err) => log::error!("[scripted_ents] {class}: {err}"),
-        }
-
-        let _ = lua.globals().set("ENT", Value::Nil);
-    }
+    load_entities(lua, realm);
+    load_weapons(lua, realm);
 
     scripted_ents
         .set("_loading", false)
