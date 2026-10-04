@@ -18,6 +18,7 @@ pub mod sound;
 pub mod surface;
 pub mod usercmd;
 pub mod vector3;
+pub mod vpk;
 pub mod webview;
 
 pub use ai::register_ai_lib;
@@ -39,4 +40,5 @@ pub use sound::register_sound_lib;
 pub use surface::register_surface_lib;
 pub use usercmd::register_usercmd_lib;
 pub use vector3::register_vector3_lib;
+pub use vpk::register_vpk_lib;
 pub use webview::register_webview_lib;

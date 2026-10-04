@@ -13,6 +13,7 @@ pub use brush::{
     compile_map, texture_name_ok, BrushEdit, BrushHit, BrushMap, BrushPlane, CompiledBrush,
     CompiledEntity, CompiledMap,
 };
+pub(crate) use material::expand_home;
 pub use material::{image_from_vtf, image_rgba, read_texture};
 pub use surface::{
     push_shaded_tri, DrawMesh, MapGraphics, SurfaceRange, CUBEMAP_NONE, MATERIAL_NONE, PASS_OPAQUE,

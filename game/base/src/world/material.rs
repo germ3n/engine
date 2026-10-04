@@ -55,6 +55,10 @@ impl FileSource {
             return Some(bytes.clone());
         }
 
+        if let Some(bytes) = crate::fs::vpk::read(&key) {
+            return Some(bytes);
+        }
+
         let mut idx = 0;
 
         while idx < self.vpks.len() {
@@ -1065,7 +1069,7 @@ fn game_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn expand_home(path: &str) -> PathBuf {
+pub(crate) fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
         return home_dir();
     }

@@ -1,4 +1,5 @@
 mod pak;
+pub mod vpk;
 
 pub use pak::{encode, is_pak, Archive};
 
