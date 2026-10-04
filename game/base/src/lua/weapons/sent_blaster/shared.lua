@@ -9,6 +9,7 @@ WEAPON.print_name = "Blaster";
 WEAPON.clip_size = 10;
 WEAPON.fire_ticks = 12;
 WEAPON.reload_ticks = 90;
+WEAPON.draw_ticks = 40;
 WEAPON.model = "models/uzi.glb";
 
 function WEAPON:log(message)
@@ -43,23 +44,14 @@ function WEAPON:follow_owner(cmd)
     self:set_angles(owner:get_angles());
 end
 
-function WEAPON:finish_pose()
-    print(SERVER and "SV" or "CL", engine.tick_count, self._pose, self:get_cycle(), engine.first_time_predicted);
-    local pose = self._pose;
+function WEAPON:sequence_ticks(sequence, fallback)
+    local duration = self:sequence_duration(sequence);
 
-    if pose == nil or pose == "idle" or pose == "walk" or pose == "sprint" then
-        return false;
+    if duration ~= nil and duration > 0 then
+        return math.max(1, math.floor(duration / engine.tick_interval + 0.5));
     end
 
-    if (self:get_cycle() or 0) < 0.99 then
-        return true;
-    end
-    if engine.first_time_predicted then
-        self:set_sequence("wpn_val_idle");
-    end
-    self._pose = "idle";
-
-    return false;
+    return fallback;
 end
 
 function WEAPON:update_locomotion(cmd)
@@ -85,10 +77,8 @@ function WEAPON:update_locomotion(cmd)
         end
     end
 
-    if self._pose ~= next_pose then
-        if engine.first_time_predicted then
-            self:set_sequence(next_sequence);
-        end
+    if self._pose ~= next_pose and engine.first_time_predicted then
+        self:set_sequence(next_sequence);
         self._pose = next_pose;
     end
 end
@@ -102,25 +92,23 @@ function WEAPON:play_reload(ammo)
 
     if engine.first_time_predicted then
         self:set_sequence(sequence);
-    end
-    self._pose = sequence;
-    local duration = self:sequence_duration(sequence);
-
-    if duration ~= nil and duration > 0 then
-        return math.max(1, math.floor(duration / engine.tick_interval + 0.5));
+        self._pose = sequence;
     end
 
-    return self.reload_ticks;
+    return self:sequence_ticks(sequence, self.reload_ticks);
 end
 
 function WEAPON:predicted_think(cmd)
     local tick = cmd.tick;
     local ammo = self:get_networked("ammo", self.clip_size);
-    local next_fire = self:get_networked("next_fire", 0);
+    local next_fire = self:get_networked("next_fire", -1);
 
     self:follow_owner(cmd);
 
-    if self:finish_pose() then
+    if next_fire < 0 then
+        local wait = self:sequence_ticks("wpn_val_draw", self.draw_ticks);
+        self:set_networked("next_fire", tick + wait, true);
+
         return;
     end
 
@@ -140,6 +128,8 @@ function WEAPON:predicted_think(cmd)
         return;
     end
 
+    self:update_locomotion(cmd);
+
     if band(cmd.buttons, IN_ATTACK) ~= 0 and ammo > 0 then
         self:set_networked("ammo", ammo - 1, true);
         self:set_networked("next_fire", tick + self.fire_ticks, true);
@@ -149,9 +139,5 @@ function WEAPON:predicted_think(cmd)
             self:play_gesture("wpn_val_shoot");
             self:log("tick " .. tick .. " fire, ammo " .. ammo .. " -> " .. (ammo - 1));
         end
-
-        return;
     end
-
-    self:update_locomotion(cmd);
 end

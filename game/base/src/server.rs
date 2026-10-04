@@ -28,6 +28,8 @@ use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
+const MAX_TICK_CMDS: usize = 8;
+
 struct RemotePlayer {
     addr: SocketAddr,
     player: EntityHandle,
@@ -1075,22 +1077,37 @@ fn simulate_players(
     let gravity = movement::gravity(&game.cvars);
     let mut recorded = Vec::new();
     let mut idx = 0;
+    let rate = ((1.0 / dt).round() as u64).max(1);
 
     while idx < players.len() {
-        let Some(cmd) = players[idx].take_cmd() else {
-            idx += 1;
-
-            continue;
-        };
+        if game.tick_count % rate == 0 {
+            log::info!(
+                "[sv] cmd backlog slot={} pending={} ack={}",
+                players[idx].slot,
+                players[idx].pending.len(),
+                players[idx].ack
+            );
+        }
 
         let handle = players[idx].player;
-        let prev = players[idx].last_buttons;
         let slot = players[idx].slot;
+        let mut ran = 0;
 
-        if apply_command(game, handle, &cmd, prev, dt, gravity) {
+        while ran < MAX_TICK_CMDS {
+            let Some(cmd) = players[idx].take_cmd() else {
+                break;
+            };
+
+            let prev = players[idx].last_buttons;
+
+            if !apply_command(game, handle, &cmd, prev, dt, gravity) {
+                break;
+            }
+
             players[idx].last_buttons = cmd.buttons;
             players[idx].ack = cmd.tick;
             recorded.push(SlotInput { slot, command: cmd });
+            ran += 1;
         }
 
         idx += 1;
