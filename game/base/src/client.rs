@@ -2571,6 +2571,7 @@ fn reconcile_player(
     prediction: &mut Prediction,
     snapshot: &EntitySnapshot,
     predicted: &[EntityNetworked],
+    shift: i64,
 ) {
     if snapshot.handle != prediction.local {
         return;
@@ -2590,7 +2591,7 @@ fn reconcile_player(
         entity
             .base_mut()
             .anim
-            .apply_remote(&snapshot.anim, snapshot.ack);
+            .apply_remote(&snapshot.anim.shifted(shift), snapshot.ack);
 
         if let Some(body) = entity.player_body_mut() {
             body.noclip = snapshot.noclip;
@@ -3045,13 +3046,17 @@ fn apply_server_event(
             game.apply_networked(&entities, now);
         }
         ServerToClient::PredictedState {
-            tick: _,
+            tick,
             player,
             entities,
             anims,
         } => {
             if player.handle == prediction.local {
                 for anim in &anims {
+                    if predicted_owned(game, anim.handle, prediction.local) {
+                        continue;
+                    }
+
                     if let Some(entity) = game.entities.get_mut(anim.handle) {
                         let cur = entity.base().anim;
                         let snap = &anim.anim;
@@ -3061,12 +3066,11 @@ fn apply_server_event(
                         }
                     }
 
-                    if !predicted_owned(game, anim.handle, prediction.local) {
-                        game.anims.apply_bone_net(anim.handle.0, &anim.bones);
-                    }
+                    game.anims.apply_bone_net(anim.handle.0, &anim.bones);
                 }
 
-                reconcile_player(game, prediction, &player, &entities);
+                let shift = player.ack as i64 - tick as i64;
+                reconcile_player(game, prediction, &player, &entities, shift);
             }
         }
         ServerToClient::AnimModel {

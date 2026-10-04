@@ -17,6 +17,16 @@ pub struct AnimSnapshot {
     pub gesture_weight: f32,
 }
 
+impl AnimSnapshot {
+    pub fn shifted(&self, ticks: i64) -> Self {
+        let mut snap = *self;
+        snap.sequence_tick = snap.sequence_tick.saturating_add_signed(ticks);
+        snap.gesture_tick = snap.gesture_tick.saturating_add_signed(ticks);
+
+        snap
+    }
+}
+
 impl Default for AnimSnapshot {
     fn default() -> Self {
         Self {
