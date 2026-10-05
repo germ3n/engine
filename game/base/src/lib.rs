@@ -5,6 +5,7 @@ mod platform;
 
 mod client;
 mod console;
+mod db;
 mod demo;
 mod entities;
 mod r#enum;

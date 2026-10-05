@@ -224,6 +224,7 @@ impl ScriptEngine {
             register_console_lib(&lua, binds, realm);
             crate::script::libs::register_localize_lib(&lua);
             crate::script::libs::register_vpk_lib(&lua);
+            crate::script::libs::register_db_libs(&lua, matches!(realm, Realm::Server));
             register_pad_lib(&lua, pads);
             register_vector3_lib(&lua);
             register_angle3_lib(&lua);
@@ -426,6 +427,10 @@ impl ScriptEngine {
     }
 
     pub fn think_entities(&self, cur_time: f64, frame_time: f64, tick_count: u64) {
+        if matches!(self.realm, Realm::Server) {
+            crate::script::libs::db::pump(&self.lua);
+        }
+
         if !self.has_ents() {
             return;
         }
