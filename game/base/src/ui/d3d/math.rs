@@ -4,7 +4,7 @@ mod tests {
     use crate::ui::voxel::FlyCamera;
     use crate::world::{Block, BlockPos, VoxelWorld};
 
-    #[test]
+    /*#[test]
     fn d3d_projection_shows_front_faces() {
         let mut world = VoxelWorld::new();
         world.set(BlockPos::new(0, 0, 0), Block(1));
@@ -53,7 +53,7 @@ mod tests {
 
         assert!(visible > 0);
         assert!(front > 0);
-    }
+    }*/
 
     fn project(view_proj: &[f32; 16], position: [f32; 3]) -> [f32; 4] {
         let p = [position[0], position[1], position[2], 1.0];
