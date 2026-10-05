@@ -1,2 +1,8 @@
-engine.set_voxel_seed(26071994)
+--engine.set_voxel_seed(cvar.get("sv_voxel_seed"):get_value_int())
+--engine.voxel_gen_radius(cvar.get("sv_voxel_radius"):get_value_int())
+--engine.voxel_sea_level(cvar.get("sv_voxel_sea_level"):get_value_float())
+--engine.voxel_gen_bounds(
+    --cvar.get("sv_voxel_min_z"):get_value_int(),
+    --cvar.get("sv_voxel_max_z"):get_value_int()
+--)
 --engine.voxel_gen(true)

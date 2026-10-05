@@ -91,6 +91,7 @@ impl<In, Out> GameState<In, Out> {
         );
         register_net_sim_cvars(&mut cvars);
         register_sound_cvars(&mut cvars);
+        register_voxel_cvars(&mut cvars);
 
         for idx in 0..4 {
             let entries = [
@@ -143,6 +144,7 @@ impl<In, Out> GameState<In, Out> {
             pads.clone(),
             &mut *sound,
         );
+        attach_voxel_cvars(&cvars, &script_engine.gen_settings);
 
         Self {
             realm,
@@ -1049,4 +1051,100 @@ fn cvar_u32(value: &ConVarValue) -> u32 {
         ConVarValue::Float(value) => (*value).max(0.0) as u32,
         _ => 0,
     }
+}
+
+fn register_voxel_cvars(cvars: &mut HashMap<String, Arc<ConVar>>) {
+    let defaults = crate::world::gen::GenSettings::new();
+    let entries = [
+        (
+            "sv_voxel_gen",
+            ConVarValue::Integer(1),
+            "Procedural voxel generation (1) or off (0)",
+        ),
+        (
+            "sv_voxel_seed",
+            ConVarValue::Integer(26071994),
+            "Voxel generation seed. Rebuilds generated chunks when changed",
+        ),
+        (
+            "sv_voxel_radius",
+            ConVarValue::Integer(defaults.radius as i64),
+            "Chunks generated around each player and spawn (1-32)",
+        ),
+        (
+            "sv_voxel_sea_level",
+            ConVarValue::Float(defaults.sea_level),
+            "Sea level in blocks. Applies to chunks generated afterwards",
+        ),
+        (
+            "sv_voxel_min_z",
+            ConVarValue::Integer(defaults.min_z as i64),
+            "Lowest block Z filled by generation. Applies to chunks generated afterwards",
+        ),
+        (
+            "sv_voxel_max_z",
+            ConVarValue::Integer(defaults.max_z as i64),
+            "One past the highest block Z filled by generation. Applies to chunks generated afterwards",
+        ),
+    ];
+
+    for (name, default, description) in entries {
+        cvars.insert(
+            name.to_string(),
+            Arc::new(ConVar::new(
+                name,
+                default,
+                description,
+                Some(false),
+                Some(false),
+            )),
+        );
+    }
+}
+
+fn cvar_f64(value: &ConVarValue) -> f64 {
+    match value {
+        ConVarValue::Integer(value) => *value as f64,
+        ConVarValue::Float(value) => *value,
+        ConVarValue::Bool(value) => *value as u8 as f64,
+        ConVarValue::String(value) => value.trim().parse().unwrap_or(f64::NAN),
+    }
+}
+
+fn attach_voxel_cvars(
+    cvars: &HashMap<String, Arc<ConVar>>,
+    settings: &Arc<Mutex<crate::world::gen::GenSettings>>,
+) {
+    let on = |name: &str, apply: fn(&mut crate::world::gen::GenSettings, f64)| {
+        let Some(cvar) = cvars.get(name) else {
+            return;
+        };
+        let settings = Arc::clone(settings);
+        cvar.add_change_callback(move |value| {
+            let value = cvar_f64(value);
+
+            if value.is_finite() {
+                apply(&mut settings.lock().expect("gen settings"), value);
+            }
+        });
+    };
+
+    on("sv_voxel_gen", |s, v| s.set_enabled(v != 0.0));
+    on("sv_voxel_seed", |s, v| {
+        if let Some(seed) = crate::world::gen::seed_from_f64(v) {
+            s.set_seed(seed);
+        }
+    });
+    on("sv_voxel_radius", |s, v| s.set_radius(v as i32));
+    on("sv_voxel_sea_level", |s, v| {
+        s.set_sea_level(v);
+    });
+    on("sv_voxel_min_z", |s, v| {
+        let max = s.max_z;
+        s.set_bounds(v as i32, max);
+    });
+    on("sv_voxel_max_z", |s, v| {
+        let min = s.min_z;
+        s.set_bounds(min, v as i32);
+    });
 }
