@@ -166,8 +166,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool
             let anim_events = game.drive_free_anims(&player_handles);
             game.fire_anim_events(anim_events);
             game.think_entities();
-            let inputs = simulate_players(&mut game, &mut players);
             game.step_physics(&player_handles);
+            let inputs = simulate_players(&mut game, &mut players);
             game.lagcomp_record();
 
             if let Some(session) = recording.as_mut() {
