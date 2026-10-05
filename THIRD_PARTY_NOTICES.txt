@@ -1303,8 +1303,8 @@ Rust crates from Cargo.lock
 --------------------------------------------------------------------------------
 
 Every registry crate in Cargo.lock is listed below, for every target platform.
-Local crates base, editor, launcher, macro and wiki are the engine itself,
-covered by the MIT license at the top.
+Local crates base, launcher, macro and wiki are the engine itself, covered by
+the MIT license at the top.
 
 Where a crate offers a choice, this distribution uses MIT if MIT is one of the
 choices, and otherwise the license noted for that crate. MIT-licensed crates use
