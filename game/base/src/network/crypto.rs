@@ -1,7 +1,7 @@
 use blake2::{Blake2b512, Digest};
 use chacha20poly1305::aead::{AeadInOut, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 
 pub const TAG_HELLO: u8 = 0xE1;
@@ -99,7 +99,7 @@ impl ReplayWindow {
 pub struct Channel {
     send: ChaCha20Poly1305,
     recv: ChaCha20Poly1305,
-    send_counter: Cell<u64>,
+    send_counter: AtomicU64,
     window: ReplayWindow,
 }
 
@@ -141,17 +141,16 @@ impl Channel {
         Some(Self {
             send,
             recv,
-            send_counter: Cell::new(0),
+            send_counter: AtomicU64::new(0),
             window: ReplayWindow::new(),
         })
     }
 
     pub fn seal(&self, plain: &[u8]) -> Option<Vec<u8>> {
-        let counter = self.send_counter.get();
+        let counter = self.send_counter.fetch_add(1, Ordering::Relaxed);
         if counter == u64::MAX {
             return None;
         }
-        self.send_counter.set(counter + 1);
 
         let mut out = Vec::with_capacity(plain.len() + OVERHEAD);
         out.push(TAG_DATA);
