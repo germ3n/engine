@@ -40,6 +40,10 @@ source-vpk = "0.5.0"
 lzma-rs = "0.3"
 egui = "0.31.1"
 llama-cpp-2 = { version = "0.1.158", optional = true, default-features = false }
+chacha20poly1305 = "0.11.0"
+x25519-dalek = "3.0.0"
+getrandom = "0.3"
+blake2 = "0.11.0"
 
 [build-dependencies]
 cc = "1"

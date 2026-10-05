@@ -1,3 +1,4 @@
+use crate::network::crypto::{self, Channel, Role, KEY_LEN};
 use crate::network::packet::{
     bundle_part, pack_bundles, split_unreliable, BundlePart, CONNECTION_TIMEOUT, MAX_DATAGRAM,
     STREAM_STATE,
@@ -9,9 +10,50 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CHALLENGE_WINDOW_SECS: u64 = 5;
+const MAX_CRYPTO_SESSIONS: usize = 4096;
+const CRYPTO_IDLE: Duration = Duration::from_secs(60);
+const CRYPTO_REPLACE_IDLE: Duration = Duration::from_secs(3);
+const HELLOS_PER_SEC: u32 = 2000;
+const RESETS_PER_SEC: u32 = 2000;
+const RECV_SPIN: usize = 64;
+
+struct CryptoSession {
+    channel: Channel,
+    client_public: [u8; KEY_LEN],
+    server_public: [u8; KEY_LEN],
+    last_valid: Instant,
+}
+
+struct Budget {
+    window: Instant,
+    used: u32,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self {
+            window: Instant::now(),
+            used: 0,
+        }
+    }
+
+    fn take(&mut self, limit: u32) -> bool {
+        if self.window.elapsed() >= Duration::from_secs(1) {
+            self.window = Instant::now();
+            self.used = 0;
+        }
+
+        if self.used >= limit {
+            return false;
+        }
+
+        self.used += 1;
+        true
+    }
+}
 
 fn bind_port(port: u16) -> Result<UdpSocket, String> {
     #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -57,6 +99,9 @@ pub struct NetworkServer {
     session_counter: u64,
     generations: HashMap<SocketAddr, (u32, Instant)>,
     unreliable_parts: HashMap<SocketAddr, Vec<BundlePart>>,
+    crypto: HashMap<SocketAddr, CryptoSession>,
+    hello_budget: Budget,
+    reset_budget: Budget,
 }
 
 impl NetworkServer {
@@ -68,11 +113,14 @@ impl NetworkServer {
             max_clients,
             clients: HashMap::new(),
             socket,
-            recv_buf: Vec::with_capacity(MAX_DATAGRAM),
+            recv_buf: Vec::with_capacity(MAX_DATAGRAM + crypto::OVERHEAD),
             challenge_secret: random_secret(),
             session_counter: 0,
             generations: HashMap::new(),
             unreliable_parts: HashMap::new(),
+            crypto: HashMap::new(),
+            hello_budget: Budget::new(),
+            reset_budget: Budget::new(),
         })
     }
 
@@ -109,6 +157,9 @@ impl NetworkServer {
             self.clients.contains_key(addr) || slot.1.elapsed() < CONNECTION_TIMEOUT
         });
 
+        self.crypto
+            .retain(|_, session| session.last_valid.elapsed() < CRYPTO_IDLE);
+
         let timeout = CONNECTION_TIMEOUT;
         let idle: Vec<SocketAddr> = self
             .clients
@@ -133,21 +184,90 @@ impl NetworkServer {
             return Some((wincode::deserialize(&bytes).map_err(|_| ()), addr));
         }
 
-        if self.recv_buf.len() < MAX_DATAGRAM {
-            self.recv_buf.resize(MAX_DATAGRAM, 0);
+        let cap = MAX_DATAGRAM + crypto::OVERHEAD;
+        if self.recv_buf.len() < cap {
+            self.recv_buf.resize(cap, 0);
         }
 
-        let (amt, src) = match self.socket.recv_from(&mut self.recv_buf) {
-            Ok(packet) => packet,
-            Err(_) => {
-                return None;
+        for _ in 0..RECV_SPIN {
+            let (amt, src) = match self.socket.recv_from(&mut self.recv_buf) {
+                Ok(packet) => packet,
+                Err(_) => return None,
+            };
+
+            let packet = &self.recv_buf[..amt];
+            match packet.first().copied() {
+                Some(crypto::TAG_HELLO) => {
+                    if let Some(key) = crypto::parse_hello(packet) {
+                        self.handle_hello(src, key);
+                    }
+                }
+                Some(crypto::TAG_DATA) => match self.crypto.get_mut(&src) {
+                    Some(session) => {
+                        if let Some(plain) = session.channel.open(packet) {
+                            session.last_valid = Instant::now();
+                            return Some((wincode::deserialize(&plain).map_err(|_| ()), src));
+                        }
+                    }
+                    None => {
+                        if self.reset_budget.take(RESETS_PER_SEC) {
+                            let _ = self.socket.send_to(&[crypto::TAG_RESET], src);
+                        }
+                    }
+                },
+                _ => {}
             }
+        }
+
+        None
+    }
+
+    fn handle_hello(&mut self, src: SocketAddr, client_public: [u8; KEY_LEN]) {
+        if let Some(session) = self.crypto.get(&src) {
+            if session.client_public == client_public {
+                let ack = crypto::hello_packet(crypto::TAG_HELLO_ACK, &session.server_public);
+                let _ = self.socket.send_to(&ack, src);
+                return;
+            }
+
+            if session.last_valid.elapsed() < CRYPTO_REPLACE_IDLE {
+                return;
+            }
+        } else if self.crypto.len() >= MAX_CRYPTO_SESSIONS {
+            self.crypto
+                .retain(|_, session| session.last_valid.elapsed() < CRYPTO_IDLE);
+            if self.crypto.len() >= MAX_CRYPTO_SESSIONS {
+                return;
+            }
+        }
+
+        if !self.hello_budget.take(HELLOS_PER_SEC) {
+            return;
+        }
+
+        let secret = crypto::generate_secret();
+        let server_public = crypto::public_key(&secret);
+        let Some(channel) = Channel::derive(
+            Role::Server,
+            &secret,
+            &client_public,
+            &client_public,
+            &server_public,
+        ) else {
+            return;
         };
 
-        Some((
-            wincode::deserialize(&self.recv_buf[..amt]).map_err(|_| ()),
+        self.crypto.insert(
             src,
-        ))
+            CryptoSession {
+                channel,
+                client_public,
+                server_public,
+                last_valid: Instant::now(),
+            },
+        );
+        let ack = crypto::hello_packet(crypto::TAG_HELLO_ACK, &server_public);
+        let _ = self.socket.send_to(&ack, src);
     }
 
     pub fn add_client(&mut self, addr: SocketAddr) -> Option<(u64, u32)> {
@@ -304,8 +424,14 @@ impl NetworkServer {
             return Ok(());
         }
 
+        let sealed = self
+            .crypto
+            .get(&addr)
+            .and_then(|session| session.channel.seal(message))
+            .ok_or_else(|| format!("no encrypted channel for {addr}"))?;
+
         self.socket
-            .send_to(message, addr)
+            .send_to(&sealed, addr)
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -574,4 +700,110 @@ fn challenge_bucket() -> u64 {
         .unwrap_or_default()
         .as_secs()
         / CHALLENGE_WINDOW_SECS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::NetworkClient;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    use std::thread::sleep;
+
+    fn loopback_server() -> (NetworkServer, SocketAddr) {
+        let mut server = NetworkServer::new(0, 4).unwrap();
+        server.socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        server.socket.set_nonblocking(true).unwrap();
+        let addr = server.socket.local_addr().unwrap();
+        (server, addr)
+    }
+
+    fn pump_server(server: &mut NetworkServer) -> Option<(PacketType, SocketAddr)> {
+        for _ in 0..200 {
+            if let Some((Ok(packet), from)) = server.poll_packet() {
+                return Some((packet, from));
+            }
+            sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    fn pump_client(client: &mut NetworkClient) -> Option<PacketType> {
+        for _ in 0..200 {
+            if let Some(Ok(packet)) = client.poll_packet() {
+                return Some(packet);
+            }
+            sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    #[test]
+    fn encrypted_round_trip_and_server_restart() {
+        let (mut server, addr) = loopback_server();
+        let local = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+        let mut client = NetworkClient::new(local);
+        client.connect(addr).unwrap();
+
+        let ping = wincode::serialize(&PacketType::Connect { replace: None }).unwrap();
+        let mut got = None;
+        for _ in 0..50 {
+            let _ = client.send_message(&ping);
+            let _ = client.poll_packet();
+            if let Some((packet, from)) = (0..10).find_map(|_| {
+                let r = server.poll_packet();
+                sleep(Duration::from_millis(5));
+                r.and_then(|(p, f)| p.ok().map(|p| (p, f)))
+            }) {
+                got = Some((packet, from));
+                break;
+            }
+        }
+        let (packet, from) = got.expect("handshake and first packet");
+        assert!(matches!(packet, PacketType::Connect { replace: None }));
+
+        let reply = wincode::serialize(&PacketType::Challenge {
+            token: 7,
+            secure: false,
+            host_steam_id: 0,
+        })
+        .unwrap();
+        server.send_to(from, &reply).unwrap();
+        assert!(matches!(
+            pump_client(&mut client),
+            Some(PacketType::Challenge { token: 7, .. })
+        ));
+
+        // Nothing on the wire is plaintext.
+        let sealed = server.crypto.get(&from).unwrap().channel.seal(&reply).unwrap();
+        assert!(!sealed.windows(reply.len()).any(|w| w == reply.as_slice()));
+
+        // Server loses its state; the client must notice and re-handshake.
+        server.crypto.clear();
+        let mut recovered = false;
+        for _ in 0..100 {
+            let _ = client.send_message(&ping);
+            let _ = client.poll_packet();
+            if let Some((PacketType::Connect { .. }, _)) = pump_server_once(&mut server) {
+                recovered = true;
+                break;
+            }
+        }
+        assert!(recovered, "client did not recover after server reset");
+    }
+
+    fn pump_server_once(server: &mut NetworkServer) -> Option<(PacketType, SocketAddr)> {
+        sleep(Duration::from_millis(20));
+        let (p, f) = server.poll_packet()?;
+        Some((p.ok()?, f))
+    }
+
+    #[test]
+    fn garbage_and_unknown_peers_are_ignored() {
+        let (mut server, addr) = loopback_server();
+        let probe = UdpSocket::bind("127.0.0.1:0").unwrap();
+        probe.send_to(&[0u8; 40], addr).unwrap();
+        probe.send_to(&[crypto::TAG_DATA; 64], addr).unwrap();
+        sleep(Duration::from_millis(20));
+        assert!(pump_server(&mut server).is_none());
+    }
 }

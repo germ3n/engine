@@ -1,4 +1,5 @@
 pub mod client;
+pub mod crypto;
 pub mod events;
 pub mod packet;
 pub mod reliable;
