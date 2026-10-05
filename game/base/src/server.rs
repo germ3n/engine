@@ -1786,14 +1786,47 @@ fn terrain_centers(
     centers
 }
 
+/// Most chunk updates sent to each peer per server tick.
+#[cfg(feature = "server")]
+const VOXEL_UPDATES_PER_TICK: usize = 32;
+
 #[cfg(feature = "server")]
 fn emit_voxel_dirty(game: &mut GameState<FromClient, ServerToClient>, peers: &[SocketAddr]) {
-    let updates = game.voxel_world.take_dirty();
+    if peers.is_empty() {
+        game.voxel_world.take_dirty();
 
-    for update in updates {
-        for addr in peers {
-            game.send_state_to(*addr, ServerToClient::VoxelChunk(update.clone()));
+        return;
+    }
+
+    // Generation can dirty chunks far faster than a client can take them, and a full outbound
+    // queue drops messages for good. So only a few chunks go out per tick, and a chunk that does
+    // not fit stays dirty and is sent on a later tick.
+    let mut updates = game
+        .voxel_world
+        .take_dirty_limited(VOXEL_UPDATES_PER_TICK)
+        .into_iter();
+
+    while let Some(update) = updates.next() {
+        let sent = peers.iter().all(|addr| {
+            game.try_send_state_to(*addr, ServerToClient::VoxelChunk(update.clone()))
+        });
+
+        if sent {
+            continue;
         }
+
+        let mut left = vec![update];
+        left.extend(updates.by_ref());
+
+        for update in left {
+            game.voxel_world.mark_dirty(ChunkPos {
+                x: update.x,
+                y: update.y,
+                z: update.z,
+            });
+        }
+
+        break;
     }
 }
 

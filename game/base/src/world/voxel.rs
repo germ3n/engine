@@ -410,9 +410,9 @@ impl VoxelWorld {
         }
 
         let chunk_pos = pos.chunk();
-        self.invalidate(chunk_pos);
-        self.pin(chunk_pos);
         let (local_x, local_y, local_z) = pos.local();
+        self.invalidate_edit(chunk_pos, (local_x, local_y, local_z));
+        self.pin(chunk_pos);
         let slot = Chunk::index(local_x, local_y, local_z);
 
         if block.is_air() {
@@ -561,7 +561,7 @@ impl VoxelWorld {
         };
 
         if update.runs.is_empty() {
-            self.invalidate(pos);
+            self.invalidate_around(pos, None);
 
             if self.chunks.remove(&pos).is_some() {
                 self.touch();
@@ -589,7 +589,7 @@ impl VoxelWorld {
             cursor = end;
         }
 
-        self.invalidate(pos);
+        self.invalidate_around(pos, Some(&blocks));
 
         if blocks.iter().all(|block| *block == 0) {
             if self.chunks.remove(&pos).is_some() {
@@ -621,7 +621,7 @@ impl VoxelWorld {
             return true;
         }
 
-        self.invalidate(pos);
+        self.invalidate_around(pos, Some(&blocks));
         self.chunks.insert(
             pos,
             Chunk {
@@ -647,7 +647,7 @@ impl VoxelWorld {
 
         while idx < positions.len() {
             let pos = positions[idx];
-            self.invalidate(pos);
+            self.invalidate_around(pos, None);
             self.chunks.remove(&pos);
             self.dirty.insert(pos);
             idx += 1;
@@ -674,6 +674,30 @@ impl VoxelWorld {
         self.build_meshes(usize::MAX);
 
         self.assembled_mesh(origin)
+    }
+
+    /// Builds pending chunk meshes until `budget` has passed, always at least one. Returns true
+    /// when more are still pending.
+    pub fn build_meshes_for(&mut self, budget: std::time::Duration) -> bool {
+        let pending: Vec<ChunkPos> = self
+            .chunks
+            .iter()
+            .filter(|(_, chunk)| chunk.mesh.is_none())
+            .map(|(pos, _)| *pos)
+            .collect();
+        let start = std::time::Instant::now();
+        let mut built = 0;
+
+        for pos in pending {
+            if built > 0 && start.elapsed() >= budget {
+                return true;
+            }
+
+            self.ensure_mesh(pos);
+            built += 1;
+        }
+
+        false
     }
 
     pub fn build_meshes(&mut self, budget: usize) -> bool {
@@ -779,60 +803,188 @@ impl VoxelWorld {
     }
 
     fn build_chunk_mesh(&self, chunk_pos: ChunkPos) -> Vec<f32> {
-        let blocks = {
-            let Some(chunk) = self.chunks.get(&chunk_pos) else {
-                return Vec::new();
-            };
-
-            chunk.blocks.clone()
-        };
         let mut vertices = Vec::new();
         let scale = self.scale;
-        let origin = Vector3::new(0.0, 0.0, 0.0);
-        let edge = CHUNK_EDGE as usize;
-        let mut idx = 0;
 
-        while idx < blocks.len() {
-            let id = blocks[idx];
-
-            if id != 0 {
-                let local_x = (idx % edge) as i32;
-                let local_y = ((idx / edge) % edge) as i32;
-                let local_z = (idx / (edge * edge)) as i32;
-                let pos = BlockPos::new(
-                    chunk_pos.x * CHUNK_EDGE + local_x,
-                    chunk_pos.y * CHUNK_EDGE + local_y,
-                    chunk_pos.z * CHUNK_EDGE + local_z,
-                );
-                push_block(
-                    &mut vertices,
-                    self,
-                    &blocks,
-                    chunk_pos,
-                    pos,
-                    id,
-                    scale,
-                    origin,
-                );
-            }
-
-            idx += 1;
-        }
+        self.chunk_quads(chunk_pos, |face, id, base, ext| {
+            push_quad(&mut vertices, face, id, base, ext, scale);
+        });
 
         vertices
     }
 
-    fn invalidate(&mut self, pos: ChunkPos) {
+    /// Visits every visible face of the chunk as a merged rectangle: `base` is the block position
+    /// of the rectangle's lowest corner and `ext` its size in blocks along each axis (1 along the
+    /// face normal). Neighboring faces of the same block id on the same plane are merged greedily.
+    fn chunk_quads(&self, chunk_pos: ChunkPos, mut emit: impl FnMut(usize, u16, [i32; 3], [i32; 3])) {
+        let Some(chunk) = self.chunks.get(&chunk_pos) else {
+            return;
+        };
+        let blocks = &chunk.blocks[..];
+        let edge = CHUNK_EDGE as usize;
+        let origin = [
+            chunk_pos.x * CHUNK_EDGE,
+            chunk_pos.y * CHUNK_EDGE,
+            chunk_pos.z * CHUNK_EDGE,
+        ];
+        let mut mask = vec![0u16; edge * edge];
+
+        for face in 0..6 {
+            let axis = face / 2;
+            let positive = face % 2 == 0;
+            let (u_axis, v_axis) = match axis {
+                0 => (1, 2),
+                1 => (0, 2),
+                _ => (0, 1),
+            };
+            let (nx, ny, nz) = NEIGHBORS[face];
+            let across = self.chunks.get(&ChunkPos {
+                x: chunk_pos.x + nx,
+                y: chunk_pos.y + ny,
+                z: chunk_pos.z + nz,
+            });
+            let across = across.map(|chunk| &chunk.blocks[..]);
+
+            for slice in 0..edge {
+                let next = slice as i32 + if positive { 1 } else { -1 };
+                let mut any = false;
+
+                for v in 0..edge {
+                    for u in 0..edge {
+                        let mut local = [0usize; 3];
+                        local[axis] = slice;
+                        local[u_axis] = u;
+                        local[v_axis] = v;
+                        let id = blocks[local_index(local)];
+                        let mut visible = id != 0;
+
+                        if visible {
+                            let mut beyond = local;
+
+                            visible = if next >= 0 && (next as usize) < edge {
+                                beyond[axis] = next as usize;
+
+                                blocks[local_index(beyond)] == 0
+                            } else {
+                                beyond[axis] = if positive { 0 } else { edge - 1 };
+
+                                match across {
+                                    Some(other) => other[local_index(beyond)] == 0,
+                                    None => true,
+                                }
+                            };
+                        }
+
+                        mask[v * edge + u] = if visible { id } else { 0 };
+                        any |= visible;
+                    }
+                }
+
+                if !any {
+                    continue;
+                }
+
+                for v in 0..edge {
+                    let mut u = 0;
+
+                    while u < edge {
+                        let id = mask[v * edge + u];
+
+                        if id == 0 {
+                            u += 1;
+
+                            continue;
+                        }
+
+                        let mut width = 1;
+
+                        while u + width < edge && mask[v * edge + u + width] == id {
+                            width += 1;
+                        }
+
+                        let mut height = 1;
+
+                        'grow: while v + height < edge {
+                            for k in 0..width {
+                                if mask[(v + height) * edge + u + k] != id {
+                                    break 'grow;
+                                }
+                            }
+
+                            height += 1;
+                        }
+
+                        for dv in 0..height {
+                            mask[(v + dv) * edge + u..(v + dv) * edge + u + width].fill(0);
+                        }
+
+                        let mut base = origin;
+                        base[axis] += slice as i32;
+                        base[u_axis] += u as i32;
+                        base[v_axis] += v as i32;
+                        let mut ext = [1i32; 3];
+                        ext[u_axis] = width as i32;
+                        ext[v_axis] = height as i32;
+                        emit(face, id, base, ext);
+                        u += width;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drops the chunk's own mesh, and the mesh of each face neighbor whose shared boundary could
+    /// look different: one that touches solid blocks in the old or the new contents. A chunk that
+    /// is air along a boundary hides nothing there, so the neighbor keeps its mesh.
+    fn invalidate_around(&mut self, pos: ChunkPos, new: Option<&[u16]>) {
         self.drop_mesh(pos);
+        let old = self
+            .chunks
+            .get(&pos)
+            .map(|chunk| boundary_layers(&chunk.blocks))
+            .unwrap_or([false; 6]);
+        let new = new.map(boundary_layers).unwrap_or([false; 6]);
         let mut idx = 0;
 
         while idx < NEIGHBORS.len() {
-            let (x, y, z) = NEIGHBORS[idx];
-            self.drop_mesh(ChunkPos {
-                x: pos.x + x,
-                y: pos.y + y,
-                z: pos.z + z,
-            });
+            if old[idx] || new[idx] {
+                let (x, y, z) = NEIGHBORS[idx];
+                self.drop_mesh(ChunkPos {
+                    x: pos.x + x,
+                    y: pos.y + y,
+                    z: pos.z + z,
+                });
+            }
+
+            idx += 1;
+        }
+    }
+
+    /// Drops the edited chunk's mesh, plus each face neighbor only when the block sits on the
+    /// layer next to it, since that is the only place a neighbor's faces can change.
+    fn invalidate_edit(&mut self, pos: ChunkPos, local: (i32, i32, i32)) {
+        self.drop_mesh(pos);
+        let last = CHUNK_EDGE - 1;
+        let touching = [
+            local.0 == last,
+            local.0 == 0,
+            local.1 == last,
+            local.1 == 0,
+            local.2 == last,
+            local.2 == 0,
+        ];
+        let mut idx = 0;
+
+        while idx < NEIGHBORS.len() {
+            if touching[idx] {
+                let (x, y, z) = NEIGHBORS[idx];
+                self.drop_mesh(ChunkPos {
+                    x: pos.x + x,
+                    y: pos.y + y,
+                    z: pos.z + z,
+                });
+            }
+
             idx += 1;
         }
     }
@@ -853,6 +1005,23 @@ impl VoxelWorld {
         }
 
         updates
+    }
+
+    /// Takes at most `limit` dirty chunks and leaves the rest dirty for a later call.
+    pub fn take_dirty_limited(&mut self, limit: usize) -> Vec<ChunkUpdate> {
+        let picked: Vec<ChunkPos> = self.dirty.iter().take(limit).copied().collect();
+        let mut updates = Vec::with_capacity(picked.len());
+
+        for pos in picked {
+            self.dirty.remove(&pos);
+            updates.push(self.encode(pos));
+        }
+
+        updates
+    }
+
+    pub fn mark_dirty(&mut self, pos: ChunkPos) {
+        self.dirty.insert(pos);
     }
 
     pub fn take_dirty(&mut self) -> Vec<ChunkUpdate> {
@@ -1387,25 +1556,6 @@ fn chunk_overlaps(pos: ChunkPos, scale: f64, min: Vector3, max: Vector3) -> bool
         && z0 <= max.z
 }
 
-fn neighbor_occludes(
-    world: &VoxelWorld,
-    blocks: &[u16],
-    chunk: ChunkPos,
-    x: i32,
-    y: i32,
-    z: i32,
-) -> bool {
-    let lx = x - chunk.x * CHUNK_EDGE;
-    let ly = y - chunk.y * CHUNK_EDGE;
-    let lz = z - chunk.z * CHUNK_EDGE;
-
-    if lx >= 0 && ly >= 0 && lz >= 0 && lx < CHUNK_EDGE && ly < CHUNK_EDGE && lz < CHUNK_EDGE {
-        return blocks[Chunk::index(lx, ly, lz)] != 0;
-    }
-
-    world.occludes(BlockPos::new(x, y, z))
-}
-
 fn append_shifted(out: &mut Vec<f32>, mesh: &[f32], origin: Vector3) {
     if origin.x == 0.0 && origin.y == 0.0 && origin.z == 0.0 {
         out.extend_from_slice(mesh);
@@ -1425,46 +1575,60 @@ fn append_shifted(out: &mut Vec<f32>, mesh: &[f32], origin: Vector3) {
     }
 }
 
-fn push_block(
-    vertices: &mut Vec<f32>,
-    world: &VoxelWorld,
-    blocks: &[u16],
-    chunk: ChunkPos,
-    pos: BlockPos,
-    id: u16,
-    scale: f64,
-    origin: Vector3,
-) {
-    let x0 = pos.x as f64 * scale - origin.x;
-    let y0 = pos.y as f64 * scale - origin.y;
-    let z0 = pos.z as f64 * scale - origin.z;
-    let [red, green, blue] = block_rgb(id);
+/// For each of the six face directions in `NEIGHBORS` order, whether the outermost layer of
+/// blocks on that side holds anything.
+fn boundary_layers(blocks: &[u16]) -> [bool; 6] {
+    let edge = CHUNK_EDGE as usize;
+    let last = edge - 1;
+    let mut layers = [false; 6];
 
-    for face in 0..6 {
-        let (nx, ny, nz) = NEIGHBORS[face];
-
-        if neighbor_occludes(world, blocks, chunk, pos.x + nx, pos.y + ny, pos.z + nz) {
-            continue;
+    for v in 0..edge {
+        for u in 0..edge {
+            layers[0] |= blocks[local_index([last, u, v])] != 0;
+            layers[1] |= blocks[local_index([0, u, v])] != 0;
+            layers[2] |= blocks[local_index([u, last, v])] != 0;
+            layers[3] |= blocks[local_index([u, 0, v])] != 0;
+            layers[4] |= blocks[local_index([u, v, last])] != 0;
+            layers[5] |= blocks[local_index([u, v, 0])] != 0;
         }
-
-        let shade = SHADES[face];
-        let cr = red * shade;
-        let cg = green * shade;
-        let cb = blue * shade;
-        let quad = QUADS[face];
-        let mut corners = [[0.0f32; 3]; 4];
-
-        for corner in 0..4 {
-            corners[corner] = [
-                (x0 + quad[corner].0 as f64 * scale) as f32,
-                (y0 + quad[corner].1 as f64 * scale) as f32,
-                (z0 + quad[corner].2 as f64 * scale) as f32,
-            ];
-        }
-
-        super::surface::push_shaded_tri(vertices, corners[0], corners[1], corners[2], [cr, cg, cb]);
-        super::surface::push_shaded_tri(vertices, corners[0], corners[2], corners[3], [cr, cg, cb]);
     }
+
+    layers
+}
+
+fn local_index(local: [usize; 3]) -> usize {
+    let edge = CHUNK_EDGE as usize;
+
+    local[0] + local[1] * edge + local[2] * edge * edge
+}
+
+fn push_quad(
+    vertices: &mut Vec<f32>,
+    face: usize,
+    id: u16,
+    base: [i32; 3],
+    ext: [i32; 3],
+    scale: f64,
+) {
+    let x0 = base[0] as f64 * scale;
+    let y0 = base[1] as f64 * scale;
+    let z0 = base[2] as f64 * scale;
+    let [red, green, blue] = block_rgb(id);
+    let shade = SHADES[face];
+    let color = [red * shade, green * shade, blue * shade];
+    let quad = QUADS[face];
+    let mut corners = [[0.0f32; 3]; 4];
+
+    for corner in 0..4 {
+        corners[corner] = [
+            (x0 + quad[corner].0 as f64 * ext[0] as f64 * scale) as f32,
+            (y0 + quad[corner].1 as f64 * ext[1] as f64 * scale) as f32,
+            (z0 + quad[corner].2 as f64 * ext[2] as f64 * scale) as f32,
+        ];
+    }
+
+    super::surface::push_shaded_tri(vertices, corners[0], corners[1], corners[2], color);
+    super::surface::push_shaded_tri(vertices, corners[0], corners[2], corners[3], color);
 }
 
 pub fn block_rgb(id: u16) -> [f32; 3] {
@@ -1981,14 +2145,24 @@ mod tests {
         assert_eq!(mesh.len(), 36 * crate::world::STRIDE);
         assert!(faces_point_outward(&mesh, 0.5));
 
-        world.set(BlockPos::new(1, 0, 0), Block(1));
+        // A different block next to it: the shared faces are hidden and nothing can merge.
+        world.set(BlockPos::new(1, 0, 0), Block(2));
 
         assert_eq!(world.mesh().len(), 60 * crate::world::STRIDE);
+        assert!(faces_point_outward(&world.mesh(), 0.5));
 
+        // The same block next to it: the matching faces merge, leaving a single 2x1x1 box.
+        let mut pair = VoxelWorld::new();
+        pair.set(BlockPos::new(0, 0, 0), Block(1));
+        pair.set(BlockPos::new(1, 0, 0), Block(1));
+
+        assert_eq!(pair.mesh().len(), 36 * crate::world::STRIDE);
+
+        // A solid cube of one block is just its six outer faces.
         let mut solid = VoxelWorld::new();
         solid.fill(BlockPos::new(0, 0, 0), BlockPos::new(3, 3, 3), Block(1));
 
-        assert_eq!(solid.mesh().len(), 54 * 6 * crate::world::STRIDE);
+        assert_eq!(solid.mesh().len(), 36 * crate::world::STRIDE);
     }
 
     #[test]
@@ -2022,9 +2196,50 @@ mod tests {
         world.set(BlockPos::new(48, 0, 0), Block(1));
         let _ = world.mesh();
         assert_eq!(world.mesh_builds, 3);
+        // Local (0, 0, 1) is on the -x and -y boundary, so the +x chunk is left alone.
         world.set(BlockPos::new(0, 0, 1), Block(1));
         let _ = world.mesh();
-        assert_eq!(world.mesh_builds, 5);
+        assert_eq!(world.mesh_builds, 4);
+    }
+
+    #[test]
+    fn an_edit_only_remeshes_the_neighbors_it_touches() {
+        let mut world = VoxelWorld::new();
+        let edge = CHUNK_EDGE;
+
+        // A solid 3x3x3 block of chunks, so every neighbor of the middle one exists.
+        for z in 0..3 * edge {
+            for y in 0..3 * edge {
+                for x in 0..3 * edge {
+                    if (x + y + z) % 7 == 0 {
+                        world.set(BlockPos::new(x, y, z), Block(1));
+                    }
+                }
+            }
+        }
+
+        let middle = edge + edge / 2;
+        let cases = [
+            // (block, chunks that should rebuild)
+            (BlockPos::new(middle, middle, middle), 1),
+            (BlockPos::new(edge, middle, middle), 2),
+            (BlockPos::new(2 * edge - 1, middle, middle), 2),
+            (BlockPos::new(middle, edge, middle), 2),
+            (BlockPos::new(middle, middle, 2 * edge - 1), 2),
+            (BlockPos::new(edge, edge, middle), 3),
+            (BlockPos::new(edge, edge, edge), 4),
+            (BlockPos::new(2 * edge - 1, 2 * edge - 1, 2 * edge - 1), 4),
+        ];
+
+        for (pos, expected) in cases {
+            let _ = world.mesh();
+            let before = world.mesh_builds;
+            let block = if world.get(pos) == Block(2) { Block(3) } else { Block(2) };
+            world.set(pos, block);
+            let _ = world.mesh();
+
+            assert_eq!(world.mesh_builds - before, expected, "edit at {pos:?}");
+        }
     }
 
     #[test]
@@ -2185,5 +2400,208 @@ mod tests {
         }
 
         true
+    }
+
+    fn visible_faces_by_brute_force(world: &VoxelWorld, chunk: ChunkPos) -> HashSet<(usize, i32, i32, i32, u16)> {
+        let mut out = HashSet::new();
+        let edge = CHUNK_EDGE;
+
+        for z in 0..edge {
+            for y in 0..edge {
+                for x in 0..edge {
+                    let pos = BlockPos::new(chunk.x * edge + x, chunk.y * edge + y, chunk.z * edge + z);
+                    let id = world.get(pos).0;
+
+                    if id == 0 {
+                        continue;
+                    }
+
+                    for (face, (nx, ny, nz)) in NEIGHBORS.iter().enumerate() {
+                        let next = BlockPos::new(pos.x + nx, pos.y + ny, pos.z + nz);
+
+                        if !world.occludes(next) {
+                            out.insert((face, pos.x, pos.y, pos.z, id));
+                        }
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    #[test]
+    fn greedy_quads_cover_exactly_the_visible_faces() {
+        let mut world = VoxelWorld::new();
+        let mut state = 0x9E37_79B9u32;
+
+        for z in -16i32..32 {
+            for y in -16i32..32 {
+                for x in -16i32..32 {
+                    state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let roll = (state >> 24) % 10;
+                    let flat = z < 4 || (x > 4 && x < 12 && y > 2 && y < 20 && z < 9);
+                    let id = if flat {
+                        1 + ((x / 7).rem_euclid(3)) as u16
+                    } else if roll == 0 {
+                        4
+                    } else {
+                        0
+                    };
+
+                    if id != 0 {
+                        world.set(BlockPos::new(x, y, z), Block(id));
+                    }
+                }
+            }
+        }
+
+        let mut quads = 0usize;
+        let mut faces = 0usize;
+
+        for chunk in world.chunks.keys().copied().collect::<Vec<_>>() {
+            let expected = visible_faces_by_brute_force(&world, chunk);
+            let mut covered = HashSet::new();
+
+            world.chunk_quads(chunk, |face, id, base, ext| {
+                quads += 1;
+                assert_eq!(ext[face / 2], 1);
+
+                for dz in 0..ext[2] {
+                    for dy in 0..ext[1] {
+                        for dx in 0..ext[0] {
+                            let cell = (face, base[0] + dx, base[1] + dy, base[2] + dz, id);
+
+                            assert!(covered.insert(cell), "cell covered twice: {cell:?}");
+                        }
+                    }
+                }
+            });
+
+            faces += expected.len();
+            assert_eq!(covered, expected, "chunk {chunk:?}");
+        }
+
+        assert!(faces > 0);
+        assert!(quads < faces, "merging should shrink the mesh: {quads} quads for {faces} faces");
+    }
+
+    #[test]
+    fn a_flat_floor_merges_into_one_quad_per_chunk_face() {
+        let mut world = VoxelWorld::new();
+
+        for y in 0..32 {
+            for x in 0..32 {
+                world.set(BlockPos::new(x, y, 0), Block(1));
+            }
+        }
+
+        let mut quads = 0;
+
+        for chunk in world.chunks.keys().copied().collect::<Vec<_>>() {
+            world.chunk_quads(chunk, |_, _, _, _| quads += 1);
+        }
+
+        // 4 chunks in a 2x2 block, each with a full top, a full bottom, and one merged strip on
+        // each of its two outward sides.
+        assert_eq!(quads, 4 * 4);
+    }
+
+    #[test]
+    fn chunk_mesh_has_two_triangles_per_quad() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block(1));
+        let mesh = world.build_chunk_mesh(ChunkPos { x: 0, y: 0, z: 0 });
+
+        assert_eq!(mesh.len(), 6 * 2 * 3 * super::super::STRIDE);
+    }
+
+    #[test]
+    fn limited_dirty_take_leaves_the_rest() {
+        let mut world = VoxelWorld::new();
+
+        for x in 0..5 {
+            world.set(BlockPos::new(x * CHUNK_EDGE, 0, 0), Block(1));
+        }
+
+        let first = world.take_dirty_limited(2);
+        assert_eq!(first.len(), 2);
+
+        let rest = world.take_dirty_limited(10);
+        assert_eq!(rest.len(), 3);
+        assert!(world.take_dirty_limited(10).is_empty());
+
+        world.mark_dirty(ChunkPos { x: 0, y: 0, z: 0 });
+        assert_eq!(world.take_dirty().len(), 1);
+    }
+
+    #[test]
+    fn a_chunk_that_is_air_along_a_boundary_keeps_its_neighbors_meshes() {
+        let mut world = VoxelWorld::new();
+        world.set(BlockPos::new(0, 0, 0), Block(1));
+        world.build_meshes(usize::MAX);
+        let builds = world.mesh_builds;
+
+        // Next chunk over in +x holds one block far from the shared boundary.
+        let mut far = vec![0u16; VOLUME];
+        far[Chunk::index(8, 8, 8)] = 1;
+        assert!(world.insert_generated(ChunkPos { x: 1, y: 0, z: 0 }, far));
+        world.build_meshes(usize::MAX);
+        assert_eq!(world.mesh_builds, builds + 1, "only the new chunk needs a mesh");
+
+        // One with a block on the boundary layer next to it does change the neighbor.
+        let mut edge = vec![0u16; VOLUME];
+        edge[Chunk::index(0, 0, 0)] = 1;
+        assert!(world.insert_generated(ChunkPos { x: 0, y: 1, z: 0 }, edge.clone()));
+        let before = world.mesh_builds;
+        world.build_meshes(usize::MAX);
+        assert_eq!(world.mesh_builds, before + 2, "the new chunk and the one it touches");
+    }
+
+    #[test]
+    fn cached_meshes_stay_equal_to_fresh_ones_after_edits() {
+        let mut world = VoxelWorld::new();
+        let edge = CHUNK_EDGE;
+        let mut state = 0xC0FF_EE11u32;
+        let mut next = |range: i32| {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+
+            ((state >> 8) % range as u32) as i32
+        };
+
+        for _ in 0..600 {
+            world.set(BlockPos::new(next(3 * edge), next(3 * edge), next(3 * edge)), Block(1 + next(3) as u16));
+        }
+
+        let _ = world.mesh();
+
+        for step in 0..400 {
+            // Half the edits land on a chunk boundary layer, including corners.
+            let pick = |value: i32, force: bool| {
+                if force {
+                    (value / edge) * edge + if value % 2 == 0 { 0 } else { edge - 1 }
+                } else {
+                    value
+                }
+            };
+            let force = step % 2 == 0;
+            let pos = BlockPos::new(
+                pick(next(3 * edge), force),
+                pick(next(3 * edge), force),
+                pick(next(3 * edge), force && step % 4 == 0),
+            );
+            let block = if next(3) == 0 { Block::AIR } else { Block(1 + next(3) as u16) };
+            world.set(pos, block);
+
+            if step % 7 == 0 {
+                let _ = world.mesh();
+
+                for chunk in world.chunks.keys().copied().collect::<Vec<_>>() {
+                    let cached = world.chunks[&chunk].mesh.clone().expect("meshed");
+
+                    assert_eq!(cached, world.build_chunk_mesh(chunk), "stale mesh in {chunk:?} after edit {step} at {pos:?}");
+                }
+            }
+        }
     }
 }

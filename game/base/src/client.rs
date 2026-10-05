@@ -488,7 +488,7 @@ pub fn client_loop(
                     }
 
                     let more_meshes = if scene_world != world_revision {
-                        game.voxel_world.build_meshes(4)
+                        game.voxel_world.build_meshes_for(Duration::from_millis(6))
                     } else {
                         false
                     };

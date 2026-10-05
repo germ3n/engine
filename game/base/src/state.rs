@@ -27,6 +27,9 @@ use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
+/// Longest the server spends committing generated chunks in one loop pass.
+const VOXEL_COMMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(5);
+
 pub struct GameState<In, Out> {
     pub realm: Realm,
     pub entities: EntityList,
@@ -374,20 +377,33 @@ impl<In, Out> GameState<In, Out> {
             gen.prepare(&mut self.voxel_world);
             gen.enqueue(&self.voxel_world, centers);
         }
-        let mut ready = gen.take_commits(4);
-        self.voxel_gen = Some(gen);
-        let mut idx = 0;
 
-        while idx < ready.len() {
-            let shared = Arc::new(Mutex::new(std::mem::take(&mut ready[idx])));
-            let handle = ChunkHandle(Arc::clone(&shared));
-            self.run_hook::<_, ()>("VoxelChunkGenerated", handle);
-            let draft = std::mem::take(&mut *shared.lock().expect("chunk"));
-            let mut gen = self.voxel_gen.take().expect("voxel gen");
-            gen.commit(&mut self.voxel_world, draft);
-            self.voxel_gen = Some(gen);
-            idx += 1;
+        let started = std::time::Instant::now();
+
+        loop {
+            let mut ready = gen.take_commits(16);
+
+            if ready.is_empty() {
+                break;
+            }
+
+            let mut idx = 0;
+
+            while idx < ready.len() {
+                let shared = Arc::new(Mutex::new(std::mem::take(&mut ready[idx])));
+                let handle = ChunkHandle(Arc::clone(&shared));
+                self.run_hook::<_, ()>("VoxelChunkGenerated", handle);
+                let draft = std::mem::take(&mut *shared.lock().expect("chunk"));
+                gen.commit(&mut self.voxel_world, draft);
+                idx += 1;
+            }
+
+            if started.elapsed() >= VOXEL_COMMIT_BUDGET {
+                break;
+            }
         }
+
+        self.voxel_gen = Some(gen);
     }
 
     pub fn sync_entities(&mut self) {
@@ -931,7 +947,6 @@ impl<In, Out> GameState<In, Out> {
         self.enqueue(NetSend::StateTo(addr, event));
     }
 
-    #[allow(dead_code)]
     pub fn try_send_state_to(&self, addr: SocketAddr, event: Out) -> bool {
         match self.network_sender.try_send(NetSend::StateTo(addr, event)) {
             Ok(()) => {

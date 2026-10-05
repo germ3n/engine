@@ -1,5 +1,6 @@
 use super::voxel::{Block, BlockPos, ChunkPos, VoxelWorld, CHUNK_EDGE};
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -12,7 +13,8 @@ pub const DEFAULT_RADIUS: i32 = 4;
 
 const VOLUME: usize = (CHUNK_EDGE * CHUNK_EDGE * CHUNK_EDGE) as usize;
 const COLUMNS: usize = (CHUNK_EDGE * CHUNK_EDGE) as usize;
-const MAX_INFLIGHT: usize = 64;
+const MAX_INFLIGHT: usize = 256;
+const MAX_WORKERS: usize = 8;
 const TREE_RADIUS: i32 = 2;
 
 #[derive(Clone, Debug)]
@@ -60,7 +62,7 @@ pub struct ChunkDraft {
     pub pos: ChunkPos,
     pub blocks: Vec<u16>,
     pub temperature: Vec<f64>,
-    pub biome: Vec<String>,
+    pub biome: Vec<Arc<str>>,
 }
 
 impl Default for ChunkDraft {
@@ -602,42 +604,81 @@ pub fn pick_biome_index(biomes: &[Biome], temp: f64) -> Option<usize> {
 }
 
 pub fn generate_chunk(config: &GenConfig, pos: ChunkPos) -> ChunkDraft {
+    generate_chunk_with(config, pos, true)
+}
+
+/// `skip_air` lets chunks that sit entirely above any terrain or tree return without sampling
+/// noise per block. The output is identical either way.
+fn generate_chunk_with(config: &GenConfig, pos: ChunkPos, skip_air: bool) -> ChunkDraft {
+    with_fields(config.seed, |fields| generate_with_fields(config, fields, pos, skip_air))
+}
+
+fn generate_with_fields(
+    config: &GenConfig,
+    fields: &Fields,
+    pos: ChunkPos,
+    skip_air: bool,
+) -> ChunkDraft {
     let mut blocks = vec![0u16; VOLUME];
     let mut temperature = vec![0.0f64; COLUMNS];
-    let mut biome_names = vec![String::new(); COLUMNS];
-    let fields = Fields::new(config.seed);
+    let names: Vec<Arc<str>> = config
+        .biomes
+        .iter()
+        .map(|biome| Arc::from(biome.name.as_str()))
+        .collect();
+    let empty: Arc<str> = Arc::from("");
+    let mut biome_names = vec![empty; COLUMNS];
     let origin_x = pos.x * CHUNK_EDGE;
     let origin_y = pos.y * CHUNK_EDGE;
     let origin_z = pos.z * CHUNK_EDGE;
-    let mut columns = Vec::with_capacity(COLUMNS);
+    let mut picked: Vec<Option<usize>> = Vec::with_capacity(COLUMNS);
     let mut ly = 0;
 
     while ly < CHUNK_EDGE {
         let mut lx = 0;
 
         while lx < CHUNK_EDGE {
-            let wx = origin_x + lx;
-            let wy = origin_y + ly;
-            let temp = temperature_at(&fields, wx, wy);
+            let temp = temperature_at(fields, origin_x + lx, origin_y + ly);
             let slot = (lx + ly * CHUNK_EDGE) as usize;
             temperature[slot] = temp;
+            let index = pick_biome_index(&config.biomes, temp);
 
-            if let Some(index) = pick_biome_index(&config.biomes, temp) {
-                let biome = &config.biomes[index];
-                biome_names[slot] = biome.name.clone();
-                columns.push(Some(Column {
-                    biome: index,
-                    height: terrain_height(&fields, config, biome, wx, wy),
-                    ocean: biome.name == "ocean",
-                }));
-            } else {
-                columns.push(None);
+            if let Some(index) = index {
+                biome_names[slot] = Arc::clone(&names[index]);
             }
 
+            picked.push(index);
             lx += 1;
         }
 
         ly += 1;
+    }
+
+    if skip_air && (origin_z as f64) > ceiling(config) {
+        return ChunkDraft {
+            pos,
+            blocks,
+            temperature,
+            biome: biome_names,
+        };
+    }
+
+    let mut columns = Vec::with_capacity(COLUMNS);
+    let mut slot = 0;
+
+    while slot < COLUMNS {
+        columns.push(picked[slot].map(|index| {
+            let biome = &config.biomes[index];
+            let wx = origin_x + (slot as i32) % CHUNK_EDGE;
+            let wy = origin_y + (slot as i32) / CHUNK_EDGE;
+
+            Column {
+                biome: index,
+                height: terrain_height(fields, config, biome, wx, wy),
+                ocean: biome.name == "ocean",
+            }
+        }));
+        slot += 1;
     }
 
     let mut lz = 0;
@@ -654,7 +695,7 @@ pub fn generate_chunk(config: &GenConfig, pos: ChunkPos) -> ChunkDraft {
             };
             let lx = (column as i32) % CHUNK_EDGE;
             let ly = (column as i32) / CHUNK_EDGE;
-            let id = block_id(config, &fields, info, origin_x + lx, origin_y + ly, wz);
+            let id = block_id(config, fields, info, origin_x + lx, origin_y + ly, wz);
             blocks[block_index(lx, ly, lz)] = id;
             column += 1;
         }
@@ -662,7 +703,7 @@ pub fn generate_chunk(config: &GenConfig, pos: ChunkPos) -> ChunkDraft {
         lz += 1;
     }
 
-    paint_trees(config, &fields, pos, &mut blocks);
+    paint_trees(config, fields, pos, &mut blocks);
 
     ChunkDraft {
         pos,
@@ -670,6 +711,48 @@ pub fn generate_chunk(config: &GenConfig, pos: ChunkPos) -> ChunkDraft {
         temperature,
         biome: biome_names,
     }
+}
+
+/// Every block z that terrain, water, or a tree can reach is at or below this. Solid ground stops
+/// at the surface plus the 4 block overhang, and trees add a trunk of up to 6 and leaves 2 above
+/// the block they start on.
+fn ceiling(config: &GenConfig) -> f64 {
+    let mut top = config.sea_level;
+
+    for biome in &config.biomes {
+        let reach = if biome.name == "ocean" {
+            config.sea_level - 8.0 + biome.height.abs() * 0.35
+        } else {
+            config.sea_level + biome.height.abs()
+        };
+
+        top = top.max(reach);
+    }
+
+    top + 10.0
+}
+
+thread_local! {
+    static FIELDS: std::cell::RefCell<Option<(i64, Rc<Fields>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Builds the noise tables once per worker thread and seed instead of once per chunk.
+fn with_fields<R>(seed: i64, f: impl FnOnce(&Fields) -> R) -> R {
+    let fields = FIELDS.with(|cell| {
+        let mut slot = cell.borrow_mut();
+
+        match slot.as_ref() {
+            Some((have, fields)) if *have == seed => Rc::clone(fields),
+            _ => {
+                let fields = Rc::new(Fields::new(seed));
+                *slot = Some((seed, Rc::clone(&fields)));
+
+                fields
+            }
+        }
+    });
+
+    f(&fields)
 }
 
 pub fn commit_draft(
@@ -724,7 +807,7 @@ fn worker_count() -> usize {
         .unwrap_or(1);
     let count = count.saturating_sub(1).max(1);
 
-    count.clamp(1, 4)
+    count.clamp(1, MAX_WORKERS)
 }
 
 fn wanted_chunks(
@@ -1182,6 +1265,49 @@ mod tests {
             Noise::new(1).sample3(0.2, 0.4, 0.6),
             Noise::new(2).sample3(0.2, 0.4, 0.6)
         );
+    }
+
+    #[test]
+    fn skipping_air_chunks_changes_nothing() {
+        let plain = config();
+        let mut tall = config();
+        tall.biomes = vec![Biome {
+            name: "forest".to_string(),
+            temp_min: 0.0,
+            temp_max: 1.0,
+            surface: Block::GRASS.0,
+            soil: Block::DIRT.0,
+            stone: Block::STONE.0,
+            liquid: Block::WATER.0,
+            height: -40.0,
+            trees: 0.3,
+        }];
+        let mut skipped = 0;
+        let mut kept = 0;
+
+        for config in [plain, tall] {
+            for x in -2..=2 {
+                for y in -2..=2 {
+                    for z in -4..=12 {
+                        let pos = ChunkPos { x, y, z };
+                        let fast = generate_chunk_with(&config, pos, true);
+                        let full = generate_chunk_with(&config, pos, false);
+
+                        assert_eq!(fast.blocks, full.blocks, "chunk {pos:?}");
+                        assert_eq!(fast.temperature, full.temperature);
+                        assert_eq!(fast.biome, full.biome);
+
+                        if (z * CHUNK_EDGE) as f64 > ceiling(&config) {
+                            skipped += 1;
+                        } else {
+                            kept += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(skipped > 0 && kept > 0);
     }
 
     #[test]

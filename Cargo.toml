@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "editor",
     "game/base",
     "game/wiki",
     "launcher"

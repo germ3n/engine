@@ -154,7 +154,7 @@ impl UserData for ChunkHandle {
                 return Ok(None);
             };
 
-            Ok(Some(draft.biome[slot].clone()))
+            Ok(Some(draft.biome[slot].to_string()))
         });
     }
 }

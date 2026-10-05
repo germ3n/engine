@@ -1,5 +1,5 @@
 pub const STRIDE: usize = 19;
-#[allow(never_used)]
+#[allow(dead_code)]
 pub const PASS_SKY: u8 = 0;
 pub const PASS_OPAQUE: u8 = 1;
 pub const PASS_ALPHA: u8 = 2;
