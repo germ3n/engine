@@ -166,6 +166,8 @@ return function(native)
     local native_get_bone_parent = native.get_bone_parent;
     local native_get_bone_position = native.get_bone_position;
     local native_get_bone_angles = native.get_bone_angles;
+    local native_get_bone_volume = native.get_bone_volume;
+    local native_set_bone_volume = native.set_bone_volume;
     local native_manipulate_bone_position = native.manipulate_bone_position;
     local native_manipulate_bone_angles = native.manipulate_bone_angles;
     local native_clear_bone_manipulations = native.clear_bone_manipulations;
@@ -1799,6 +1801,38 @@ return function(native)
     ]=]
     function meta:get_bone_angles(bone)
         return native_get_bone_angles(self._handle, bone);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_volume",
+    realm = "shared",
+    summary = "Returns the trace volume attached to a bone, or nil when it has none. Volumes belong to the model, so every entity using the same model shares them.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+    },
+    returns = { ty = "table?", desc = "{ shape = \"box\"|\"capsule\", half (box), radius and half_len (capsule), center, angles, group, flags }." },
+    see_also = "Entity:set_bone_volume, engine.trace_line",
+    ]=]
+    function meta:get_bone_volume(bone)
+        return native_get_bone_volume(self._handle, bone);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "set_bone_volume",
+    realm = "shared",
+    summary = "Attaches a trace volume to a bone, or clears it when volume is nil. The volume is part of the model, so it affects every entity using it, and only on the realm that calls this.",
+    params = {
+        bone = { ty = "number", desc = "Bone index." },
+        volume = { ty = "table", desc = "{ shape = \"box\", half = Vector3 } or { shape = \"capsule\", radius = n, half_len = n }, plus optional center (Vector3, bone-local), angles (Angle3, bone-local), group (0-255) and flags (SURF_*, default SURF_HITBOX). Capsules run along the local Y axis.", optional = true },
+    },
+    returns = { ty = "boolean", desc = "False when the bone index is invalid." },
+    example = "ent:set_bone_volume(head, { shape = \"capsule\", radius = 4, half_len = 2, group = 1 })",
+    see_also = "Entity:get_bone_volume, engine.trace_line",
+    ]=]
+    function meta:set_bone_volume(bone, volume)
+        return native_set_bone_volume(self._handle, bone, volume);
     end
 
     --[=[document

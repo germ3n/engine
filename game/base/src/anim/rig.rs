@@ -32,6 +32,7 @@ pub fn test_mesh() -> Mesh {
             inverse_bind: inverse_translation(world),
             local_pos: joint.local,
             local_rot: ident(),
+            volume: None,
         });
         worlds.push(world);
     }

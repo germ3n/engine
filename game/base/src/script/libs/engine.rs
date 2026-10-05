@@ -1,5 +1,5 @@
 use crate::physics::PhysicsAccess;
-use crate::script::libs::ents::EntityAccess;
+use crate::script::libs::ents::{AnimAccess, EntityAccess};
 use crate::script::libs::vector3::Vector3;
 use crate::script::Realm;
 use crate::world::gen::{seed_from_f64, GenSettings};
@@ -431,6 +431,24 @@ fn engine_brush_clear() {}
 
 #[document(
     parent = "engine",
+    name = "trace_line",
+    kind = "function",
+    realm = "shared",
+    summary = "Traces a line through the world and entity bone volumes and returns the nearest hit. SURF_BRUSH and SURF_VOXEL in the mask test brushes and voxels (SURF_WORLD is both); other bits are matched against each bone volume's flags.",
+    params = {
+        start = { ty = "Vector3", desc = "Start of the line in world units." },
+        end_pos = { ty = "Vector3", desc = "End of the line in world units." },
+        mask = { ty = "number", desc = "SURF_* flags to test. Defaults to MASK_SHOT (SURF_WORLD | SURF_HITBOX | SURF_SOLID).", optional = true },
+        filter = { ty = "function|Entity|table", desc = "An entity to ignore, a table of entities to ignore, or a function. A function is called as filter(brush) for brushes, filter(pos, block) for voxels, filter(entity) once per entity, then filter(entity, bone, group) per bone volume. Return false or nil to pass through.", optional = true },
+    },
+    returns = { ty = "table", desc = "Nil on a miss. Otherwise type (\"brush\", \"voxel\" or \"entity\"), distance, fraction and position, plus brush and normal for brushes, pos, block and face for voxels, or entity, bone, group and normal for entities." },
+    example = "local hit = engine.trace_line(eye, eye + aim * 4096, MASK_SHOT, { me })\nif hit and hit.type == \"entity\" then print(hit.entity, hit.bone, hit.group) end",
+    panics = "Rethrows the first error raised by the filter.",
+)]
+fn engine_trace_line() {}
+
+#[document(
+    parent = "engine",
     name = "brush_trace",
     kind = "function",
     realm = "shared",
@@ -484,10 +502,26 @@ pub fn register_engine_lib(
     brush_access: BrushAccess,
     voxel_access: VoxelAccess,
     entity_access: EntityAccess,
+    anim_access: AnimAccess,
     physics_access: PhysicsAccess,
     motion_access: MotionAccess,
     gen_settings: Arc<Mutex<GenSettings>>,
 ) {
+    for (name, value) in [
+        ("SURF_HITBOX", crate::anim::SURF_HITBOX),
+        ("SURF_SOLID", crate::anim::SURF_SOLID),
+        ("SURF_TRIGGER", crate::anim::SURF_TRIGGER),
+        ("SURF_BRUSH", crate::anim::SURF_BRUSH),
+        ("SURF_VOXEL", crate::anim::SURF_VOXEL),
+        ("SURF_WORLD", crate::anim::SURF_WORLD),
+        ("MASK_SHOT", crate::anim::MASK_SHOT),
+        ("MASK_ALL", crate::anim::MASK_ALL),
+    ] {
+        lua.globals()
+            .set(name, value)
+            .unwrap_or_else(|err| panic!("[engine] Failed setting {name}: {err}"));
+    }
+
     let engine_table = lua.create_table().expect("Failed to create engine table");
     engine_table
         .set("tick_interval", tick_interval)
@@ -843,6 +877,32 @@ pub fn register_engine_lib(
             .expect("[engine] Failed to create brush_trace"),
         )
         .expect("[engine] Failed setting brush_trace");
+    let trace_brushes = brush_access.clone();
+    let trace_voxels = voxel_access.clone();
+    let trace_entities = entity_access.clone();
+    let trace_anims = anim_access;
+    engine_table
+        .set(
+            "trace_line",
+            lua.create_function(
+                move |lua, (start, end, mask, filter): (Vector3, Vector3, Option<u32>, Value)| {
+                    trace_line(
+                        lua,
+                        tick_interval,
+                        &trace_brushes,
+                        &trace_voxels,
+                        &trace_entities,
+                        &trace_anims,
+                        start,
+                        end,
+                        mask,
+                        filter,
+                    )
+                },
+            )
+            .expect("[engine] Failed to create trace_line"),
+        )
+        .expect("[engine] Failed setting trace_line");
     let voxels = voxel_access;
     let entities = entity_access;
     let physics = physics_access;
@@ -1015,17 +1075,72 @@ fn brush_clear(access: &BrushAccess) -> bool {
     true
 }
 
-struct LuaTraceFilter {
-    predicate: Function,
+pub(crate) struct LuaTraceFilter {
+    predicate: Option<Function>,
+    ignore: Vec<u32>,
     error: RefCell<Option<mlua::Error>>,
 }
 
+fn entity_handle(value: &Value) -> Option<u32> {
+    match value {
+        Value::Integer(raw) => u32::try_from(*raw).ok(),
+        Value::Number(raw) if *raw >= 0.0 && raw.fract() == 0.0 => Some(*raw as u32),
+        Value::Table(table) => table.get::<Option<u32>>("_handle").ok().flatten(),
+        _ => None,
+    }
+}
+
 impl LuaTraceFilter {
-    fn new(predicate: Function) -> Self {
+    pub(crate) fn new(predicate: Function) -> Self {
         Self {
-            predicate,
+            predicate: Some(predicate),
+            ignore: Vec::new(),
             error: RefCell::new(None),
         }
+    }
+
+    /// Accepts what GMod-style traces accept: a function, an entity to ignore, or a
+    /// table of entities to ignore. Handles may be entity objects or raw handles.
+    pub(crate) fn from_value(value: Value) -> mlua::Result<Self> {
+        let mut filter = Self {
+            predicate: None,
+            ignore: Vec::new(),
+            error: RefCell::new(None),
+        };
+
+        match value {
+            Value::Function(predicate) => filter.predicate = Some(predicate),
+            Value::Table(table) => {
+                if let Some(handle) = entity_handle(&Value::Table(table.clone())) {
+                    filter.ignore.push(handle);
+                } else {
+                    for item in table.sequence_values::<Value>() {
+                        let item = item?;
+                        let handle = entity_handle(&item).ok_or_else(|| {
+                            mlua::Error::RuntimeError(
+                                "trace filter table must contain entities".to_string(),
+                            )
+                        })?;
+
+                        filter.ignore.push(handle);
+                    }
+                }
+            }
+            Value::Integer(_) | Value::Number(_) => match entity_handle(&value) {
+                Some(handle) => filter.ignore.push(handle),
+                None => {
+                    return Err(mlua::Error::RuntimeError("invalid entity handle".to_string()));
+                }
+            },
+            Value::Nil => {}
+            _ => {
+                return Err(mlua::Error::RuntimeError(
+                    "trace filter must be a function, entity or table of entities".to_string(),
+                ));
+            }
+        }
+
+        Ok(filter)
     }
 
     fn ask(&self, args: impl mlua::IntoLuaMulti) -> bool {
@@ -1033,7 +1148,11 @@ impl LuaTraceFilter {
             return false;
         }
 
-        match self.predicate.call::<Value>(args) {
+        let Some(predicate) = &self.predicate else {
+            return true;
+        };
+
+        match predicate.call::<Value>(args) {
             Ok(value) => !matches!(value, Value::Nil | Value::Boolean(false)),
             Err(err) => {
                 *self.error.borrow_mut() = Some(err);
@@ -1043,7 +1162,7 @@ impl LuaTraceFilter {
         }
     }
 
-    fn finish(self) -> mlua::Result<()> {
+    pub(crate) fn finish(self) -> mlua::Result<()> {
         match self.error.into_inner() {
             Some(err) => Err(err),
             None => Ok(()),
@@ -1056,12 +1175,147 @@ impl TraceFilter for LuaTraceFilter {
         self.ask(brush as f64)
     }
 
+    fn should_hit_entity(&self, entity: u32) -> bool {
+        if self.ignore.contains(&entity) {
+            return false;
+        }
+
+        self.ask(entity as f64)
+    }
+
+    fn should_hit_bone(&self, entity: u32, bone: u16, group: u8) -> bool {
+        self.ask((entity as f64, bone as f64, group as f64))
+    }
+
     fn should_hit_voxel(&self, pos: BlockPos, block: Block) -> bool {
         self.ask((
             Vector3::new(pos.x as f64, pos.y as f64, pos.z as f64),
             block.0 as f64,
         ))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trace_line(
+    lua: &Lua,
+    tick_interval: f64,
+    brushes: &BrushAccess,
+    voxels: &VoxelAccess,
+    entities: &EntityAccess,
+    anims: &AnimAccess,
+    start: Vector3,
+    end: Vector3,
+    mask: Option<u32>,
+    filter: Value,
+) -> mlua::Result<Option<Table>> {
+    let mask = mask.unwrap_or(crate::anim::MASK_SHOT);
+    let filter = LuaTraceFilter::from_value(filter)?;
+    let mut brush_hit = None;
+    let mut voxel_hit = None;
+    let mut bone_hit: Option<(u32, crate::anim::BoneHit)> = None;
+
+    if mask & crate::anim::SURF_BRUSH != 0 {
+        if let Some(map) = unsafe { brushes.load(Ordering::Relaxed).as_ref() } {
+            brush_hit = map.trace_filtered(start, end, &filter);
+        }
+    }
+
+    if mask & crate::anim::SURF_VOXEL != 0 {
+        if let Some(world) = unsafe { voxels.load(Ordering::Relaxed).as_ref() } {
+            voxel_hit = world.trace_filtered(start, end, &filter);
+        }
+    }
+
+    let list = unsafe { entities.load(Ordering::Relaxed).as_ref() };
+    let bank = unsafe { anims.load(Ordering::Relaxed).as_mut() };
+
+    if let (Some(list), Some(bank)) = (list, bank) {
+        let time = lua
+            .globals()
+            .get::<Table>(ENGINE_TABLE)
+            .and_then(|engine| engine.get::<u64>("tick_count"))
+            .unwrap_or(0) as f64;
+        let from = [start.x as f32, start.y as f32, start.z as f32];
+        let to = [end.x as f32, end.y as f32, end.z as f32];
+
+        for (handle, entity) in list.iter() {
+            let base = entity.base();
+            let playback = base.anim;
+            let position = [base.position.x as f32, base.position.y as f32, base.position.z as f32];
+            let angles = [base.angles.p as f32, base.angles.y as f32, base.angles.r as f32];
+            let hit = bank.trace_bones(
+                handle.0, &playback, position, angles, time, tick_interval, from, to, mask, &filter,
+            );
+
+            if let Some(hit) = hit {
+                if bone_hit.map_or(true, |(_, cur)| hit.distance < cur.distance) {
+                    bone_hit = Some((handle.0, hit));
+                }
+            }
+        }
+    }
+
+    filter.finish()?;
+
+    let brush_dist = brush_hit.as_ref().map_or(f64::INFINITY, |hit| hit.distance);
+    let voxel_dist = voxel_hit.as_ref().map_or(f64::INFINITY, |hit| hit.distance);
+    let bone_dist = bone_hit.map_or(f64::INFINITY, |(_, hit)| hit.distance as f64);
+    let nearest = brush_dist.min(voxel_dist).min(bone_dist);
+
+    if !nearest.is_finite() {
+        return Ok(None);
+    }
+
+    let table = lua.create_table()?;
+    let length = {
+        let delta = Vector3::new(end.x - start.x, end.y - start.y, end.z - start.z);
+
+        (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt()
+    };
+
+    table.set("distance", nearest)?;
+    table.set("fraction", if length > 0.0 { nearest / length } else { 0.0 })?;
+
+    if nearest == brush_dist {
+        let hit = brush_hit.expect("brush hit");
+
+        table.set("type", "brush")?;
+        table.set("brush", hit.brush as f64)?;
+        table.set("position", hit.position)?;
+        table.set("normal", hit.normal)?;
+    } else if nearest == voxel_dist {
+        let hit = voxel_hit.expect("voxel hit");
+        let world = unsafe { voxels.load(Ordering::Relaxed).as_ref() };
+
+        table.set("type", "voxel")?;
+        table.set(
+            "pos",
+            Vector3::new(hit.block.x as f64, hit.block.y as f64, hit.block.z as f64),
+        )?;
+        table.set("block", world.map_or(0.0, |world| world.get(hit.block).0 as f64))?;
+        table.set("position", hit.position)?;
+        table.set("face", hit.face.map(face_name))?;
+    } else {
+        let (raw, hit) = bone_hit.expect("bone hit");
+        let vec = |v: [f32; 3]| Vector3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+        let entity = match lua
+            .globals()
+            .get::<Table>("ents")
+            .and_then(|ents| ents.get::<Function>("get"))
+        {
+            Ok(get) => get.call::<Value>(raw as f64)?,
+            Err(_) => Value::Number(raw as f64),
+        };
+
+        table.set("type", "entity")?;
+        table.set("entity", entity)?;
+        table.set("bone", hit.bone)?;
+        table.set("group", hit.group)?;
+        table.set("position", vec(hit.position))?;
+        table.set("normal", vec(hit.normal))?;
+    }
+
+    Ok(Some(table))
 }
 
 fn brush_trace(
@@ -1308,4 +1562,235 @@ fn read_planes(planes: Table) -> mlua::Result<Vec<BrushPlane>> {
     }
 
     Ok(out)
+}
+
+#[cfg(test)]
+mod trace_filter_tests {
+    use super::*;
+
+    fn filter_from(lua: &Lua, source: &str) -> mlua::Result<LuaTraceFilter> {
+        LuaTraceFilter::from_value(lua.load(source).eval::<Value>()?)
+    }
+
+    #[test]
+    fn nil_filter_hits_everything() {
+        let lua = Lua::new();
+        let filter = filter_from(&lua, "return nil").unwrap();
+
+        assert!(filter.should_hit_entity(1));
+        assert!(filter.should_hit_bone(1, 2, 3));
+        assert!(filter.should_hit_brush(4));
+        assert!(filter.finish().is_ok());
+    }
+
+    #[test]
+    fn single_entity_is_ignored() {
+        let lua = Lua::new();
+        let by_object = filter_from(&lua, "return { _handle = 5 }").unwrap();
+        let by_handle = filter_from(&lua, "return 5").unwrap();
+
+        for filter in [by_object, by_handle] {
+            assert!(!filter.should_hit_entity(5));
+            assert!(filter.should_hit_entity(6));
+            assert!(filter.should_hit_bone(5, 0, 0));
+        }
+    }
+
+    #[test]
+    fn table_of_entities_is_ignored() {
+        let lua = Lua::new();
+        let filter = filter_from(&lua, "return { { _handle = 2 }, 3, { _handle = 9 } }").unwrap();
+
+        assert!(!filter.should_hit_entity(2));
+        assert!(!filter.should_hit_entity(3));
+        assert!(!filter.should_hit_entity(9));
+        assert!(filter.should_hit_entity(4));
+    }
+
+    #[test]
+    fn empty_table_ignores_nothing() {
+        let lua = Lua::new();
+        let filter = filter_from(&lua, "return {}").unwrap();
+
+        assert!(filter.should_hit_entity(0));
+    }
+
+    #[test]
+    fn bad_filters_are_rejected() {
+        let lua = Lua::new();
+
+        assert!(filter_from(&lua, "return { 'nope' }").is_err());
+        assert!(filter_from(&lua, "return { 1, {} }").is_err());
+        assert!(filter_from(&lua, "return 'text'").is_err());
+        assert!(filter_from(&lua, "return true").is_err());
+        assert!(filter_from(&lua, "return -1").is_err());
+        assert!(filter_from(&lua, "return 1.5").is_err());
+    }
+
+    #[test]
+    fn function_filter_receives_entity_then_bone_arguments() {
+        let lua = Lua::new();
+        let filter = filter_from(
+            &lua,
+            "return function(entity, bone, group)
+                if bone == nil then return entity ~= 4 end
+                return group ~= 9
+            end",
+        )
+        .unwrap();
+
+        assert!(!filter.should_hit_entity(4));
+        assert!(filter.should_hit_entity(5));
+        assert!(filter.should_hit_bone(5, 1, 8));
+        assert!(!filter.should_hit_bone(5, 1, 9));
+    }
+
+    #[test]
+    fn function_returning_nil_or_false_passes_through() {
+        let lua = Lua::new();
+        let nil = filter_from(&lua, "return function() return nil end").unwrap();
+        let no = filter_from(&lua, "return function() return false end").unwrap();
+        let yes = filter_from(&lua, "return function() return 0 end").unwrap();
+
+        assert!(!nil.should_hit_entity(1));
+        assert!(!no.should_hit_bone(1, 1, 1));
+        assert!(yes.should_hit_entity(1));
+    }
+
+    #[test]
+    fn function_error_is_reported_once_and_stops_hits() {
+        let lua = Lua::new();
+        let filter = filter_from(&lua, "return function() error('boom') end").unwrap();
+
+        assert!(!filter.should_hit_entity(1));
+        assert!(!filter.should_hit_bone(1, 1, 1));
+        assert!(filter.finish().is_err());
+    }
+
+    #[test]
+    fn ignore_list_wins_over_function() {
+        let lua = Lua::new();
+        let mut filter = filter_from(&lua, "return function() return true end").unwrap();
+
+        filter.ignore.push(3);
+
+        assert!(!filter.should_hit_entity(3));
+        assert!(filter.should_hit_entity(4));
+    }
+
+    struct World {
+        brushes: Box<BrushMap>,
+        voxels: Box<VoxelWorld>,
+    }
+
+    impl World {
+        // Voxel block near x=50, brush box near x=100, both on the line y=z=0.5.
+        fn new() -> Self {
+            let mut brushes = Box::new(BrushMap::new());
+            let mut voxels = Box::new(VoxelWorld::new());
+
+            assert!(brushes.add_box(Vector3::new(100.0, 0.0, 0.0), Vector3::new(101.0, 1.0, 1.0), 1));
+            voxels.set(BlockPos::new(50, 0, 0), Block(1));
+
+            Self { brushes, voxels }
+        }
+
+        fn trace(&mut self, from: f64, to: f64, mask: Option<u32>) -> Option<(String, f64)> {
+            let lua = Lua::new();
+            let ctor = lua
+                .create_function(|lua, (x, y, z): (f64, f64, f64)| {
+                    let table = lua.create_table()?;
+
+                    table.set("x", x)?;
+                    table.set("y", y)?;
+                    table.set("z", z)?;
+
+                    Ok(table)
+                })
+                .expect("ctor");
+
+            lua.set_named_registry_value("Vector3Ctor", ctor).expect("registry");
+
+            let brushes: BrushAccess = Arc::new(AtomicPtr::new(&mut *self.brushes));
+            let voxels: VoxelAccess = Arc::new(AtomicPtr::new(&mut *self.voxels));
+            let entities: EntityAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+            let anims: AnimAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+            let hit = trace_line(
+                &lua,
+                1.0 / 60.0,
+                &brushes,
+                &voxels,
+                &entities,
+                &anims,
+                Vector3::new(from, 0.5, 0.5),
+                Vector3::new(to, 0.5, 0.5),
+                mask,
+                Value::Nil,
+            )
+            .expect("trace");
+
+            hit.map(|table| {
+                (
+                    table.get::<String>("type").expect("type"),
+                    table.get::<f64>("distance").expect("distance"),
+                )
+            })
+        }
+    }
+
+    use crate::anim::{MASK_SHOT, SURF_BRUSH, SURF_HITBOX, SURF_VOXEL, SURF_WORLD};
+
+    #[test]
+    fn brush_flag_hits_only_brushes() {
+        let mut world = World::new();
+        let (kind, distance) = world.trace(-10.0, 200.0, Some(SURF_BRUSH)).expect("brush");
+
+        assert_eq!(kind, "brush");
+        assert!((distance - 110.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn voxel_flag_hits_only_voxels() {
+        let mut world = World::new();
+        let (kind, distance) = world.trace(-10.0, 200.0, Some(SURF_VOXEL)).expect("voxel");
+
+        assert_eq!(kind, "voxel");
+        assert!(distance > 55.0 && distance < 65.0);
+    }
+
+    #[test]
+    fn world_flag_returns_the_nearest_of_both() {
+        let mut world = World::new();
+
+        assert_eq!(world.trace(-10.0, 200.0, Some(SURF_WORLD)).expect("hit").0, "voxel");
+        assert_eq!(world.trace(200.0, -10.0, Some(SURF_WORLD)).expect("hit").0, "brush");
+        assert_eq!(world.trace(-10.0, 200.0, Some(SURF_BRUSH | SURF_VOXEL)).expect("hit").0, "voxel");
+    }
+
+    #[test]
+    fn missing_flag_skips_that_geometry_entirely() {
+        let mut world = World::new();
+
+        // Voxel is nearer going +X, but a brush-only mask must pass through it.
+        assert_eq!(world.trace(-10.0, 200.0, Some(SURF_BRUSH)).expect("hit").0, "brush");
+        // Brush is nearer going -X, but a voxel-only mask must pass through it.
+        assert_eq!(world.trace(200.0, -10.0, Some(SURF_VOXEL)).expect("hit").0, "voxel");
+    }
+
+    #[test]
+    fn masks_without_world_flags_miss_the_world() {
+        let mut world = World::new();
+
+        assert!(world.trace(-10.0, 200.0, Some(0)).is_none());
+        assert!(world.trace(-10.0, 200.0, Some(SURF_HITBOX)).is_none());
+    }
+
+    #[test]
+    fn default_mask_includes_the_world() {
+        let mut world = World::new();
+
+        assert_eq!(world.trace(-10.0, 200.0, None).expect("hit").0, "voxel");
+        assert_eq!(MASK_SHOT & SURF_WORLD, SURF_WORLD);
+        assert_eq!(world.trace(-10.0, 40.0, Some(SURF_WORLD)), None);
+    }
 }

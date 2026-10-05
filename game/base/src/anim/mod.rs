@@ -1,5 +1,6 @@
 mod format;
 mod gltf;
+mod hit;
 mod pose;
 mod rig;
 
@@ -9,12 +10,17 @@ use crate::anim::pose::{
     strip_root, trs, wrap_time, ClipSet, FADE_SECONDS,
 };
 use crate::movement::RootStep;
+use crate::world::TraceFilter;
 use crate::network::events::{AnimSnapshot, BoneOverrideNet, EntityBones};
 use crate::ui::skin::{SkinBatch, SkinGroup};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub use format::{write_clips, write_mesh};
+pub use format::{
+    write_clips, write_mesh, BoneVolume, Capsule, Hitbox, MASK_ALL, MASK_SHOT, SURF_BRUSH, SURF_HITBOX,
+    SURF_SOLID, SURF_TRIGGER, SURF_VOXEL, SURF_WORLD,
+};
+pub use hit::BoneHit;
 pub use pose::{angles_from_pose, pose_matrix, yaw_of};
 
 pub const NONE_ASSET: u32 = u32::MAX;
@@ -755,6 +761,104 @@ impl AnimAssets {
         Some((pos, angles))
     }
 
+    pub fn bone_volume(&self, mesh: u32, bone: u16) -> Option<BoneVolume> {
+        self.meshes
+            .get(mesh as usize)?
+            .mesh
+            .bones
+            .get(bone as usize)?
+            .volume
+    }
+
+    pub fn set_bone_volume(&mut self, mesh: u32, bone: u16, volume: Option<BoneVolume>) -> bool {
+        let Some(slot) = self
+            .meshes
+            .get_mut(mesh as usize)
+            .and_then(|mesh| mesh.mesh.bones.get_mut(bone as usize))
+        else {
+            return false;
+        };
+
+        slot.volume = volume;
+
+        true
+    }
+
+    pub fn trace_bones(
+        &mut self,
+        entity: u32,
+        playback: &AnimPlayback,
+        position: [f32; 3],
+        angles: [f32; 3],
+        time: f64,
+        dt: f64,
+        start: [f32; 3],
+        end: [f32; 3],
+        mask: u32,
+        filter: &dyn TraceFilter,
+    ) -> Option<BoneHit> {
+        if !filter.should_hit_entity(entity) {
+            return None;
+        }
+
+        let delta = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+        let max = (delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]).sqrt();
+
+        if max < 1e-6 {
+            return None;
+        }
+
+        let dir = [delta[0] / max, delta[1] / max, delta[2] / max];
+        let mesh_idx = playback.mesh as usize;
+        let count = self.meshes.get(mesh_idx)?.mesh.bones.len();
+
+        if !self.meshes[mesh_idx].mesh.bones.iter().any(|bone| bone.volume.is_some()) {
+            return None;
+        }
+
+        if !self.frozen_bones.contains_key(&entity)
+            && !self.sample_palette(playback.mesh, playback.clips, playback, time, dt, entity)
+        {
+            return None;
+        }
+
+        let root = pose_matrix(position, angles[0], angles[1], angles[2]);
+        let mut best: Option<BoneHit> = None;
+        let mut idx = 0;
+
+        while idx < count {
+            let Some(volume) = self.meshes[mesh_idx].mesh.bones[idx].volume else {
+                idx += 1;
+                continue;
+            };
+
+            if volume.flags() & mask == 0 || !filter.should_hit_bone(entity, idx as u16, volume.group()) {
+                idx += 1;
+                continue;
+            }
+
+            let local = match self.frozen_bones.get(&entity) {
+                Some(frozen) => frozen.get(idx).map(|xform| trs(xform.pos, xform.rot)),
+                None => self.scratch_world.get(idx).copied(),
+            };
+
+            if let Some(local) = local {
+                let world = mul_mat(root, local);
+                let hit = hit::trace_volume(idx as u16, &volume, world, start, dir, max);
+
+                if let Some(hit) = hit {
+                    if best.map_or(true, |cur| hit.distance < cur.distance) {
+                        best = Some(hit);
+                    }
+                }
+            }
+
+            idx += 1;
+        }
+
+        best
+    }
+
     pub fn sample_bones(
         &mut self,
         entity: u32,
@@ -1276,7 +1380,11 @@ fn sanitize_rate(rate: f32) -> f32 {
     }
 }
 
-fn quat_from_angles(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [f32; 4] {
+pub fn angles_from_quat(rot: [f32; 4]) -> [f32; 3] {
+    angles_from_pose(trs([0.0; 3], rot))
+}
+
+pub fn quat_from_angles(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [f32; 4] {
     quat_from_mat(pose_matrix([0.0, 0.0, 0.0], pitch_deg, yaw_deg, roll_deg))
 }
 
@@ -1358,6 +1466,7 @@ mod tests {
     use super::*;
     use crate::anim::format::{read_clips, read_mesh};
     use crate::anim::pose::{quat_rotate, quat_z};
+    use crate::world::HitAll;
 
     #[test]
     fn yaw_turns_forward_onto_y() {
@@ -1436,5 +1545,139 @@ mod tests {
         assert_eq!(batch.groups.len(), 1);
         assert_eq!(batch.groups[0].palette_h, 1);
         assert!(batch.groups[0].indices.len() > 30);
+    }
+
+    struct BoneTraceFilter {
+        skip_entity: Option<u32>,
+        skip_bone: Option<u16>,
+        entity_calls: std::cell::Cell<u32>,
+    }
+
+    impl BoneTraceFilter {
+        fn new(skip_entity: Option<u32>, skip_bone: Option<u16>) -> Self {
+            Self {
+                skip_entity,
+                skip_bone,
+                entity_calls: std::cell::Cell::new(0),
+            }
+        }
+    }
+
+    impl TraceFilter for BoneTraceFilter {
+        fn should_hit_entity(&self, entity: u32) -> bool {
+            self.entity_calls.set(self.entity_calls.get() + 1);
+
+            Some(entity) != self.skip_entity
+        }
+
+        fn should_hit_bone(&self, _entity: u32, bone: u16, _group: u8) -> bool {
+            Some(bone) != self.skip_bone
+        }
+    }
+
+    fn trace_setup() -> (AnimAssets, AnimPlayback) {
+        let mut assets = AnimAssets::new(false);
+        let mesh = assets.load_mesh(TEST_MESH).unwrap();
+        let clips = assets.load_clips(TEST_CLIPS).unwrap();
+        let volume = |half: f32, group: u8, flags: u32| {
+            Some(BoneVolume::Hitbox(Hitbox {
+                half: [half, half, half],
+                center: [0.0; 3],
+                rot: [0.0, 0.0, 0.0, 1.0],
+                group,
+                flags,
+            }))
+        };
+
+        // Bone 0 is the larger box, so a level ray along +X enters it first.
+        assert!(assets.set_bone_volume(mesh, 0, volume(10_000.0, 1, SURF_HITBOX)));
+        assert!(assets.set_bone_volume(mesh, 1, volume(5_000.0, 2, SURF_SOLID)));
+
+        let mut playback = AnimPlayback::default();
+        playback.mesh = mesh;
+        playback.clips = clips;
+        playback.set_sequence(assets.sequence_id(clips, "lunge").unwrap(), 1, 1.0);
+
+        (assets, playback)
+    }
+
+    fn trace_with(
+        assets: &mut AnimAssets,
+        playback: &AnimPlayback,
+        mask: u32,
+        filter: &dyn TraceFilter,
+    ) -> Option<BoneHit> {
+        assets.trace_bones(
+            7,
+            playback,
+            [0.0; 3],
+            [0.0; 3],
+            0.0,
+            1.0 / 60.0,
+            [-50_000.0, 0.0, 0.0],
+            [50_000.0, 0.0, 0.0],
+            mask,
+            filter,
+        )
+    }
+
+    #[test]
+    fn trace_bones_picks_nearest_volume() {
+        let (mut assets, playback) = trace_setup();
+        let hit = trace_with(&mut assets, &playback, MASK_ALL, &HitAll).expect("hit");
+
+        assert_eq!(hit.bone, 0);
+        assert_eq!(hit.group, 1);
+        assert!(hit.distance > 30_000.0 && hit.distance < 50_000.0);
+    }
+
+    #[test]
+    fn trace_bones_mask_selects_volumes_by_flags() {
+        let (mut assets, playback) = trace_setup();
+        let solid = trace_with(&mut assets, &playback, SURF_SOLID, &HitAll).expect("solid");
+        let hitbox = trace_with(&mut assets, &playback, SURF_HITBOX, &HitAll).expect("hitbox");
+
+        assert_eq!(solid.bone, 1);
+        assert_eq!(hitbox.bone, 0);
+        assert!(trace_with(&mut assets, &playback, SURF_TRIGGER, &HitAll).is_none());
+        assert!(trace_with(&mut assets, &playback, 0, &HitAll).is_none());
+    }
+
+    #[test]
+    fn trace_bones_filter_skips_entities_and_bones() {
+        let (mut assets, playback) = trace_setup();
+        let skip_entity = BoneTraceFilter::new(Some(7), None);
+        let skip_bone = BoneTraceFilter::new(None, Some(0));
+        let other_entity = BoneTraceFilter::new(Some(8), None);
+
+        assert!(trace_with(&mut assets, &playback, MASK_ALL, &skip_entity).is_none());
+        assert_eq!(skip_entity.entity_calls.get(), 1);
+        assert_eq!(
+            trace_with(&mut assets, &playback, MASK_ALL, &skip_bone).expect("hit").bone,
+            1
+        );
+        assert_eq!(
+            trace_with(&mut assets, &playback, MASK_ALL, &other_entity).expect("hit").bone,
+            0
+        );
+    }
+
+    #[test]
+    fn trace_bones_entity_filter_runs_before_masking() {
+        let (mut assets, playback) = trace_setup();
+        let filter = BoneTraceFilter::new(None, None);
+
+        assert!(trace_with(&mut assets, &playback, SURF_TRIGGER, &filter).is_none());
+        assert_eq!(filter.entity_calls.get(), 1);
+    }
+
+    #[test]
+    fn set_bone_volume_rejects_bad_bone_and_clears() {
+        let (mut assets, playback) = trace_setup();
+
+        assert!(!assets.set_bone_volume(playback.mesh, 9_999, None));
+        assert!(assets.bone_volume(playback.mesh, 0).is_some());
+        assert!(assets.set_bone_volume(playback.mesh, 0, None));
+        assert!(assets.bone_volume(playback.mesh, 0).is_none());
     }
 }

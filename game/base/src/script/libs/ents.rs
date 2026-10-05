@@ -3,6 +3,7 @@ use crate::network::events::{EntityNetworked, NetValue, NetVar};
 use crate::physics::{box_from_bounds, fallback_box, PhysicsAccess, PhysicsWorld};
 use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
+use crate::anim::{BoneVolume, Capsule, Hitbox};
 use mlua::{Error, Function, Lua, Result, Table, Value};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
@@ -73,6 +74,60 @@ impl<'a> AnimScope<'a> {
 impl Drop for AnimScope<'_> {
     fn drop(&mut self) {
         self.access.store(self.previous, Ordering::Relaxed);
+    }
+}
+
+fn volume_from_table(spec: &Table) -> Result<BoneVolume> {
+    let shape: String = spec.get("shape")?;
+    let center = spec
+        .get::<Option<Vector3>>("center")?
+        .unwrap_or_else(|| Vector3::new(0.0, 0.0, 0.0));
+    let angles = spec
+        .get::<Option<Angle3>>("angles")?
+        .unwrap_or_else(|| Angle3::new(0.0, 0.0, 0.0));
+    let group = spec.get::<Option<u8>>("group")?.unwrap_or(0);
+    let flags = spec
+        .get::<Option<u32>>("flags")?
+        .unwrap_or(crate::anim::SURF_HITBOX);
+    let center = [center.x as f32, center.y as f32, center.z as f32];
+    let rot = crate::anim::quat_from_angles(angles.p as f32, angles.y as f32, angles.r as f32);
+
+    match shape.as_str() {
+        "box" => {
+            let half: Vector3 = spec.get("half")?;
+
+            if half.x <= 0.0 || half.y <= 0.0 || half.z <= 0.0 {
+                return Err(Error::RuntimeError("box half extents must be positive".to_string()));
+            }
+
+            Ok(BoneVolume::Hitbox(Hitbox {
+                half: [half.x as f32, half.y as f32, half.z as f32],
+                center,
+                rot,
+                group,
+                flags,
+            }))
+        }
+        "capsule" => {
+            let radius: f64 = spec.get("radius")?;
+            let half_len: f64 = spec.get("half_len")?;
+
+            if radius <= 0.0 || half_len < 0.0 {
+                return Err(Error::RuntimeError("invalid capsule size".to_string()));
+            }
+
+            Ok(BoneVolume::Capsule(Capsule {
+                radius: radius as f32,
+                half_len: half_len as f32,
+                center,
+                rot,
+                group,
+                flags,
+            }))
+        }
+        other => Err(Error::RuntimeError(format!(
+            "unknown volume shape '{other}', expected 'box' or 'capsule'"
+        ))),
     }
 }
 
@@ -835,6 +890,69 @@ fn build_native(
 
         Ok(pose.map(|(pos, _)| Vector3::new(pos[0] as f64, pos[1] as f64, pos[2] as f64)))
     });
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "get_bone_volume",
+        move |lua, (raw, bone): (u32, u16)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let Some(volume) = bank.bone_volume(entity.base().anim.mesh, bone) else {
+                return Ok(None);
+            };
+            let table = lua.create_table()?;
+            let vec = |v: [f32; 3]| Vector3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+            let (center, rot) = match volume {
+                BoneVolume::Hitbox(hitbox) => {
+                    table.set("shape", "box")?;
+                    table.set("half", vec(hitbox.half))?;
+
+                    (hitbox.center, hitbox.rot)
+                }
+                BoneVolume::Capsule(capsule) => {
+                    table.set("shape", "capsule")?;
+                    table.set("radius", capsule.radius as f64)?;
+                    table.set("half_len", capsule.half_len as f64)?;
+
+                    (capsule.center, capsule.rot)
+                }
+            };
+            let angles = crate::anim::angles_from_quat(rot);
+
+            table.set("center", vec(center))?;
+            table.set("angles", Angle3::new(angles[0], angles[1], angles[2]))?;
+            table.set("group", volume.group())?;
+            table.set("flags", volume.flags())?;
+
+            Ok(Some(table))
+        },
+    );
+
+    let ents_access = access.clone();
+    let anims_access = anim_access.clone();
+    add_native(
+        lua,
+        &native,
+        "set_bone_volume",
+        move |_, (raw, bone, spec): (u32, u16, Option<Table>)| {
+            let list = entities(&ents_access)?;
+            let bank = anims(&anims_access)?;
+            let entity = list.get(EntityHandle(raw)).ok_or_else(|| invalid(raw))?;
+            let mesh = entity.base().anim.mesh;
+            let volume = match spec {
+                Some(spec) => Some(volume_from_table(&spec)?),
+                None => None,
+            };
+
+            Ok(bank.set_bone_volume(mesh, bone, volume))
+        },
+    );
 
     let ents_access = access.clone();
     let anims_access = anim_access.clone();

@@ -1284,6 +1284,7 @@ fn build_bones(
             inverse_bind: pose::IDENTITY,
             local_pos: nodes[node_idx].translation,
             local_rot: nodes[node_idx].rotation,
+            volume: None,
         });
         idx += 1;
     }

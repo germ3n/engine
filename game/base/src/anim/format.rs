@@ -3,8 +3,58 @@ use crate::anim::pose::{ClipEvent, ClipSet, Sequence, Track};
 pub const MESH_MAGIC: &[u8; 4] = b"EMDL";
 pub const CLIP_MAGIC: &[u8; 4] = b"EANM";
 pub const VERSION: u32 = 1;
+pub const MESH_VERSION: u32 = 2;
+pub const SURF_HITBOX: u32 = 1 << 0;
+pub const SURF_SOLID: u32 = 1 << 1;
+pub const SURF_TRIGGER: u32 = 1 << 2;
+pub const MASK_ALL: u32 = u32::MAX;
+pub const SURF_BRUSH: u32 = 1 << 3;
+pub const SURF_VOXEL: u32 = 1 << 4;
+pub const SURF_WORLD: u32 = SURF_BRUSH | SURF_VOXEL;
+pub const MASK_SHOT: u32 = SURF_HITBOX | SURF_SOLID | SURF_WORLD;
 pub const MAX_BONES: usize = 128;
 pub const MAX_NAME: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hitbox {
+    pub half: [f32; 3],
+    pub center: [f32; 3],
+    pub rot: [f32; 4],
+    pub group: u8,
+    pub flags: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Capsule {
+    pub radius: f32,
+    pub half_len: f32,
+    pub center: [f32; 3],
+    pub rot: [f32; 4],
+    pub group: u8,
+    pub flags: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BoneVolume {
+    Capsule(Capsule),
+    Hitbox(Hitbox),
+}
+
+impl BoneVolume {
+    pub fn group(&self) -> u8 {
+        match self {
+            BoneVolume::Capsule(capsule) => capsule.group,
+            BoneVolume::Hitbox(hitbox) => hitbox.group,
+        }
+    }
+
+    pub fn flags(&self) -> u32 {
+        match self {
+            BoneVolume::Capsule(capsule) => capsule.flags,
+            BoneVolume::Hitbox(hitbox) => hitbox.flags,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Bone {
@@ -13,6 +63,7 @@ pub struct Bone {
     pub inverse_bind: [f32; 16],
     pub local_pos: [f32; 3],
     pub local_rot: [f32; 4],
+    pub volume: Option<BoneVolume>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +128,43 @@ impl<'a> Cursor<'a> {
         Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
+    fn volume(&mut self) -> Result<Option<BoneVolume>, String> {
+        let tag = self.u8()?;
+
+        if tag == 0 {
+            return Ok(None);
+        }
+
+        let (half, radius, half_len) = match tag {
+            1 => ([self.f32()?, self.f32()?, self.f32()?], 0.0, 0.0),
+            2 => ([0.0; 3], self.f32()?, self.f32()?),
+            _ => return Err("bone volume".to_string()),
+        };
+        let center = [self.f32()?, self.f32()?, self.f32()?];
+        let rot = [self.f32()?, self.f32()?, self.f32()?, self.f32()?];
+        let group = self.u8()?;
+        let flags = self.u32()?;
+
+        if tag == 1 {
+            return Ok(Some(BoneVolume::Hitbox(Hitbox {
+                half,
+                center,
+                rot,
+                group,
+                flags,
+            })));
+        }
+
+        Ok(Some(BoneVolume::Capsule(Capsule {
+            radius,
+            half_len,
+            center,
+            rot,
+            group,
+            flags,
+        })))
+    }
+
     fn name(&mut self) -> Result<String, String> {
         let len = self.u16()? as usize;
 
@@ -104,6 +192,42 @@ fn push_i16(out: &mut Vec<u8>, value: i16) {
 
 fn push_f32(out: &mut Vec<u8>, value: f32) {
     out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_volume(out: &mut Vec<u8>, volume: &Option<BoneVolume>) {
+    let (center, rot, group, flags) = match volume {
+        None => {
+            out.push(0);
+            return;
+        }
+        Some(BoneVolume::Hitbox(hitbox)) => {
+            out.push(1);
+
+            for value in hitbox.half {
+                push_f32(out, value);
+            }
+
+            (hitbox.center, hitbox.rot, hitbox.group, hitbox.flags)
+        }
+        Some(BoneVolume::Capsule(capsule)) => {
+            out.push(2);
+            push_f32(out, capsule.radius);
+            push_f32(out, capsule.half_len);
+
+            (capsule.center, capsule.rot, capsule.group, capsule.flags)
+        }
+    };
+
+    for value in center {
+        push_f32(out, value);
+    }
+
+    for value in rot {
+        push_f32(out, value);
+    }
+
+    out.push(group);
+    push_u32(out, flags);
 }
 
 fn push_name(out: &mut Vec<u8>, name: &str) -> Result<(), String> {
@@ -137,7 +261,7 @@ pub fn write_mesh(mesh: &Mesh) -> Result<Vec<u8>, String> {
 
     let mut out = Vec::new();
     out.extend_from_slice(MESH_MAGIC);
-    push_u32(&mut out, VERSION);
+    push_u32(&mut out, MESH_VERSION);
     push_u16(&mut out, mesh.bones.len() as u16);
 
     for bone in &mesh.bones {
@@ -155,6 +279,8 @@ pub fn write_mesh(mesh: &Mesh) -> Result<Vec<u8>, String> {
         for value in bone.local_rot {
             push_f32(&mut out, value);
         }
+
+        push_volume(&mut out, &bone.volume);
     }
 
     let vertex_count = (mesh.vertices.len() / 16) as u32;
@@ -185,7 +311,9 @@ pub fn read_mesh(bytes: &[u8]) -> Result<Mesh, String> {
         return Err("mesh magic".to_string());
     }
 
-    if cursor.u32()? != VERSION {
+    let version = cursor.u32()?;
+
+    if version != VERSION && version != MESH_VERSION {
         return Err("mesh version".to_string());
     }
 
@@ -230,12 +358,19 @@ pub fn read_mesh(bytes: &[u8]) -> Result<Mesh, String> {
             value_idx += 1;
         }
 
+        let volume = if version >= MESH_VERSION {
+            cursor.volume()?
+        } else {
+            None
+        };
+
         bones.push(Bone {
             name,
             parent,
             inverse_bind,
             local_pos,
             local_rot,
+            volume,
         });
         idx += 1;
     }
@@ -469,4 +604,119 @@ pub fn read_clips(bytes: &[u8]) -> Result<ClipSet, String> {
     }
 
     Ok(ClipSet { bones, sequences })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bone(name: &str, parent: i16, volume: Option<BoneVolume>) -> Bone {
+        Bone {
+            name: name.to_string(),
+            parent,
+            inverse_bind: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            local_pos: [0.0, 1.0, 2.0],
+            local_rot: [0.0, 0.0, 0.0, 1.0],
+            volume,
+        }
+    }
+
+    fn mesh(bones: Vec<Bone>) -> Mesh {
+        Mesh {
+            bones,
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            albedo_w: 1,
+            albedo_h: 1,
+            albedo: vec![255; 4],
+        }
+    }
+
+    #[test]
+    fn mesh_round_trips_bone_volumes() {
+        let hitbox = BoneVolume::Hitbox(Hitbox {
+            half: [1.0, 2.0, 3.0],
+            center: [0.5, 0.25, -0.5],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            group: 7,
+            flags: SURF_HITBOX | SURF_SOLID,
+        });
+        let capsule = BoneVolume::Capsule(Capsule {
+            radius: 4.0,
+            half_len: 2.5,
+            center: [1.0, 2.0, 3.0],
+            rot: [0.0, 0.70710677, 0.0, 0.70710677],
+            group: 1,
+            flags: SURF_TRIGGER,
+        });
+        let source = mesh(vec![
+            bone("root", -1, None),
+            bone("spine", 0, Some(hitbox)),
+            bone("head", 1, Some(capsule)),
+        ]);
+        let bytes = write_mesh(&source).expect("write");
+        let read = read_mesh(&bytes).expect("read");
+
+        assert_eq!(read.bones.len(), 3);
+        assert_eq!(read.bones[0].volume, None);
+        assert_eq!(read.bones[1].volume, Some(hitbox));
+        assert_eq!(read.bones[2].volume, Some(capsule));
+        assert_eq!(read.bones[2].name, "head");
+        assert_eq!(read.bones[2].parent, 1);
+    }
+
+    #[test]
+    fn mesh_reads_v1_without_volumes() {
+        let source = mesh(vec![bone("root", -1, None)]);
+        let mut bytes = write_mesh(&source).expect("write");
+
+        // v1 had no per-bone volume byte; rewrite as v1 by dropping it and fixing the version.
+        bytes[4..8].copy_from_slice(&VERSION.to_le_bytes());
+
+        let name_len = 2 + "root".len();
+        let volume_at = 4 + 4 + 2 + name_len + 2 + (16 + 3 + 4) * 4;
+
+        assert_eq!(bytes[volume_at], 0);
+        bytes.remove(volume_at);
+
+        let read = read_mesh(&bytes).expect("read v1");
+
+        assert_eq!(read.bones.len(), 1);
+        assert_eq!(read.bones[0].volume, None);
+    }
+
+    #[test]
+    fn mesh_rejects_unknown_volume_tag() {
+        let source = mesh(vec![bone("root", -1, None)]);
+        let mut bytes = write_mesh(&source).expect("write");
+        let name_len = 2 + "root".len();
+        let volume_at = 4 + 4 + 2 + name_len + 2 + (16 + 3 + 4) * 4;
+
+        bytes[volume_at] = 9;
+
+        assert!(read_mesh(&bytes).is_err());
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    #[test]
+    fn surf_flags_are_distinct_and_world_combines_both() {
+        let flags = [SURF_HITBOX, SURF_SOLID, SURF_TRIGGER, SURF_BRUSH, SURF_VOXEL];
+
+        for (idx, flag) in flags.iter().enumerate() {
+            assert_eq!(flag.count_ones(), 1);
+
+            for other in &flags[idx + 1..] {
+                assert_eq!(flag & other, 0);
+            }
+        }
+
+        assert_eq!(SURF_WORLD, SURF_BRUSH | SURF_VOXEL);
+        assert_eq!(MASK_SHOT & SURF_WORLD, SURF_WORLD);
+    }
 }

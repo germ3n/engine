@@ -272,6 +272,7 @@ impl ScriptEngine {
             brush_access.clone(),
             voxel_access.clone(),
             entity_access.clone(),
+            anim_access.clone(),
             physics_access.clone(),
             motion_access.clone(),
             Arc::clone(&gen_settings),
@@ -348,8 +349,8 @@ impl ScriptEngine {
         };
 
         if matches!(realm, Realm::Menu) {
-            //crate::script::exec(&engine.lua, "menu.lua", "lua/menu/menu.luac");
-            //crate::script::exec(&engine.lua, "console.lua", "lua/menu/console.luac");
+            crate::script::exec(&engine.lua, "menu.lua", "lua/menu/menu.luac");
+            crate::script::exec(&engine.lua, "console.lua", "lua/menu/console.luac");
         }
 
         engine
