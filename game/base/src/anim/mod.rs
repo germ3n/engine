@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use format::{
-    write_clips, write_mesh, BoneVolume, Capsule, Hitbox, MASK_ALL, MASK_SHOT, SURF_BRUSH, SURF_HITBOX,
+    write_clips, write_mesh, BoneVolume, Capsule, Hitbox, MASK_ALL, MASK_SHOT, SURF_BRUSH, SURF_HITBOX, SURF_PHYSICS,
     SURF_SOLID, SURF_TRIGGER, SURF_VOXEL, SURF_WORLD,
 };
 pub use hit::BoneHit;
@@ -365,6 +365,7 @@ pub struct AnimAssets {
     clip_names: HashMap<String, u32>,
     bone_maps: HashMap<(u32, u32), Vec<u16>>,
     bone_overrides: HashMap<u32, Vec<(u16, BoneOverride)>>,
+    reach_cache: HashMap<(u32, u32), f32>,
     frozen_bones: HashMap<u32, Vec<BoneXform>>,
     dirty_bones: Vec<u32>,
     scratch_pos: Vec<[f32; 3]>,
@@ -388,6 +389,7 @@ impl AnimAssets {
             clip_names: HashMap::new(),
             bone_maps: HashMap::new(),
             bone_overrides: HashMap::new(),
+            reach_cache: HashMap::new(),
             frozen_bones: HashMap::new(),
             dirty_bones: Vec::new(),
             scratch_pos: Vec::new(),
@@ -780,8 +782,73 @@ impl AnimAssets {
         };
 
         slot.volume = volume;
+        self.reach_cache.clear();
 
         true
+    }
+
+    fn has_position_override(&self, entity: u32) -> bool {
+        self.bone_overrides
+            .get(&entity)
+            .is_some_and(|list| list.iter().any(|(_, over)| over.pos.is_some()))
+    }
+
+    fn volume_reach(&mut self, mesh: u32, clips: u32) -> Option<f32> {
+        if let Some(reach) = self.reach_cache.get(&(mesh, clips)) {
+            return Some(*reach);
+        }
+
+        let map = self.bone_map(mesh, clips)?.to_vec();
+        let stored = self.meshes.get(mesh as usize)?;
+        let clip_set = self.clips.get(clips as usize)?;
+        let count = stored.parents.len();
+        let mut step: Vec<f32> = stored.bind_pos.iter().map(|pos| length3(*pos)).collect();
+
+        step.resize(count, 0.0);
+
+        for sequence in &clip_set.sequences {
+            for (track_idx, track) in sequence.tracks.iter().enumerate() {
+                let Some(bone) = map.get(track_idx).copied().filter(|bone| *bone != u16::MAX)
+                else {
+                    continue;
+                };
+                let Some(slot) = step.get_mut(bone as usize) else {
+                    continue;
+                };
+
+                for pos in &track.pos {
+                    *slot = slot.max(length3(*pos));
+                }
+            }
+        }
+
+        let mut chain = vec![0.0f32; count];
+        let mut reach = 0.0f32;
+        let mut idx = 0;
+
+        while idx < count {
+            let parent = stored.parents[idx];
+            let above = if parent >= 0 { chain[parent as usize] } else { 0.0 };
+
+            chain[idx] = above + step[idx];
+
+            if let Some(volume) = stored.mesh.bones[idx].volume {
+                let (center, extent) = match volume {
+                    BoneVolume::Hitbox(hitbox) => (hitbox.center, length3(hitbox.half)),
+                    BoneVolume::Capsule(capsule) => {
+                        (capsule.center, capsule.half_len + capsule.radius)
+                    }
+                };
+
+                reach = reach.max(chain[idx] + length3(center) + extent);
+            }
+
+            idx += 1;
+        }
+
+        self.reach_cache.insert((mesh, clips), reach);
+
+        Some(reach)
     }
 
     pub fn trace_bones(
@@ -816,7 +883,20 @@ impl AnimAssets {
             return None;
         }
 
-        if !self.frozen_bones.contains_key(&entity)
+        let frozen = self.frozen_bones.contains_key(&entity);
+
+        // Sampling the pose is the expensive part, so reject entities the segment cannot reach.
+        // Frozen (lag-compensated) poses are already sampled; position overrides can move bones
+        // arbitrarily, so those entities skip the cull.
+        if !frozen && !self.has_position_override(entity) {
+            let reach = self.volume_reach(playback.mesh, playback.clips)?;
+
+            if segment_point_distance(start, end, position) > reach * 1.05 + 1.0 {
+                return None;
+            }
+        }
+
+        if !frozen
             && !self.sample_palette(playback.mesh, playback.clips, playback, time, dt, entity)
         {
             return None;
@@ -1372,6 +1452,23 @@ fn gesture_ramp(playback: &AnimPlayback, time: f64, dt: f64) -> f32 {
     (elapsed / 0.1).clamp(0.0, 1.0)
 }
 
+fn length3(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+fn segment_point_distance(start: [f32; 3], end: [f32; 3], point: [f32; 3]) -> f32 {
+    let seg = [end[0] - start[0], end[1] - start[1], end[2] - start[2]];
+    let rel = [point[0] - start[0], point[1] - start[1], point[2] - start[2]];
+    let len_sq = seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2];
+    let t = if len_sq > 0.0 {
+        ((rel[0] * seg[0] + rel[1] * seg[1] + rel[2] * seg[2]) / len_sq).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    length3([rel[0] - seg[0] * t, rel[1] - seg[1] * t, rel[2] - seg[2] * t])
+}
+
 fn sanitize_rate(rate: f32) -> f32 {
     if rate.is_finite() && rate >= 0.0 {
         rate.min(8.0)
@@ -1679,5 +1776,130 @@ mod tests {
         assert!(assets.bone_volume(playback.mesh, 0).is_some());
         assert!(assets.set_bone_volume(playback.mesh, 0, None));
         assert!(assets.bone_volume(playback.mesh, 0).is_none());
+    }
+
+    #[test]
+    fn segment_point_distance_clamps_to_the_segment() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [10.0, 0.0, 0.0];
+
+        assert!((segment_point_distance(a, b, [5.0, 3.0, 0.0]) - 3.0).abs() < 1e-5);
+        assert!((segment_point_distance(a, b, [-4.0, 3.0, 0.0]) - 5.0).abs() < 1e-5);
+        assert!((segment_point_distance(a, b, [14.0, 3.0, 0.0]) - 5.0).abs() < 1e-5);
+        assert!((segment_point_distance(a, a, [3.0, 4.0, 0.0]) - 5.0).abs() < 1e-5);
+    }
+
+    fn small_volume() -> Option<BoneVolume> {
+        Some(BoneVolume::Hitbox(Hitbox {
+            half: [1.0, 1.0, 1.0],
+            center: [0.0; 3],
+            rot: [0.0, 0.0, 0.0, 1.0],
+            group: 1,
+            flags: SURF_HITBOX,
+        }))
+    }
+
+    #[test]
+    fn volume_reach_covers_every_pose_and_resets_on_change() {
+        let (mut assets, playback) = trace_setup();
+
+        assert!(assets.set_bone_volume(playback.mesh, 0, None));
+        assert!(assets.set_bone_volume(playback.mesh, 1, None));
+
+        let mut bone = 0;
+        let count = assets.bone_count(playback.mesh);
+
+        while bone < count {
+            assert!(assets.set_bone_volume(playback.mesh, bone, small_volume()));
+
+            let reach = assets.volume_reach(playback.mesh, playback.clips).expect("reach");
+            let mut tick = 0.0;
+
+            while tick < 120.0 {
+                let pose = assets.bone_pose(
+                    7, &playback, bone, [0.0; 3], 0.0, 0.0, 0.0, tick, 1.0 / 60.0,
+                );
+                let (pos, _) = pose.expect("pose");
+
+                assert!(length3(pos) + 1.8 <= reach * 1.05 + 1.0, "bone {bone} tick {tick}");
+                tick += 7.0;
+            }
+
+            assert!(assets.set_bone_volume(playback.mesh, bone, None));
+            bone += 1;
+        }
+    }
+
+    #[test]
+    fn cull_skips_far_entities_but_keeps_every_near_hit() {
+        let (mut assets, playback) = trace_setup();
+        let count = assets.bone_count(playback.mesh);
+
+        assert!(assets.set_bone_volume(playback.mesh, 0, None));
+        assert!(assets.set_bone_volume(playback.mesh, 1, None));
+
+        let mut bone = 0;
+
+        while bone < count {
+            assert!(assets.set_bone_volume(playback.mesh, bone, small_volume()));
+
+            let mut tick = 0.0;
+
+            while tick < 90.0 {
+                let (pos, _) = assets
+                    .bone_pose(7, &playback, bone, [0.0; 3], 0.0, 0.0, 0.0, tick, 1.0 / 60.0)
+                    .expect("pose");
+                let hit = assets.trace_bones(
+                    7,
+                    &playback,
+                    [0.0; 3],
+                    [0.0; 3],
+                    tick,
+                    1.0 / 60.0,
+                    [pos[0] - 50.0, pos[1], pos[2]],
+                    [pos[0] + 50.0, pos[1], pos[2]],
+                    MASK_ALL,
+                    &HitAll,
+                );
+
+                assert_eq!(hit.map(|hit| hit.bone), Some(bone), "bone {bone} tick {tick}");
+                tick += 9.0;
+            }
+
+            assert!(assets.set_bone_volume(playback.mesh, bone, None));
+            bone += 1;
+        }
+
+        assert!(assets.set_bone_volume(playback.mesh, 0, small_volume()));
+
+        let far = assets.trace_bones(
+            7,
+            &playback,
+            [0.0; 3],
+            [0.0; 3],
+            0.0,
+            1.0 / 60.0,
+            [100_000.0, 0.0, 0.0],
+            [100_050.0, 0.0, 0.0],
+            MASK_ALL,
+            &HitAll,
+        );
+
+        assert!(far.is_none());
+    }
+
+    #[test]
+    fn cull_is_skipped_for_position_overrides() {
+        let (mut assets, playback) = trace_setup();
+
+        assert!(assets.set_bone_volume(playback.mesh, 0, None));
+        assert!(assets.set_bone_volume(playback.mesh, 1, None));
+        assert!(assets.set_bone_volume(playback.mesh, 2, small_volume()));
+
+        let reach = assets.volume_reach(playback.mesh, playback.clips).expect("reach");
+
+        assets.bone_slot(7, 2).pos = Some([reach * 20.0, 0.0, 0.0]);
+
+        assert!(assets.has_position_override(7));
     }
 }

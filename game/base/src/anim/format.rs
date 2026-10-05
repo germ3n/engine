@@ -11,7 +11,8 @@ pub const MASK_ALL: u32 = u32::MAX;
 pub const SURF_BRUSH: u32 = 1 << 3;
 pub const SURF_VOXEL: u32 = 1 << 4;
 pub const SURF_WORLD: u32 = SURF_BRUSH | SURF_VOXEL;
-pub const MASK_SHOT: u32 = SURF_HITBOX | SURF_SOLID | SURF_WORLD;
+pub const SURF_PHYSICS: u32 = 1 << 5;
+pub const MASK_SHOT: u32 = SURF_HITBOX | SURF_SOLID | SURF_WORLD | SURF_PHYSICS;
 pub const MAX_BONES: usize = 128;
 pub const MAX_NAME: usize = 64;
 
@@ -706,7 +707,7 @@ mod flag_tests {
 
     #[test]
     fn surf_flags_are_distinct_and_world_combines_both() {
-        let flags = [SURF_HITBOX, SURF_SOLID, SURF_TRIGGER, SURF_BRUSH, SURF_VOXEL];
+        let flags = [SURF_HITBOX, SURF_SOLID, SURF_TRIGGER, SURF_BRUSH, SURF_VOXEL, SURF_PHYSICS];
 
         for (idx, flag) in flags.iter().enumerate() {
             assert_eq!(flag.count_ones(), 1);

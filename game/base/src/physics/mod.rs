@@ -6,10 +6,11 @@ use crate::script::libs::angle3::Angle3;
 use crate::script::libs::vector3::Vector3;
 use crate::world::{BrushMap, VoxelWorld};
 use rapier3d::math::{Pose, Rotation, Vector};
+use rapier3d::parry::query::{Ray, RayCast};
 use rapier3d::prelude::{
-    BroadPhaseBvh, CCDSolver, ColliderBuilder, ColliderHandle, ColliderSet, ImpulseJointSet,
-    IntegrationParameters, IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline,
-    RigidBodyBuilder, RigidBodyHandle, RigidBodySet, SoftBodySet,
+    BroadPhaseBvh, CCDSolver, Collider, ColliderBuilder, ColliderHandle, ColliderSet,
+    ImpulseJointSet, IntegrationParameters, IslandManager, MultibodyJointSet, NarrowPhase,
+    PhysicsPipeline, QueryFilter, RigidBodyBuilder, RigidBodyHandle, RigidBodySet, SoftBodySet,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -60,6 +61,41 @@ struct Prop {
     collider: Option<ColliderHandle>,
 }
 
+const TRACEABLE: u128 = 1 << 63;
+
+pub fn trace_owner(entity: EntityHandle, bone: Option<u16>) -> u128 {
+    let bone_bits = match bone {
+        Some(bone) => (1u128 << 48) | (u128::from(bone) << 32),
+        None => 0,
+    };
+
+    TRACEABLE | bone_bits | u128::from(entity.0)
+}
+
+fn owner_of(user_data: u128) -> Option<(EntityHandle, Option<u16>)> {
+    if user_data & TRACEABLE == 0 {
+        return None;
+    }
+
+    let entity = EntityHandle(user_data as u32);
+    let bone = if user_data & (1 << 48) != 0 {
+        Some((user_data >> 32) as u16)
+    } else {
+        None
+    };
+
+    Some((entity, bone))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PhysicsHit {
+    pub entity: EntityHandle,
+    pub bone: Option<u16>,
+    pub distance: f64,
+    pub position: Vector3,
+    pub normal: Vector3,
+}
+
 pub struct PhysicsWorld {
     pipeline: PhysicsPipeline,
     islands: IslandManager,
@@ -79,6 +115,7 @@ pub struct PhysicsWorld {
     brush_revision: u64,
     voxel_revision: u64,
     voxel_collider_at: Option<Instant>,
+    teleported: Vec<ColliderHandle>,
 }
 
 impl PhysicsWorld {
@@ -102,6 +139,7 @@ impl PhysicsWorld {
             brush_revision: u64::MAX,
             voxel_revision: u64::MAX,
             voxel_collider_at: None,
+            teleported: Vec::new(),
         }
     }
 
@@ -139,6 +177,110 @@ impl PhysicsWorld {
         );
 
         true
+    }
+
+    pub fn trace_colliders(
+        &self,
+        start: Vector3,
+        end: Vector3,
+        should_hit: &dyn Fn(EntityHandle) -> bool,
+    ) -> Option<PhysicsHit> {
+        let from = self.to_sim(start);
+        let delta = self.to_sim(end) - from;
+        let length = delta.length();
+
+        if !length.is_finite() || length < 1e-6 {
+            return None;
+        }
+
+        let ray = Ray::new(from, delta / length);
+        // Teleported colliders are stale in the BVH until the next step, so they are tested
+        // directly at their body's current pose below.
+        let predicate = |handle: ColliderHandle, collider: &Collider| {
+            !self.teleported.contains(&handle)
+                && owner_of(collider.user_data).is_some_and(|(entity, _)| should_hit(entity))
+        };
+        let filter = QueryFilter {
+            predicate: Some(&predicate),
+            ..QueryFilter::default()
+        };
+        let pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.bodies,
+            &self.colliders,
+            filter,
+        );
+        let mut best = pipeline
+            .cast_ray_and_get_normal(&ray, length, true)
+            .and_then(|(handle, hit)| {
+                let (entity, bone) = owner_of(self.colliders.get(handle)?.user_data)?;
+
+                Some((entity, bone, hit))
+            });
+
+        for handle in &self.teleported {
+            let Some(collider) = self.colliders.get(*handle) else {
+                continue;
+            };
+            let Some((entity, bone)) = owner_of(collider.user_data) else {
+                continue;
+            };
+            let Some(body) = collider.parent().and_then(|id| self.bodies.get(id)) else {
+                continue;
+            };
+
+            if !should_hit(entity) {
+                continue;
+            }
+
+            let local = collider.position_wrt_parent().copied().unwrap_or(Pose::IDENTITY);
+            let pose = *body.position() * local;
+            let hit = collider
+                .shape()
+                .cast_ray_and_get_normal(&pose, &ray, length, true);
+
+            if let Some(hit) = hit {
+                if best.as_ref().map_or(true, |(_, _, cur)| hit.time_of_impact < cur.time_of_impact) {
+                    best = Some((entity, bone, hit));
+                }
+            }
+        }
+
+        let (entity, bone, hit) = best?;
+        let normal = hit.normal;
+
+        Some(PhysicsHit {
+            entity,
+            bone,
+            distance: f64::from(hit.time_of_impact),
+            position: self.from_sim(ray.point_at(hit.time_of_impact)),
+            normal: Vector3::new(
+                f64::from(normal.x),
+                f64::from(normal.y),
+                f64::from(normal.z),
+            ),
+        })
+    }
+
+    #[cfg(test)]
+    pub fn add_test_prop(&mut self, handle: EntityHandle, position: [f64; 3]) {
+        self.props.insert(
+            handle,
+            Prop {
+                center: [0.0; 3],
+                half: [1.0, 1.0, 1.0],
+                mass: 1.0,
+                body: None,
+                collider: None,
+            },
+        );
+        self.wake_prop(
+            handle,
+            Vector3::new(position[0], position[1], position[2]),
+            Angle3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        );
+        self.integrate(1.0 / 60.0, 0.0);
     }
 
     pub fn set_mass(&mut self, handle: EntityHandle, mass: f32) -> bool {
@@ -234,6 +376,12 @@ impl PhysicsWorld {
         };
 
         body.set_translation(translation, true);
+
+        if let Some(collider) = prop.collider {
+            if !self.teleported.contains(&collider) {
+                self.teleported.push(collider);
+            }
+        }
     }
 
     pub fn teleport_angles(&mut self, handle: EntityHandle, angles: Angle3) {
@@ -631,6 +779,7 @@ impl PhysicsWorld {
             &(),
             &(),
         );
+        self.teleported.clear();
     }
 
     fn sync_props(&mut self, entities: &mut EntityList) {
@@ -691,7 +840,8 @@ impl PhysicsWorld {
             body,
             ColliderBuilder::cuboid(prop.half[0], prop.half[1], prop.half[2])
                 .translation(Vector::new(prop.center[0], prop.center[1], prop.center[2]))
-                .mass(prop.mass),
+                .mass(prop.mass)
+                .user_data(trace_owner(handle, None)),
         );
 
         if let Some(stored) = self.props.get_mut(&handle) {
@@ -1178,5 +1328,145 @@ mod tests {
 
         assert!((pos.x - 1000.0).abs() < 0.01, "x {}", pos.x);
         assert!((pos.z - 5.0).abs() < 0.01, "z {}", pos.z);
+    }
+}
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+
+    fn world_with_prop(handle: EntityHandle) -> PhysicsWorld {
+        let mut world = PhysicsWorld::new();
+
+        world.add_test_prop(handle, [10.0, 0.0, 0.0]);
+
+        world
+    }
+
+    #[test]
+    fn trace_colliders_hits_an_awake_box() {
+        let handle = EntityHandle::new(3, 1);
+        let world = world_with_prop(handle);
+        let hit = world
+            .trace_colliders(Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0), &|_| true)
+            .expect("hit");
+
+        assert_eq!(hit.entity, handle);
+        assert_eq!(hit.bone, None);
+        assert!((hit.distance - 9.0).abs() < 1e-3);
+        assert!((hit.position.x - 9.0).abs() < 1e-3);
+        assert!((hit.normal.x + 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn trace_colliders_misses_short_off_axis_and_filtered() {
+        let handle = EntityHandle::new(3, 1);
+        let world = world_with_prop(handle);
+        let origin = Vector3::new(0.0, 0.0, 0.0);
+
+        assert!(world.trace_colliders(origin, Vector3::new(5.0, 0.0, 0.0), &|_| true).is_none());
+        assert!(world
+            .trace_colliders(Vector3::new(0.0, 5.0, 0.0), Vector3::new(20.0, 5.0, 0.0), &|_| true)
+            .is_none());
+        assert!(world.trace_colliders(origin, Vector3::new(20.0, 0.0, 0.0), &|_| false).is_none());
+        assert!(world.trace_colliders(origin, origin, &|_| true).is_none());
+    }
+
+    #[test]
+    fn trace_colliders_ignores_untagged_colliders() {
+        let mut world = PhysicsWorld::new();
+        let body = world
+            .bodies
+            .insert(RigidBodyBuilder::fixed().translation(Vector::new(10.0, 0.0, 0.0)).build());
+
+        world.attach(body, ColliderBuilder::cuboid(1.0, 1.0, 1.0));
+        world.integrate(1.0 / 60.0, 0.0);
+
+        assert!(world
+            .trace_colliders(Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0), &|_| true)
+            .is_none());
+    }
+
+    #[test]
+    fn trace_colliders_reports_the_bone_of_ragdoll_limbs() {
+        let mut world = PhysicsWorld::new();
+        let entity = EntityHandle::new(9, 2);
+        let near = world
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(10.0, 0.0, 0.0)).build());
+        let far = world
+            .bodies
+            .insert(RigidBodyBuilder::dynamic().translation(Vector::new(20.0, 0.0, 0.0)).build());
+
+        world.attach(
+            near,
+            ColliderBuilder::cuboid(1.0, 1.0, 1.0).user_data(trace_owner(entity, Some(4))),
+        );
+        world.attach(
+            far,
+            ColliderBuilder::cuboid(1.0, 1.0, 1.0).user_data(trace_owner(entity, Some(7))),
+        );
+        world.integrate(1.0 / 60.0, 0.0);
+
+        let hit = world
+            .trace_colliders(Vector3::new(0.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0), &|_| true)
+            .expect("hit");
+
+        assert_eq!(hit.entity, entity);
+        assert_eq!(hit.bone, Some(4));
+        assert!((hit.distance - 9.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn trace_colliders_follow_a_mid_tick_teleport() {
+        let handle = EntityHandle::new(3, 1);
+        let mut world = world_with_prop(handle);
+        let along = |world: &PhysicsWorld, y: f64| {
+            world.trace_colliders(Vector3::new(0.0, y, 0.0), Vector3::new(40.0, y, 0.0), &|_| true)
+        };
+
+        assert!(along(&world, 0.0).is_some());
+
+        // Move the prop from x=10,y=0 to x=30,y=8 without stepping.
+        world.teleport_position(handle, 30.0, 8.0, 0.0);
+
+        assert!(along(&world, 0.0).is_none());
+        assert!((along(&world, 8.0).expect("moved").distance - 29.0).abs() < 1e-2);
+
+        // Stepping folds the move into the BVH and must not change the answer.
+        world.integrate(1.0 / 60.0, 0.0);
+
+        assert!(world.teleported.is_empty());
+        assert!(along(&world, 0.0).is_none());
+        assert!((along(&world, 8.0).expect("moved").distance - 29.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn teleported_prop_still_respects_filter_and_nearest() {
+        let near = EntityHandle::new(3, 1);
+        let far = EntityHandle::new(4, 1);
+        let mut world = PhysicsWorld::new();
+
+        world.add_test_prop(near, [10.0, 0.0, 0.0]);
+        world.add_test_prop(far, [30.0, 0.0, 0.0]);
+        world.teleport_position(near, 20.0, 0.0, 0.0);
+
+        let from = Vector3::new(0.0, 0.0, 0.0);
+        let to = Vector3::new(40.0, 0.0, 0.0);
+
+        // Teleported prop (x=20) is now between the origin and the other prop (x=30).
+        assert_eq!(world.trace_colliders(from, to, &|_| true).expect("hit").entity, near);
+        assert_eq!(world.trace_colliders(from, to, &|e| e != near).expect("hit").entity, far);
+        assert!(world.trace_colliders(from, to, &|_| false).is_none());
+    }
+
+    #[test]
+    fn trace_owner_round_trips() {
+        let entity = EntityHandle::new(77, 5);
+
+        assert_eq!(owner_of(trace_owner(entity, None)), Some((entity, None)));
+        assert_eq!(owner_of(trace_owner(entity, Some(0))), Some((entity, Some(0))));
+        assert_eq!(owner_of(trace_owner(entity, Some(u16::MAX))), Some((entity, Some(u16::MAX))));
+        assert_eq!(owner_of(0), None);
     }
 }

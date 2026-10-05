@@ -163,8 +163,6 @@ fn ray_capsule(
     Some((t, normal))
 }
 
-/// Traces a world-space ray (`dir` unit length, `max` distance) against one bone volume.
-/// `bone_world` is the bone's world matrix for the current (or rewound) pose.
 pub fn trace_volume(
     bone: u16,
     volume: &BoneVolume,
