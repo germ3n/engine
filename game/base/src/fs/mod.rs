@@ -108,27 +108,6 @@ impl Fs {
             names.join(", ")
         );
 
-        for path in [
-            "lua/libs/hook.luac",
-            "lua/libs/net.luac",
-            "lua/libs/vector3.luac",
-            "lua/libs/angle3.luac",
-            "lua/libs/ents.luac",
-            "lua/libs/scripted_ents.luac",
-            "lua/libs/gui.luac",
-            "lua/menu/menu.luac",
-            "shaders/mesh.wgsl",
-            "shaders/color.wgsl",
-            "shaders/text.wgsl",
-        ] {
-            match fs.resolve(path) {
-                Some((mount, size)) => {
-                    log::info!("[fs]   {path} <- {mount} ({size} bytes)")
-                }
-                None => log::warn!("[fs]   {path} missing"),
-            }
-        }
-
         vpk::mount_env();
 
         return Ok(fs);

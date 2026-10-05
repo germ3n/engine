@@ -232,13 +232,6 @@ pub fn client_loop(
     let (host, mut held_window) = client_surface();
     let binds = game.binds.clone();
 
-    crate::script::exec(&game.script_engine.lua, "menu.lua", "lua/menu/menu.luac");
-    crate::script::exec(
-        &game.script_engine.lua,
-        "console.lua",
-        "lua/menu/console.luac",
-    );
-
     let mut last_frame = std::time::Instant::now();
     let mut fps_sample = std::time::Instant::now();
     let mut fps_frames = 0u32;
@@ -276,7 +269,7 @@ pub fn client_loop(
 
     host.run(move |event, host, control| {
         control.poll();
-        game.script_engine.pointer.lock().unwrap().captured = captured;
+        game.each_pointer(|pointer| pointer.captured = captured);
 
         #[cfg(target_os = "android")]
         {
@@ -317,33 +310,29 @@ pub fn client_loop(
                 }
                 WindowEvent::Focused(focused) => {
                     if !focused {
-                        game.script_engine.pointer.lock().unwrap().release_all();
+                        game.each_pointer(|pointer| pointer.release_all());
                         keys.clear();
                         mouse.clear();
                     }
                 }
                 WindowEvent::ModifiersChanged(mods) => {
-                    let mut pointer = game.script_engine.pointer.lock().unwrap();
-                    pointer.shift = mods.shift;
-                    pointer.control = mods.control;
-                    pointer.alt = mods.alt;
-                    pointer.super_key = mods.super_key;
+                    game.each_pointer(|pointer| {
+                        pointer.shift = mods.shift;
+                        pointer.control = mods.control;
+                        pointer.alt = mods.alt;
+                        pointer.super_key = mods.super_key;
+                    });
                 }
                 WindowEvent::KeyboardInput(input) => {
                     if let Some(code) = input.key_code {
                         let pressed = input.state == ElementState::Pressed;
-                        game.script_engine
-                            .pointer
-                            .lock()
-                            .unwrap()
-                            .set_key(code, pressed);
+                        game.each_pointer(|pointer| pointer.set_key(code, pressed));
 
                         let mut consumed = false;
 
                         if pressed {
                             let name = crate::script::libs::input::key_label(code);
-                            let handled: Option<bool> =
-                                game.run_hook("GuiKeyPressed", (name, input.repeat));
+                            let handled = game.run_gui_hook("GuiKeyPressed", (name, input.repeat));
                             consumed = handled == Some(true);
                         }
 
@@ -374,17 +363,18 @@ pub fn client_loop(
                     }
                 }
                 WindowEvent::TextInput { text } => {
-                    game.script_engine.pointer.lock().unwrap().push_text(&text);
-                    let _: Option<bool> = game.run_hook("GuiText", text);
+                    game.each_pointer(|pointer| pointer.push_text(&text));
+                    let _ = game.run_gui_hook("GuiText", text);
                 }
                 WindowEvent::MouseWheel { delta } => {
                     let (x, y) = match delta {
                         MouseScrollDelta::LineDelta(x, y) => (x as f64, y as f64),
                         MouseScrollDelta::PixelDelta(x, y) => (x, y),
                     };
-                    let mut pointer = game.script_engine.pointer.lock().unwrap();
-                    pointer.wheel_x += x;
-                    pointer.wheel_y += y;
+                    game.each_pointer(|pointer| {
+                        pointer.wheel_x += x;
+                        pointer.wheel_y += y;
+                    });
 
                     if let Some(play) = play.as_mut() {
                         if play.cam == CamMode::Orbit {
@@ -393,16 +383,14 @@ pub fn client_loop(
                     }
                 }
                 WindowEvent::CursorMoved { x, y } => {
-                    let mut pointer = game.script_engine.pointer.lock().unwrap();
-                    pointer.x = x;
-                    pointer.y = y;
+                    game.each_pointer(|pointer| {
+                        pointer.x = x;
+                        pointer.y = y;
+                    });
                 }
                 WindowEvent::MouseInput { state, button } => {
                     let down = state == ElementState::Pressed;
-                    {
-                        let mut pointer = game.script_engine.pointer.lock().unwrap();
-                        pointer.set_button(button, down);
-                    }
+                    game.each_pointer(|pointer| pointer.set_button(button, down));
 
                     if down {
                         let (x, y) = {
@@ -410,8 +398,7 @@ pub fn client_loop(
                             (pointer.x, pointer.y)
                         };
                         let index = crate::script::libs::input::button_index(button);
-                        let handled: Option<bool> =
-                            game.run_hook("GuiMousePressed", (index, x, y));
+                        let handled = game.run_gui_hook("GuiMousePressed", (index, x, y));
 
                         if handled != Some(true) {
                             if captured {
@@ -423,7 +410,7 @@ pub fn client_loop(
                             }
 
                             if button == MouseButton::Left {
-                                let blocked = game.script_engine.pointer.lock().unwrap().block_look;
+                                let blocked = game.look_blocked();
 
                                 if !blocked {
                                     captured = true;
@@ -615,6 +602,11 @@ pub fn client_loop(
 
                     game.script_engine.flush_webviews();
                     let _: () = game.run_hook("MenuPaint", ());
+
+                    if let Some(menu) = &game.menu {
+                        menu.flush_webviews();
+                        let _: Option<()> = game.run_menu_hook("MenuPaint", ());
+                    }
 
                     let draw_commands = {
                         let mut q = game.script_engine.render_queue.lock().unwrap();
@@ -843,11 +835,11 @@ pub fn client_loop(
                     );
                     client_window.render_text();
                     client_window.present();
-                    game.script_engine.pointer.lock().unwrap().end_frame();
+                    game.each_pointer(|pointer| pointer.end_frame());
                 }
             },
             Event::Device(DeviceEvent::MouseMotion { delta }) => {
-                let blocked = game.script_engine.pointer.lock().unwrap().block_look;
+                let blocked = game.look_blocked();
 
                 if blocked {
                     if captured {
@@ -877,7 +869,7 @@ pub fn client_loop(
                 }
             }
             Event::AboutToWait => {
-                let blocked = game.script_engine.pointer.lock().unwrap().block_look;
+                let blocked = game.look_blocked();
 
                 if blocked && captured {
                     captured = false;

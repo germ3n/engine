@@ -44,6 +44,7 @@ pub struct GameState<In, Out> {
     pub network_receiver: Receiver<In>,
     pub network_sender: SyncSender<NetSend<Out>>,
     pub script_engine: ScriptEngine,
+    pub menu: Option<ScriptEngine>,
     #[allow(dead_code)]
     pub fs: Arc<Fs>,
     pub cur_time: f64,
@@ -160,6 +161,7 @@ impl<In, Out> GameState<In, Out> {
             network_receiver,
             network_sender,
             script_engine,
+            menu: None,
             fs,
             cur_time: 0.0,
             frame_time: 0.0,
@@ -218,6 +220,69 @@ impl<In, Out> GameState<In, Out> {
         }
 
         f(&self.script_engine)
+    }
+
+    pub fn enable_menu(&mut self) {
+        if !matches!(self.realm, Realm::Client) {
+            log::warn!("[menu] the menu state only runs on the client");
+
+            return;
+        }
+
+        if self.menu.is_some() {
+            return;
+        }
+
+        let menu = ScriptEngine::with_render_queue(
+            Realm::Menu,
+            self.tick_interval,
+            self.cvars.clone(),
+            self.binds.clone(),
+            self.pads.clone(),
+            std::ptr::null_mut(),
+            Some(self.script_engine.render_queue.clone()),
+        );
+        self.menu = Some(menu);
+        log::info!("[menu] state started");
+    }
+
+    pub fn run_menu_hook<A, R>(&self, hook_name: &str, args: A) -> Option<R>
+    where
+        A: mlua::IntoLuaMulti,
+        R: mlua::FromLuaMulti,
+    {
+        let menu = self.menu.as_ref()?;
+
+        Some(menu.run_hook(hook_name, self.cur_time, self.frame_time, self.tick_count, args))
+    }
+
+    pub fn run_gui_hook<A>(&mut self, hook_name: &str, args: A) -> Option<bool>
+    where
+        A: mlua::IntoLuaMulti + Clone,
+    {
+        let handled: Option<Option<bool>> = self.run_menu_hook(hook_name, args.clone());
+
+        if handled == Some(Some(true)) {
+            return Some(true);
+        }
+
+        self.run_hook(hook_name, args)
+    }
+
+    pub fn each_pointer(&self, mut f: impl FnMut(&mut crate::script::libs::input::Pointer)) {
+        f(&mut self.script_engine.pointer.lock().unwrap());
+
+        if let Some(menu) = &self.menu {
+            f(&mut menu.pointer.lock().unwrap());
+        }
+    }
+
+    pub fn look_blocked(&self) -> bool {
+        self.script_engine.pointer.lock().unwrap().block_look
+            || self
+                .menu
+                .as_ref()
+                .is_some_and(|menu| menu.pointer.lock().unwrap().block_look)
     }
 
     pub fn run_hook<A, R>(&mut self, hook_name: &str, args: A) -> R

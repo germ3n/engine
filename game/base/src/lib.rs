@@ -198,6 +198,7 @@ pub fn run() {
         );
         let map_name = cmdargs.map.clone().unwrap_or_else(|| "hall".to_string());
         client_game.map_name = map_name.clone();
+        client_game.enable_menu();
 
         if let Err(err) = client_game.brush_world.load_file(&map_name) {
             log::warn!("[map] {err}");

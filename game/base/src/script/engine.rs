@@ -157,7 +157,7 @@ pub struct ScriptEngine {
     pub lua: Lua,
     pub realm: Realm,
     pub hook_caller: RegistryKey,
-    pub net_caller: RegistryKey,
+    pub net_caller: Option<RegistryKey>,
     #[allow(dead_code)]
     pub tick_interval: f64,
     pub render_queue: RenderQueue,
@@ -184,6 +184,18 @@ impl ScriptEngine {
         binds: Arc<Mutex<Binds>>,
         pads: Arc<Mutex<PadCache>>,
         sound: *mut crate::sound::SoundWorld,
+    ) -> Self {
+        Self::with_render_queue(realm, tick_interval, cvars, binds, pads, sound, None)
+    }
+
+    pub fn with_render_queue(
+        realm: Realm,
+        tick_interval: f64,
+        cvars: Arc<HashMap<String, Arc<ConVar>>>,
+        binds: Arc<Mutex<Binds>>,
+        pads: Arc<Mutex<PadCache>>,
+        sound: *mut crate::sound::SoundWorld,
+        shared_queue: Option<RenderQueue>,
     ) -> Self {
         let (usermsg_sender, usermsg_receiver) = std::sync::mpsc::channel();
         let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
@@ -218,12 +230,14 @@ impl ScriptEngine {
             register_usercmd_lib(&lua);
         }
 
-        let render_queue = Arc::new(Mutex::new(RenderState {
-            commands: Vec::new(),
-            book: crate::ui::gfx::Book::new(),
-            width: 0,
-            height: 0,
-        }));
+        let render_queue = shared_queue.unwrap_or_else(|| {
+            Arc::new(Mutex::new(RenderState {
+                commands: Vec::new(),
+                book: crate::ui::gfx::Book::new(),
+                width: 0,
+                height: 0,
+            }))
+        });
         let pointer = Arc::new(Mutex::new(crate::script::libs::input::Pointer::new()));
         let webviews = if matches!(realm, Realm::Server) {
             None
@@ -302,11 +316,15 @@ impl ScriptEngine {
         let hook_call_fn: mlua::Function = hook_table.get("call").unwrap();
         let hook_caller = lua.create_registry_value(hook_call_fn).unwrap();
 
-        let net_table: mlua::Table = lua.globals().get("net").unwrap();
-        let net_call_fn: mlua::Function = net_table.get("call").unwrap();
-        let net_caller = lua.create_registry_value(net_call_fn).unwrap();
+        let net_caller = if !matches!(realm, Realm::Menu) {
+            let net_table: mlua::Table = lua.globals().get("net").unwrap();
+            let net_call_fn: mlua::Function = net_table.get("call").unwrap();
+            Some(lua.create_registry_value(net_call_fn).unwrap())
+        } else {
+            None
+        };
 
-        Self {
+        let engine = Self {
             lua,
             realm,
             hook_caller,
@@ -327,7 +345,14 @@ impl ScriptEngine {
             nav_access,
             webviews,
             usermsg_receiver,
+        };
+
+        if matches!(realm, Realm::Menu) {
+            //crate::script::exec(&engine.lua, "menu.lua", "lua/menu/menu.luac");
+            //crate::script::exec(&engine.lua, "console.lua", "lua/menu/console.luac");
         }
+
+        engine
     }
 
     pub fn flush_webviews(&self) {
@@ -713,7 +738,7 @@ impl ScriptEngine {
         args: A,
     ) {
         publish_clock(&self.lua, cur_time, frame_time, tick_count);
-        let call_fn: mlua::Function = self.lua.registry_value(&self.net_caller).unwrap();
+        let call_fn: mlua::Function = self.lua.registry_value(self.net_caller.as_ref().expect("net_caller is not set")).unwrap();
 
         if let Err(err) = call_fn.call::<()>((hash, args)) {
             log::error!("[LUA HOOK ERROR]: {}", err);
