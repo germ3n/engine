@@ -87,7 +87,6 @@ fn unescape(text: &str) -> String {
     out
 }
 
-/// Replaces `{:N}` with `args[N - 1]`. Placeholders without a matching argument are kept as written.
 pub fn format(template: &str, args: &[String]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -121,8 +120,6 @@ pub fn format(template: &str, args: &[String]) -> String {
     out
 }
 
-/// Resolves `#Token` and formats it. Text that does not start with `#` is returned unchanged
-/// (no formatting). Unknown tokens come back as written.
 pub fn get(text: &str, args: &[String]) -> String {
     let Some(token) = text.strip_prefix('#') else {
         return text.to_string();
@@ -141,7 +138,6 @@ pub fn get(text: &str, args: &[String]) -> String {
     }
 }
 
-/// Registers a string for `language`. It replaces a lang file string with the same token.
 pub fn add(language: &str, token: &str, text: &str) {
     let token = token.trim_start_matches('#');
 

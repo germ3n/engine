@@ -1,16 +1,12 @@
 use super::{Block, BlockPos};
 
-/// Decides which world geometry a trace or sweep may hit. A rejected target is passed through
-/// as if it were not there. Every method defaults to hitting.
 pub trait TraceFilter {
-    /// `brush` is the index into the brush map.
     fn should_hit_brush(&self, brush: usize) -> bool {
         let _ = brush;
 
         true
     }
 
-    /// Only called for solid blocks.
     fn should_hit_voxel(&self, pos: BlockPos, block: Block) -> bool {
         let _ = (pos, block);
 
@@ -18,7 +14,6 @@ pub trait TraceFilter {
     }
 }
 
-/// Hits everything. What the unfiltered `trace` and `sweep` use.
 pub struct HitAll;
 
 impl TraceFilter for HitAll {}

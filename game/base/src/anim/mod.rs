@@ -22,8 +22,6 @@ pub const NONE_SEQ: u16 = u16::MAX;
 pub const TEST_MESH: &str = "models/test.mdl";
 pub const TEST_CLIPS: &str = "models/test.anm";
 
-/// One bone's transform in model space. A skeleton is a `Vec<BoneXform>` indexed by the bone's
-/// u16 index into its mesh, so names and parents stay in the mesh and are never copied.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoneXform {
     pub pos: [f32; 3],
@@ -757,8 +755,6 @@ impl AnimAssets {
         Some((pos, angles))
     }
 
-    /// Samples every bone of the entity's current pose into `out`, indexed by bone. Returns false
-    /// when the entity has no usable mesh and clips.
     pub fn sample_bones(
         &mut self,
         entity: u32,
@@ -789,7 +785,6 @@ impl AnimAssets {
         true
     }
 
-    /// Makes `bone_pose` answer from these bones instead of the live animation, until unfrozen.
     pub fn freeze_bones(&mut self, entity: u32, bones: Vec<BoneXform>) {
         self.frozen_bones.insert(entity, bones);
     }

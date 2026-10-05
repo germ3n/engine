@@ -49,6 +49,17 @@ fn vpk_unmount() {}
 )]
 fn vpk_is_mounted() {}
 
+#[document(
+    parent = "vpk",
+    name = "discover",
+    kind = "function",
+    realm = "shared",
+    summary = "Searches the steam libraries on this machine for _dir.vpk archives. Nothing is mounted, pass the results to vpk.mount.",
+    returns = { ty = "table", desc = "A list of archive paths, sorted. Empty when steam or its games are not found." },
+    example = "for _, path in ipairs(vpk.discover()) do vpk.mount(path) end",
+)]
+fn vpk_discover() {}
+
 pub fn register_vpk_lib(lua: &Lua) {
     let table = lua.create_table().expect("Failed to create vpk table");
 
@@ -80,6 +91,19 @@ pub fn register_vpk_lib(lua: &Lua) {
                 .expect("[vpk] Failed to create is_mounted"),
         )
         .expect("[vpk] Failed setting is_mounted");
+
+    table
+        .set(
+            "discover",
+            lua.create_function(|_, ()| {
+                Ok(crate::fs::vpk::discover()
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>())
+            })
+            .expect("[vpk] Failed to create discover"),
+        )
+        .expect("[vpk] Failed setting discover");
 
     lua.globals()
         .set("vpk", table)

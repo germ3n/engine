@@ -210,6 +210,12 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool
             game.send_reliable(ServerToClient::UserMessage { hash, data });
         }
 
+        for path in crate::script::cache::take_dirty() {
+            for addr in &peers {
+                send_lua_file(&game, *addr, &path);
+            }
+        }
+
         'drain: while let Some(net_event) = held
             .take()
             .or_else(|| game.network_receiver.try_recv().ok())
@@ -308,6 +314,10 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool
                         },
                     );
                     emit_brush_baseline(&game, addr);
+
+                    for path in crate::script::cache::paths() {
+                        send_lua_file(&game, addr, &path);
+                    }
                     // emit_nav_to(&game, addr, &mut nav_feed);
 
                     if let Some(player) = players.iter().find(|player| player.addr == addr) {
@@ -1618,6 +1628,25 @@ fn emit_voxel_baseline(game: &GameState<FromClient, ServerToClient>, addr: Socke
 }
 
 #[cfg(feature = "server")]
+fn send_lua_file(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr, path: &str) {
+    let Some(chunks) = crate::script::cache::chunks(path) else {
+        return;
+    };
+    let parts = chunks.len() as u16;
+
+    for (part, bytes) in chunks.into_iter().enumerate() {
+        game.send_reliable_to(
+            addr,
+            ServerToClient::LuaFile {
+                path: path.to_string(),
+                part: part as u16,
+                parts,
+                bytes,
+            },
+        );
+    }
+}
+
 fn emit_sound_baseline(game: &GameState<FromClient, ServerToClient>, addr: SocketAddr) {
     let pending = game.sound.baseline();
     let mut sounds = Vec::new();
@@ -1786,7 +1815,6 @@ fn terrain_centers(
     centers
 }
 
-/// Most chunk updates sent to each peer per server tick.
 #[cfg(feature = "server")]
 const VOXEL_UPDATES_PER_TICK: usize = 32;
 

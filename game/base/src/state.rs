@@ -27,7 +27,6 @@ use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-/// Longest the server spends committing generated chunks in one loop pass.
 const VOXEL_COMMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(5);
 
 pub struct GameState<In, Out> {
@@ -438,8 +437,6 @@ impl<In, Out> GameState<In, Out> {
         self.with_entities(|engine| engine.present_networked(time));
     }
 
-    /// Records every entity for lag compensation. Call once per server tick, after the tick's
-    /// simulation.
     pub fn lagcomp_record(&mut self) {
         if matches!(self.realm, Realm::Server) {
             self.lagcomp.record(

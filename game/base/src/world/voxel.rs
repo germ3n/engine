@@ -676,8 +676,6 @@ impl VoxelWorld {
         self.assembled_mesh(origin)
     }
 
-    /// Builds pending chunk meshes until `budget` has passed, always at least one. Returns true
-    /// when more are still pending.
     pub fn build_meshes_for(&mut self, budget: std::time::Duration) -> bool {
         let pending: Vec<ChunkPos> = self
             .chunks
@@ -813,9 +811,6 @@ impl VoxelWorld {
         vertices
     }
 
-    /// Visits every visible face of the chunk as a merged rectangle: `base` is the block position
-    /// of the rectangle's lowest corner and `ext` its size in blocks along each axis (1 along the
-    /// face normal). Neighboring faces of the same block id on the same plane are merged greedily.
     fn chunk_quads(&self, chunk_pos: ChunkPos, mut emit: impl FnMut(usize, u16, [i32; 3], [i32; 3])) {
         let Some(chunk) = self.chunks.get(&chunk_pos) else {
             return;
@@ -933,9 +928,6 @@ impl VoxelWorld {
         }
     }
 
-    /// Drops the chunk's own mesh, and the mesh of each face neighbor whose shared boundary could
-    /// look different: one that touches solid blocks in the old or the new contents. A chunk that
-    /// is air along a boundary hides nothing there, so the neighbor keeps its mesh.
     fn invalidate_around(&mut self, pos: ChunkPos, new: Option<&[u16]>) {
         self.drop_mesh(pos);
         let old = self
@@ -960,8 +952,6 @@ impl VoxelWorld {
         }
     }
 
-    /// Drops the edited chunk's mesh, plus each face neighbor only when the block sits on the
-    /// layer next to it, since that is the only place a neighbor's faces can change.
     fn invalidate_edit(&mut self, pos: ChunkPos, local: (i32, i32, i32)) {
         self.drop_mesh(pos);
         let last = CHUNK_EDGE - 1;
@@ -1007,7 +997,6 @@ impl VoxelWorld {
         updates
     }
 
-    /// Takes at most `limit` dirty chunks and leaves the rest dirty for a later call.
     pub fn take_dirty_limited(&mut self, limit: usize) -> Vec<ChunkUpdate> {
         let picked: Vec<ChunkPos> = self.dirty.iter().take(limit).copied().collect();
         let mut updates = Vec::with_capacity(picked.len());
@@ -1575,8 +1564,6 @@ fn append_shifted(out: &mut Vec<f32>, mesh: &[f32], origin: Vector3) {
     }
 }
 
-/// For each of the six face directions in `NEIGHBORS` order, whether the outermost layer of
-/// blocks on that side holds anything.
 fn boundary_layers(blocks: &[u16]) -> [bool; 6] {
     let edge = CHUNK_EDGE as usize;
     let last = edge - 1;

@@ -1,4 +1,5 @@
 pub mod autorun;
+pub mod cache;
 pub mod engine;
 pub mod libs;
 
@@ -8,14 +9,17 @@ pub use engine::ScriptEngine;
 use std::collections::BTreeMap;
 
 pub fn run_file(lua: &mlua::Lua, path: &str) -> Result<(), String> {
-    let bytes = crate::fs::read(path)?;
+    let bytes: std::sync::Arc<[u8]> = match cache::get(path) {
+        Some(bytes) => bytes,
+        None => crate::fs::read(path)?.into(),
+    };
     let mode = if bytes.starts_with(b"\x1bLJ") {
         mlua::chunk::ChunkMode::Binary
     } else {
         mlua::chunk::ChunkMode::Text
     };
 
-    lua.load(&bytes)
+    lua.load(&bytes[..])
         .set_name(path)
         .set_mode(mode)
         .exec()

@@ -292,6 +292,7 @@ impl ScriptEngine {
                 );
             }
 
+            crate::script::cache::register_cache_lib(&lua, realm);
             register_scripted_ents_lib(&lua);
             crate::script::libs::scripted_ents::load_scripted(&lua, realm);
             crate::script::autorun::load_autorun(&lua, realm);

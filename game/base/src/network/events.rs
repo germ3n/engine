@@ -144,7 +144,7 @@ pub enum ServerToClient {
     GameStateChanged {
         state: u16,
     },
-    ConVarReplicated {
+    ConVarReplicated { //impl net
         name: String,
         value: String,
     },
@@ -325,6 +325,12 @@ pub enum ServerToClient {
     },
     NavShow {
         enabled: bool,
+    },
+    LuaFile {
+        path: String,
+        part: u16,
+        parts: u16,
+        bytes: Vec<u8>,
     },
     NavPath {
         follow: bool,
@@ -661,6 +667,12 @@ impl ServerToClient {
                 format!("NavMesh({part}/{parts} {} bytes)", bytes.len())
             }
             ServerToClient::NavShow { enabled } => format!("NavShow({enabled})"),
+            ServerToClient::LuaFile {
+                path,
+                part,
+                parts,
+                bytes,
+            } => format!("LuaFile({path} {part}/{parts} {} bytes)", bytes.len()),
             ServerToClient::NavPath { follow, points } => {
                 format!("NavPath(follow={follow} pts={})", points.len())
             }

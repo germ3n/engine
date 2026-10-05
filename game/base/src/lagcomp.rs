@@ -8,7 +8,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
 
-/// How far back a command's view may be rewound.
 pub const MAX_REWIND_SECONDS: f64 = 1.0;
 
 pub type LagCompAccess = Arc<AtomicPtr<LagComp>>;
@@ -32,8 +31,6 @@ impl Drop for LagCompScope<'_> {
     }
 }
 
-/// One entity at the end of one server tick. `bones` is empty for entities without a skeleton,
-/// otherwise it is indexed by the bone's u16 index into the entity's mesh.
 #[derive(Clone, Debug)]
 struct Frame {
     tick: u64,
@@ -56,10 +53,6 @@ struct Saved {
     frozen: bool,
 }
 
-/// Source style lag compensation. Every tick the origin, angles and all bones of each entity are
-/// recorded. While a player's command runs, `start` puts the other entities back where that
-/// player saw them and `finish` returns them, so traces and bone queries made in between test
-/// the world as the shooter saw it.
 pub struct LagComp {
     tracks: HashMap<EntityHandle, VecDeque<Frame>>,
     command: Option<Command>,
@@ -85,8 +78,6 @@ impl LagComp {
         self.active
     }
 
-    /// Records every spawned entity as of the end of `tick`. Call once per server tick, with no
-    /// rewind active.
     pub fn record(&mut self, tick: u64, dt: f64, entities: &EntityList, anims: &mut AnimAssets) {
         if self.active || dt <= 0.0 {
             return;
@@ -130,8 +121,6 @@ impl LagComp {
         }
     }
 
-    /// Marks which player's command is running and which server time that player was looking at.
-    /// A `view_tick` of 0 means the command carries no view time and nothing is rewound.
     pub fn begin_command(&mut self, player: EntityHandle, view_tick: u64, view_frac: f32) {
         self.command = Some(Command {
             player,
@@ -144,14 +133,11 @@ impl LagComp {
         });
     }
 
-    /// Ends the command and restores anything a script left rewound.
     pub fn end_command(&mut self, entities: &mut EntityList, anims: &mut AnimAssets) {
         self.finish(entities, anims);
         self.command = None;
     }
 
-    /// Rewinds every entity except the command's player, and entities that player owns, to the
-    /// server time the command was aimed at. Returns how many entities moved.
     pub fn start(
         &mut self,
         entities: &mut EntityList,
@@ -213,7 +199,6 @@ impl LagComp {
         Ok(self.saved.len())
     }
 
-    /// Puts everything `start` moved back. Returns how many entities were restored.
     pub fn finish(&mut self, entities: &mut EntityList, anims: &mut AnimAssets) -> usize {
         let saved = std::mem::take(&mut self.saved);
         let count = saved.len();
@@ -242,8 +227,6 @@ struct Pose {
     bones: Vec<BoneXform>,
 }
 
-/// The entity's state at `target` ticks, interpolated between the two frames around it. None when
-/// the entity did not exist yet.
 fn pose_at(track: &VecDeque<Frame>, target: f64) -> Option<Pose> {
     let first = track.front()?;
     let last = track.back()?;

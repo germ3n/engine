@@ -2578,9 +2578,6 @@ fn predict_tick(
     });
 }
 
-/// The server tick, plus how far toward the next one, that remote entities are being drawn at.
-/// Matches what `present_remotes` shows, so the server can rewind to what the player saw. (0, 0)
-/// when there is nothing remote to go by.
 fn view_clock(
     game: &GameState<FromServer, ClientToServer>,
     remotes: &HashMap<EntityHandle, VecDeque<NetPose>>,
@@ -2975,6 +2972,12 @@ fn apply_server_event(
             let _: () = game.run_hook("VoiceChunk", (sender_handle, data));
         }
         ServerToClient::WorldSnapshot { .. } => {}
+        ServerToClient::LuaFile {
+            path,
+            part,
+            parts,
+            bytes,
+        } => crate::script::cache::receive(&path, part, parts, bytes),
         ServerToClient::VoxelScale { scale } => {
             if !game.voxel_world.apply_scale(scale) {
                 log::warn!("[cl] bad voxel scale {scale}");

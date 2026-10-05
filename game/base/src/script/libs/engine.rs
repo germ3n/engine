@@ -969,8 +969,6 @@ fn brush_clear(access: &BrushAccess) -> bool {
     true
 }
 
-/// Runs a Lua predicate as a trace filter. The first error stops further calls and is
-/// handed back by `finish`.
 struct LuaTraceFilter {
     predicate: Function,
     error: RefCell<Option<mlua::Error>>,

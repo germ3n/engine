@@ -109,9 +109,6 @@ pub struct UserCommand {
     pub buttons: InputButtons,
     pub wish: Vector3,
     pub view: Angle3,
-    /// Server tick the sender's remote entities were being shown at when it made this command,
-    /// with `view_frac` the part of the way to the next tick. 0 when unknown. Lag compensation
-    /// rewinds to this.
     pub view_tick: u64,
     pub view_frac: f32,
 }

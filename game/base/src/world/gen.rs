@@ -607,8 +607,6 @@ pub fn generate_chunk(config: &GenConfig, pos: ChunkPos) -> ChunkDraft {
     generate_chunk_with(config, pos, true)
 }
 
-/// `skip_air` lets chunks that sit entirely above any terrain or tree return without sampling
-/// noise per block. The output is identical either way.
 fn generate_chunk_with(config: &GenConfig, pos: ChunkPos, skip_air: bool) -> ChunkDraft {
     with_fields(config.seed, |fields| generate_with_fields(config, fields, pos, skip_air))
 }
@@ -713,9 +711,6 @@ fn generate_with_fields(
     }
 }
 
-/// Every block z that terrain, water, or a tree can reach is at or below this. Solid ground stops
-/// at the surface plus the 4 block overhang, and trees add a trunk of up to 6 and leaves 2 above
-/// the block they start on.
 fn ceiling(config: &GenConfig) -> f64 {
     let mut top = config.sea_level;
 
@@ -736,7 +731,6 @@ thread_local! {
     static FIELDS: std::cell::RefCell<Option<(i64, Rc<Fields>)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Builds the noise tables once per worker thread and seed instead of once per chunk.
 fn with_fields<R>(seed: i64, f: impl FnOnce(&Fields) -> R) -> R {
     let fields = FIELDS.with(|cell| {
         let mut slot = cell.borrow_mut();
