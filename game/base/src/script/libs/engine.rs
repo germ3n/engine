@@ -9,7 +9,7 @@ use crate::world::{
 use mlua::{Function, Lua, Table, Value};
 use std::cell::RefCell;
 use r#macro::document;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
 
 const ENGINE_TABLE: &str = "engine";
@@ -445,6 +445,38 @@ fn engine_brush_clear() {}
 )]
 fn engine_brush_trace() {}
 
+#[document(
+    parent = "engine",
+    name = "predicted_server_tick_count",
+    kind = "function",
+    realm = "client",
+    summary = "The server tick the command being predicted now will run on: the server tick of the latest acknowledged state plus the commands still in flight. Not defined on the server.",
+    returns = { ty = "number", desc = "The tick, or nil before the first state from the server arrives." },
+)]
+fn engine_predicted_server_tick_count() {}
+
+static CLOCK_SHIFT: AtomicI64 = AtomicI64::new(0);
+static CLOCK_SYNCED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_clock_shift(shift: i64) {
+    CLOCK_SHIFT.store(shift, Ordering::Relaxed);
+    CLOCK_SYNCED.store(true, Ordering::Relaxed);
+}
+
+pub fn reset_clock_shift() {
+    CLOCK_SYNCED.store(false, Ordering::Relaxed);
+}
+
+fn predicted_server_tick(client_tick: u64) -> Option<u64> {
+    if !CLOCK_SYNCED.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let tick = client_tick as i64 - CLOCK_SHIFT.load(Ordering::Relaxed);
+
+    Some(tick.max(0) as u64)
+}
+
 pub fn register_engine_lib(
     lua: &Lua,
     tick_interval: f64,
@@ -473,6 +505,20 @@ pub fn register_engine_lib(
         .set("first_time_predicted", true)
         .expect("[engine] Failed setting first_time_predicted");
     let server = matches!(realm, Realm::Server);
+    if matches!(realm, Realm::Client) {
+        engine_table
+            .set(
+                "predicted_server_tick_count",
+                lua.create_function(|lua, ()| {
+                    let engine: Table = lua.globals().get(ENGINE_TABLE)?;
+                    let tick: u64 = engine.get("tick_count")?;
+
+                    Ok(predicted_server_tick(tick))
+                })
+                .expect("[engine] Failed to create predicted_server_tick_count"),
+            )
+            .expect("[engine] Failed setting predicted_server_tick_count");
+    }
     let brushes = brush_access.clone();
     engine_table
         .set(

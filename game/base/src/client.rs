@@ -922,6 +922,7 @@ pub fn client_loop(
                     match net_event {
                         FromServer::Connected { generation } => {
                             log::info!("[cl] link up");
+                            crate::script::libs::engine::reset_clock_shift();
                             if world_generation != generation {
                                 world_generation = generation;
                                 game.entities.clear();
@@ -3119,6 +3120,7 @@ fn apply_server_event(
                 }
 
                 let shift = player.ack as i64 - tick as i64;
+                crate::script::libs::engine::set_clock_shift(shift);
                 reconcile_player(game, prediction, &player, &entities, shift);
             }
         }
