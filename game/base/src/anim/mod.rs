@@ -5,8 +5,8 @@ mod rig;
 
 use crate::anim::format::{read_clips, read_mesh, Mesh};
 use crate::anim::pose::{
-    elapsed, events_between, locals_from_tracks, mul_mat, palette, root_delta, sees, strip_root,
-    wrap_time, ClipSet, FADE_SECONDS,
+    elapsed, events_between, lerp3, locals_from_tracks, mul_mat, nlerp, palette, root_delta, sees,
+    strip_root, trs, wrap_time, ClipSet, FADE_SECONDS,
 };
 use crate::movement::RootStep;
 use crate::network::events::{AnimSnapshot, BoneOverrideNet, EntityBones};
@@ -21,6 +21,23 @@ pub const NONE_ASSET: u32 = u32::MAX;
 pub const NONE_SEQ: u16 = u16::MAX;
 pub const TEST_MESH: &str = "models/test.mdl";
 pub const TEST_CLIPS: &str = "models/test.anm";
+
+/// One bone's transform in model space. A skeleton is a `Vec<BoneXform>` indexed by the bone's
+/// u16 index into its mesh, so names and parents stay in the mesh and are never copied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoneXform {
+    pub pos: [f32; 3],
+    pub rot: [f32; 4],
+}
+
+impl BoneXform {
+    pub fn lerp(self, to: BoneXform, weight: f32) -> BoneXform {
+        BoneXform {
+            pos: lerp3(self.pos, to.pos, weight),
+            rot: nlerp(self.rot, to.rot, weight),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct BoneOverride {
@@ -344,6 +361,7 @@ pub struct AnimAssets {
     clip_names: HashMap<String, u32>,
     bone_maps: HashMap<(u32, u32), Vec<u16>>,
     bone_overrides: HashMap<u32, Vec<(u16, BoneOverride)>>,
+    frozen_bones: HashMap<u32, Vec<BoneXform>>,
     dirty_bones: Vec<u32>,
     scratch_pos: Vec<[f32; 3]>,
     scratch_rot: Vec<[f32; 4]>,
@@ -366,6 +384,7 @@ impl AnimAssets {
             clip_names: HashMap::new(),
             bone_maps: HashMap::new(),
             bone_overrides: HashMap::new(),
+            frozen_bones: HashMap::new(),
             dirty_bones: Vec::new(),
             scratch_pos: Vec::new(),
             scratch_rot: Vec::new(),
@@ -713,23 +732,70 @@ impl AnimAssets {
         time: f64,
         dt: f64,
     ) -> Option<([f32; 3], [f32; 3])> {
-        if !self.sample_palette(
-            playback.mesh,
-            playback.clips,
-            playback,
-            time,
-            dt,
-            entity,
-        ) {
-            return None;
-        }
+        let local = if let Some(frozen) = self.frozen_bones.get(&entity) {
+            let xform = frozen.get(bone as usize)?;
 
-        let local = *self.scratch_world.get(bone as usize)?;
+            trs(xform.pos, xform.rot)
+        } else {
+            if !self.sample_palette(
+                playback.mesh,
+                playback.clips,
+                playback,
+                time,
+                dt,
+                entity,
+            ) {
+                return None;
+            }
+
+            *self.scratch_world.get(bone as usize)?
+        };
         let world = mul_mat(pose_matrix(position, pitch, yaw, roll), local);
         let pos = [world[12], world[13], world[14]];
         let angles = angles_from_pose(world);
 
         Some((pos, angles))
+    }
+
+    /// Samples every bone of the entity's current pose into `out`, indexed by bone. Returns false
+    /// when the entity has no usable mesh and clips.
+    pub fn sample_bones(
+        &mut self,
+        entity: u32,
+        playback: &AnimPlayback,
+        time: f64,
+        dt: f64,
+        out: &mut Vec<BoneXform>,
+    ) -> bool {
+        out.clear();
+
+        if !self.sample_palette(playback.mesh, playback.clips, playback, time, dt, entity) {
+            return false;
+        }
+
+        let count = self.scratch_world.len().min(usize::from(u16::MAX));
+        let mut idx = 0;
+
+        while idx < count {
+            let mat = self.scratch_world[idx];
+
+            out.push(BoneXform {
+                pos: [mat[12], mat[13], mat[14]],
+                rot: quat_from_mat(mat),
+            });
+            idx += 1;
+        }
+
+        true
+    }
+
+    /// Makes `bone_pose` answer from these bones instead of the live animation, until unfrozen.
+    pub fn freeze_bones(&mut self, entity: u32, bones: Vec<BoneXform>) {
+        self.frozen_bones.insert(entity, bones);
+    }
+
+    pub fn unfreeze_bones(&mut self, entity: u32) {
+        self.frozen_bones.remove(&entity);
     }
 
     fn bone_slot(&mut self, entity: u32, bone: u16) -> &mut BoneOverride {

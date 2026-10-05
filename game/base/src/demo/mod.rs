@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use wincode::{SchemaRead, SchemaWrite};
 
 pub const DEMO_MAGIC: &[u8; 4] = b"RDEM";
-pub const DEMO_VERSION: u32 = 1;
+pub const DEMO_VERSION: u32 = 2;
 pub const KIND_CLIENT: u8 = 1;
 pub const KIND_SERVER: u8 = 2;
 pub const SHOT_INTERVAL: f64 = 2.0;
@@ -1089,6 +1089,8 @@ mod tests {
             buttons: InputButtons::NONE,
             wish: Vector3::new(1.0, 0.0, 0.0),
             view: Angle3::new(0.0, 15.0, 0.0),
+            view_tick: 0,
+            view_frac: 0.0,
         }
     }
 

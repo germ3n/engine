@@ -362,6 +362,8 @@ pub enum ClientToServer {
         buttons: InputButtons,
         movement: Vector3,
         viewangles: Angle3,
+        view_tick: u64,
+        view_frac: f32,
     },
     ScaleMaps {
         ratio: f64,
@@ -688,8 +690,10 @@ impl ClientToServer {
                 buttons,
                 movement,
                 viewangles,
+                view_tick,
+                view_frac,
             } => format!(
-                "PlayerInput(tick={tick} buttons={buttons:?} wish=({:.2},{:.2},{:.2}) view=({:.1},{:.1},{:.1}))",
+                "PlayerInput(tick={tick} buttons={buttons:?} wish=({:.2},{:.2},{:.2}) view=({:.1},{:.1},{:.1}) seen={view_tick}+{view_frac:.2})",
                 movement.x,
                 movement.y,
                 movement.z,

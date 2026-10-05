@@ -168,6 +168,7 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool
             game.think_entities();
             let inputs = simulate_players(&mut game, &mut players);
             game.step_physics(&player_handles);
+            game.lagcomp_record();
 
             if let Some(session) = recording.as_mut() {
                 let events = session.take_events();
@@ -373,6 +374,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool
                             buttons,
                             movement,
                             viewangles,
+                            view_tick,
+                            view_frac,
                         } => {
                             let mut idx = 0;
 
@@ -383,6 +386,8 @@ pub fn server_loop(mut game: GameState<FromClient, ServerToClient>, listen: bool
                                         buttons,
                                         wish: movement,
                                         view: viewangles,
+                                        view_tick,
+                                        view_frac,
                                     });
 
                                     break;

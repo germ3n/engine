@@ -1232,6 +1232,12 @@ pub fn client_loop(
                                 held_buttons
                             };
 
+                            let seen = view_clock(
+                                &game,
+                                &remotes,
+                                session_start.elapsed().as_secs_f64(),
+                                game.tick_interval,
+                            );
                             predict_tick(
                                 &mut game,
                                 &mut recorder,
@@ -1240,6 +1246,7 @@ pub fn client_loop(
                                 forward,
                                 right,
                                 vr.yaw,
+                                seen,
                             );
                         }
 
@@ -2536,6 +2543,7 @@ fn predict_tick(
     forward: f32,
     right: f32,
     vr_yaw: f32,
+    seen: (u64, f32),
 ) {
     if !game.entities.is_valid(prediction.local) {
         return;
@@ -2546,6 +2554,8 @@ fn predict_tick(
         buttons,
         wish: Vector3::new(forward as f64, right as f64, 0.0),
         view: command_view(prediction.look, vr_yaw),
+        view_tick: seen.0,
+        view_frac: seen.1,
     };
 
     if let Some(session) = recorder.as_mut() {
@@ -2563,7 +2573,38 @@ fn predict_tick(
         buttons: cmd.buttons,
         movement: cmd.wish,
         viewangles: cmd.view,
+        view_tick: cmd.view_tick,
+        view_frac: cmd.view_frac,
     });
+}
+
+/// The server tick, plus how far toward the next one, that remote entities are being drawn at.
+/// Matches what `present_remotes` shows, so the server can rewind to what the player saw. (0, 0)
+/// when there is nothing remote to go by.
+fn view_clock(
+    game: &GameState<FromServer, ClientToServer>,
+    remotes: &HashMap<EntityHandle, VecDeque<NetPose>>,
+    now: f64,
+    interval: f64,
+) -> (u64, f32) {
+    let render_time = if crate::console::float_cvar(&game.cvars, "cl_interpolate", 1.0) != 0.0 {
+        now - interval.max(0.0) * 2.0
+    } else {
+        f64::MAX
+    };
+    let mut best = (0u64, 0.0f32);
+
+    for samples in remotes.values() {
+        let Some((tick, frac)) = movement::sample_clock(samples, render_time) else {
+            continue;
+        };
+
+        if (tick, frac) > best {
+            best = (tick, frac);
+        }
+    }
+
+    best
 }
 
 fn reconcile_player(

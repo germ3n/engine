@@ -1,21 +1,21 @@
 use source_vpk::Vpk;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 struct Mounted {
     given: String,
     canonical: Option<PathBuf>,
-    vpk: Arc<Vpk>,
+    vpk: Vpk,
 }
 
 static MOUNTED: Mutex<Vec<Mounted>> = Mutex::new(Vec::new());
 
-fn canonical(path: &PathBuf) -> Option<PathBuf> {
+fn canonical(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
 
-fn same(entry: &Mounted, given: &str, canonical: &Option<PathBuf>) -> bool {
-    entry.given == given || (canonical.is_some() && entry.canonical == *canonical)
+fn same(entry: &Mounted, given: &str, canonical: Option<&Path>) -> bool {
+    entry.given == given || (canonical.is_some() && entry.canonical.as_deref() == canonical)
 }
 
 /// Mounts a vpk (the `_dir.vpk` file for split archives). Files in it are visible to material
@@ -25,7 +25,7 @@ pub fn mount(path: &str) -> Result<usize, String> {
     let canonical = canonical(&resolved);
     let mut mounted = MOUNTED.lock().unwrap();
 
-    if mounted.iter().any(|entry| same(entry, path, &canonical)) {
+    if mounted.iter().any(|entry| same(entry, path, canonical.as_deref())) {
         return Err(format!("{path} is already mounted"));
     }
 
@@ -36,7 +36,7 @@ pub fn mount(path: &str) -> Result<usize, String> {
     mounted.push(Mounted {
         given: path.to_string(),
         canonical,
-        vpk: Arc::new(vpk),
+        vpk,
     });
 
     Ok(files)
@@ -48,7 +48,7 @@ pub fn unmount(path: &str) -> bool {
     let mut mounted = MOUNTED.lock().unwrap();
     let before = mounted.len();
 
-    mounted.retain(|entry| !same(entry, path, &canonical));
+    mounted.retain(|entry| !same(entry, path, canonical.as_deref()));
 
     let removed = mounted.len() != before;
 
@@ -66,20 +66,17 @@ pub fn is_mounted(path: &str) -> bool {
         .lock()
         .unwrap()
         .iter()
-        .any(|entry| same(entry, path, &canonical))
+        .any(|entry| same(entry, path, canonical.as_deref()))
 }
 
 /// Reads a normalized path from the newest mount that has it.
 pub fn read(key: &str) -> Option<Vec<u8>> {
-    let vpks: Vec<Arc<Vpk>> = MOUNTED
+    MOUNTED
         .lock()
         .unwrap()
         .iter()
         .rev()
-        .map(|entry| entry.vpk.clone())
-        .collect();
-
-    vpks.iter().find_map(|vpk| vpk.read(key).ok())
+        .find_map(|entry| entry.vpk.read(key).ok())
 }
 
 const ENV_DIR: &str = "ENGINE_VPK_DIR";

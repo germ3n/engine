@@ -7,6 +7,7 @@ use crate::movement::{self, UserCommand};
 use crate::network::events::{EntityAnimNet, EntityBones, EntityNetworked, NetVar};
 use crate::network::NetSend;
 use crate::network::NetWake;
+use crate::lagcomp::{LagComp, LagCompScope};
 use crate::physics::{PhysicsScope, PhysicsWorld};
 use crate::platform::PadCache;
 use crate::r#enum::InputButtons;
@@ -49,6 +50,7 @@ pub struct GameState<In, Out> {
     pub anims: AnimAssets,
     pub sound: Box<SoundWorld>,
     physics: PhysicsWorld,
+    lagcomp: LagComp,
     despawned: Vec<EntityHandle>,
     wake: NetWake,
     motion_ratio: f64,
@@ -161,6 +163,7 @@ impl<In, Out> GameState<In, Out> {
             anims: AnimAssets::new(matches!(realm, Realm::Server)),
             sound,
             physics: PhysicsWorld::new(),
+            lagcomp: LagComp::new(),
             despawned: Vec::new(),
             wake,
             motion_ratio: 1.0,
@@ -178,6 +181,7 @@ impl<In, Out> GameState<In, Out> {
         } else {
             std::ptr::null_mut()
         };
+        let lagcomp: *mut LagComp = &mut self.lagcomp;
         let brush: *mut crate::world::BrushMap = &mut self.brush_world;
         let voxels: *mut crate::world::VoxelWorld = &mut self.voxel_world;
         let motion: *mut f64 = &mut self.motion_ratio;
@@ -186,6 +190,7 @@ impl<In, Out> GameState<In, Out> {
         let _anim_scope = AnimScope::new(&self.script_engine.anim_access, anims);
         let _sound_scope = SoundScope::new(&self.script_engine.sound_access, sound);
         let _physics_scope = PhysicsScope::new(&self.script_engine.physics_access, physics);
+        let _lagcomp_scope = LagCompScope::new(&self.script_engine.lagcomp_access, lagcomp);
         let _world_scope = WorldScope::new(
             &self.script_engine.brush_access,
             brush,
@@ -415,7 +420,43 @@ impl<In, Out> GameState<In, Out> {
         self.with_entities(|engine| engine.present_networked(time));
     }
 
+    /// Records every entity for lag compensation. Call once per server tick, after the tick's
+    /// simulation.
+    pub fn lagcomp_record(&mut self) {
+        if matches!(self.realm, Realm::Server) {
+            self.lagcomp.record(
+                self.tick_count,
+                self.tick_interval,
+                &self.entities,
+                &mut self.anims,
+            );
+        }
+    }
+
     pub fn simulate_move(
+        &mut self,
+        handle: EntityHandle,
+        cmd: &UserCommand,
+        prev: InputButtons,
+        first_time: bool,
+    ) -> bool {
+        let server = matches!(self.realm, Realm::Server);
+
+        if server {
+            self.lagcomp
+                .begin_command(handle, cmd.view_tick, cmd.view_frac);
+        }
+
+        let ran = self.simulate_move_inner(handle, cmd, prev, first_time);
+
+        if server {
+            self.lagcomp.end_command(&mut self.entities, &mut self.anims);
+        }
+
+        ran
+    }
+
+    fn simulate_move_inner(
         &mut self,
         handle: EntityHandle,
         cmd: &UserCommand,

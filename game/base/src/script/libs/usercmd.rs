@@ -33,6 +33,8 @@ impl From<LuaUserCmd> for UserCommand {
             buttons: InputButtons(cmd.buttons as u64),
             wish: cmd.wish,
             view: cmd.view,
+            view_tick: 0,
+            view_frac: 0.0,
         }
     }
 }

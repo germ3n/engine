@@ -1710,8 +1710,25 @@ return function(native)
         name = { ty = "string", desc = "Bone name." },
     },
     returns = { ty = "number?", desc = "Bone index." },
+    see_also = "Entity:get_bone_index",
     ]=]
     function meta:lookup_bone(name)
+        return native_lookup_bone(self._handle, name);
+    end
+
+    --[=[document
+    parent = "Entity",
+    name = "get_bone_index",
+    realm = "shared",
+    summary = "Returns the bone index for a bone name, or nil when the mesh has no bone with that name. Same lookup as lookup_bone.",
+    params = {
+        name = { ty = "string", desc = "Bone name." },
+    },
+    returns = { ty = "number?", desc = "Bone index." },
+    example = "local hand = ent:get_bone_index(\"hand_R\")\nif hand then print(ent:get_bone_position(hand)) end",
+    see_also = "Entity:get_bone_name, Entity:get_bone_count, Entity:lookup_bone",
+    ]=]
+    function meta:get_bone_index(name)
         return native_lookup_bone(self._handle, name);
     end
 

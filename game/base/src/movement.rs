@@ -109,6 +109,11 @@ pub struct UserCommand {
     pub buttons: InputButtons,
     pub wish: Vector3,
     pub view: Angle3,
+    /// Server tick the sender's remote entities were being shown at when it made this command,
+    /// with `view_frac` the part of the way to the next tick. 0 when unknown. Lag compensation
+    /// rewinds to this.
+    pub view_tick: u64,
+    pub view_frac: f32,
 }
 
 pub struct Prediction {
@@ -808,7 +813,7 @@ fn clip_velocity(velocity: Vector3, normal: Vector3) -> Vector3 {
     out
 }
 
-fn lerp_vec(from: Vector3, to: Vector3, alpha: f64) -> Vector3 {
+pub(crate) fn lerp_vec(from: Vector3, to: Vector3, alpha: f64) -> Vector3 {
     Vector3::new(
         from.x + (to.x - from.x) * alpha,
         from.y + (to.y - from.y) * alpha,
@@ -830,7 +835,7 @@ fn lerp_angle(from: f32, to: f32, alpha: f32) -> f32 {
     from + delta * alpha
 }
 
-fn lerp_angles(from: Angle3, to: Angle3, alpha: f32) -> Angle3 {
+pub(crate) fn lerp_angles(from: Angle3, to: Angle3, alpha: f32) -> Angle3 {
     Angle3::new(
         lerp_angle(from.p, to.p, alpha),
         lerp_angle(from.y, to.y, alpha),
@@ -1203,6 +1208,8 @@ mod tests {
             buttons,
             wish: Vector3::new(wish_x, 0.0, 0.0),
             view: Angle3::new(0.0, 0.0, 0.0),
+            view_tick: 0,
+            view_frac: 0.0,
         }
     }
 
@@ -1412,6 +1419,8 @@ mod tests {
             buttons: InputButtons::NONE,
             wish: Vector3::new(0.0, 0.0, 0.0),
             view: Angle3::new(0.0, 0.0, 0.0),
+            view_tick: 0,
+            view_frac: 0.0,
         });
         prediction.note_step(Vector3::new(0.0, 0.0, 0.0), Vector3::new(4.0, 0.0, 0.0));
 
@@ -1422,9 +1431,11 @@ mod tests {
         let mid = prediction.view_origin(0.5).unwrap();
         assert!(near(mid.x, 2.0));
 
+        // The whole span shifts with the correction, so it keeps its length: 0..4 becomes 2..6.
         prediction.correct_view(Vector3::new(6.0, 0.0, 0.0));
-        let mid = prediction.view_origin(0.5).unwrap();
-        assert!(near(mid.x, 3.0));
+        assert!(near(prediction.view_origin(0.0).unwrap().x, 2.0));
+        assert!(near(prediction.view_origin(0.5).unwrap().x, 4.0));
+        assert!(near(prediction.view_origin(1.0).unwrap().x, 6.0));
     }
 
     #[test]

@@ -165,6 +165,7 @@ pub struct ScriptEngine {
     pub anim_access: AnimAccess,
     pub sound_access: SoundAccess,
     pub physics_access: PhysicsAccess,
+    pub lagcomp_access: crate::lagcomp::LagCompAccess,
     pub brush_access: crate::script::libs::engine::BrushAccess,
     pub voxel_access: crate::script::libs::engine::VoxelAccess,
     pub pointer: Arc<Mutex<crate::script::libs::input::Pointer>>,
@@ -243,6 +244,8 @@ impl ScriptEngine {
         let anim_access: AnimAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let sound_access: SoundAccess = Arc::new(AtomicPtr::new(sound));
         let physics_access: PhysicsAccess = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
+        let lagcomp_access: crate::lagcomp::LagCompAccess =
+            Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let brush_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let voxel_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
         let motion_access = Arc::new(AtomicPtr::new(std::ptr::null_mut()));
@@ -280,6 +283,15 @@ impl ScriptEngine {
                 anim_access.clone(),
                 physics_access.clone(),
             );
+            if matches!(realm, Realm::Server) {
+                crate::script::libs::register_lagcomp_lib(
+                    &lua,
+                    entity_access.clone(),
+                    anim_access.clone(),
+                    lagcomp_access.clone(),
+                );
+            }
+
             register_scripted_ents_lib(&lua);
             crate::script::libs::scripted_ents::load_scripted(&lua, realm);
             crate::script::autorun::load_autorun(&lua, realm);
@@ -305,6 +317,7 @@ impl ScriptEngine {
             anim_access,
             sound_access,
             physics_access,
+            lagcomp_access,
             brush_access,
             voxel_access,
             pointer,
